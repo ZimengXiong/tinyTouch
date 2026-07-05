@@ -34,7 +34,8 @@ anyone with the programmed ESP and the paired Mac can request the password when 
 
 ## setup
 
-### 1. install dependencies
+````md
+1. install dependencies
 
 ```sh
 cd ~/Projects/tinyTouch
@@ -43,34 +44,34 @@ python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 2. create a pairing key
+2. create a pairing key
 
 ```sh
 PAIRING_KEY="$(openssl rand -hex 32)"
 echo "$PAIRING_KEY"
 ```
 
-### 3. store that key in the macOS Keychain:
+3. store that key in the macOS Keychain:
 
 ```sh
 .venv/bin/python tinytouch_helper.py --set-pairing-key "$PAIRING_KEY"
 ```
 
-### 4. create the ESP secret file:
+4. create the ESP secret file:
 
 ```sh
 cp firmware/tiny_touch_keyboard/secrets.example.h firmware/tiny_touch_keyboard/secrets.h
 ```
 
-### 5. edit `firmware/tiny_touch_keyboard/secrets.h` so the 32 bytes match `PAIRING_KEY`.
+5. edit `firmware/tiny_touch_keyboard/secrets.h` so the 32 bytes match `PAIRING_KEY`.
 
-### 6. store the password in Keychain
+6. store the password in Keychain
 
 ```sh
 .venv/bin/python tinytouch_helper.py --set-password 'your-password-here'
 ```
 
-### 7. flash the ESP firmware
+7. flash the ESP firmware
 
 open `firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino` in Arduino IDE.
 
@@ -78,7 +79,7 @@ use these board settings:
 `USB CDC on Boot: Enabled`
 `USB Mode: USB-OTG`
 
-### 8. run the helper once
+8. run the helper once
 
 ```sh
 .venv/bin/python tinytouch_helper.py
@@ -86,7 +87,7 @@ use these board settings:
 
 should see `helper listening on ...`. touching an enrolled finger should produce `MATCH`, then `TYPED`.
 
-### 9. install the macOS background worker
+9. install the macOS background worker
 
 the included plist uses this repo path, you should change it:
 
@@ -94,7 +95,7 @@ the included plist uses this repo path, you should change it:
 /Users/xzm/Projects/tinyTouch
 ```
 
-### 10. install it
+10. install it
 
 ```sh
 mkdir -p ~/Library/LaunchAgents
@@ -102,6 +103,7 @@ cp launchd/com.tinytouch.helper.plist ~/Library/LaunchAgents/
 launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist 2>/dev/null || true
 launchctl load ~/Library/LaunchAgents/com.tinytouch.helper.plist
 ```
+````
 
 ## other
 logs are written to:
