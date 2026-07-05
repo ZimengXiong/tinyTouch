@@ -1,5 +1,5 @@
 # **tinyTouch** authenticates you insecurely 🙂
-authenticate, sudo, login with your fingerprint in clamshell and mac minis without having to spend $149
+authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
 
 https://github.com/user-attachments/assets/efc933bb-c136-4f07-9db1-4b286c018932
 
