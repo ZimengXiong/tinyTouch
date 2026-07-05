@@ -1,0 +1,6 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+
+firmware/tiny_touch_keyboard/secrets.h

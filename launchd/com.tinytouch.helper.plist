@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tinytouch.helper</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/xzm/Projects/tinyTouch/.venv/bin/python</string>
+    <string>/Users/xzm/Projects/tinyTouch/tinytouch_helper.py</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/tinytouch-helper.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/tinytouch-helper.err</string>
+</dict>
+</plist>
