@@ -5,7 +5,7 @@ https://github.com/user-attachments/assets/efc933bb-c136-4f07-9db1-4b286c018932
 
 ## lazy? let your agent set everything up
 ```
-I have everything wired, setup https://raw.githubusercontent.com/ZimengXiong/tinyTouch/refs/heads/main/README.md
+I have everything wired, setup gh/ZimengXiong/tinyTouch
 ```
 
 ## bom
