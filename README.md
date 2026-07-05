@@ -82,7 +82,7 @@ anyone with the programmed ESP and the paired Mac can request the password when 
 
 9. install the macOS background worker
 
-    the included plist uses this repo path, you should change it:
+    the included plist uses my local repo path, you should change it to yours:
 
     /Users/xzm/Projects/tinyTouch
 
