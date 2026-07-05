@@ -1,6 +1,8 @@
 # **tinyTouch** authenticates you insecurely 🙂
 authenticate, sudo, login with your fingerprint without having to spend $149
 
+https://github.com/user-attachments/assets/efc933bb-c136-4f07-9db1-4b286c018932
+
 ## bom
 
 | Item                          | Used here                 | Notes                                                                                                                              |
