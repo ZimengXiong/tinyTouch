@@ -33,7 +33,7 @@ for each successful fingerprint match:
 anyone with the programmed ESP and the paired Mac can request the password when the fingerprint matches (or uart is spoofed). secure separately but not together
 
 ## setup
-
+```
 1. install dependencies
 
     cd ~/Projects/tinyTouch
@@ -62,22 +62,22 @@ anyone with the programmed ESP and the paired Mac can request the password when 
 
 7. flash the ESP firmware
 
-open firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino in Arduino IDE.
+    open firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino in Arduino IDE.
 
-use these board settings:
+    use these board settings:
 
-    USB CDC on Boot: Enabled
-    USB Mode: USB-OTG
+        USB CDC on Boot: Enabled
+        USB Mode: USB-OTG
 
 8. run the helper once
 
     .venv/bin/python tinytouch_helper.py
 
-should see helper listening on .... touching an enrolled finger should produce MATCH, then TYPED.
+    you should see helper listening on .... touching an enrolled finger should produce MATCH, then TYPED.
 
 9. install the macOS background worker
 
-the included plist uses this repo path, you should change it:
+    the included plist uses this repo path, you should change it:
 
     /Users/xzm/Projects/tinyTouch
 
@@ -87,7 +87,7 @@ the included plist uses this repo path, you should change it:
     cp launchd/com.tinytouch.helper.plist ~/Library/LaunchAgents/
     launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist 2>/dev/null || true
     launchctl load ~/Library/LaunchAgents/com.tinytouch.helper.plist
-
+```
 ## other
 logs are written to:
 
