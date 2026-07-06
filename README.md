@@ -110,3 +110,5 @@ launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist
 ```
 
 do not commit `firmware/tiny_touch_keyboard/secrets.h`
+
+[cad](https://cad.onshape.com/documents/d0e6bb7977e6171d4e4a5086/w/1ded27ad6c634fd1fdaf26d0/e/aca67210e400490a08d0b29a?renderMode=0&uiState=6a4c1df32e292f12144a65fe). if you make changes, please make them open source as well (link in PR/issue)
