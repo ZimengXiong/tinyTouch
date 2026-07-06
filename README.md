@@ -1,4 +1,5 @@
-<img width="2304" height="1152" alt="tinyTouch" src="https://github.com/user-attachments/assets/3d92b7c9-d2c3-487d-9061-70d24f2b4281" />
+<img width="2304" height="1152" alt="tinyTouch" src="https://github.com/user-attachments/assets/7ef27767-bfed-48f5-b2b2-a57bf579f3a6" />
+
 
 # **tinyTouch** authenticates you insecurely 🙂
 authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
