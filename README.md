@@ -1,7 +1,7 @@
 # **tinyTouch** authenticates you insecurely 🙂
 authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
 
-https://github.com/user-attachments/assets/efc933bb-c136-4f07-9db1-4b286c018932
+https://github.com/user-attachments/assets/79aa6390-5f36-4712-8655-5e6c74702d58
 
 ## lazy? let your agent set everything up
 ```
