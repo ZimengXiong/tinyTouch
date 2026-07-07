@@ -5,6 +5,7 @@
 authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
 
 if you don't feel comfortable with our security model. dont fret! just wait some time...should have a smart card compatiable solution working...soon...maybe watch the repo?
+<img width="381" height="106" alt="image" src="https://github.com/user-attachments/assets/3f6a9332-8906-4be8-afdc-e7568ca70de1" />
 
 ## lazy? let your agent set everything up
 ```
