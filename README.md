@@ -4,7 +4,7 @@
 # **tinyTouch** authenticates you insecurely 🙂
 authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
 
-if you don't feel comfortable with our security model. dont fret! just wait some time...should have a smart card compatiable solution working...soon...
+if you don't feel comfortable with our security model. dont fret! just wait some time...should have a smart card compatiable solution working...soon...maybe watch the repo?
 
 ## lazy? let your agent set everything up
 ```
