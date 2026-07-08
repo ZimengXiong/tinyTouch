@@ -11,7 +11,7 @@ PIV authentication of sudo:
 
 https://github.com/user-attachments/assets/c197dd9c-81e5-4150-9793-d2e445651dfd
 
-PIV authentication of lockscreen (the typing is just the PIV PIN, which we bypass (since we gate by the fingerprint), read below to learn more about it)
+PIV authentication of lockscreen (you know its PIV because it says PIN and not password in the entry field) (the typing is just the PIV PIN, which we bypass (since we gate by the fingerprint), read below to learn more about it)
 
 https://github.com/user-attachments/assets/88014cb2-34d2-4d63-8998-54f0561364eb
 
