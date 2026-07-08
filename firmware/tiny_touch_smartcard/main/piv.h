@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 void piv_init(void);
-void piv_note_biometric_verified(void);
+void piv_note_user_presence(void);
 bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
                      uint8_t *response, size_t *response_len,
                      size_t response_cap);

@@ -46,7 +46,7 @@ static void touch_pin_task(void *arg) {
         (xTaskGetTickCount() - last_success) > pdMS_TO_TICKS(3000)) {
       if (fingerprint_authorize_poll_once()) {
         ESP_LOGI(TAG, "finger matched; typing PIN submit");
-        piv_note_biometric_verified();
+        piv_note_user_presence();
         type_dummy_pin();
         last_success = xTaskGetTickCount();
       }

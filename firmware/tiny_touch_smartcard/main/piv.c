@@ -65,55 +65,15 @@ static uint8_t chained_ins;
 static uint8_t chained_p1;
 static uint8_t chained_p2;
 static TickType_t pin_verified_until;
-static TickType_t biometric_verified_until;
-static const TickType_t PIN_VERIFIED_WINDOW_TICKS = pdMS_TO_TICKS(120000);
-static const TickType_t BIOMETRIC_VERIFIED_WINDOW_TICKS = pdMS_TO_TICKS(120000);
+static TickType_t user_presence_until;
+static TickType_t last_user_presence_attempt;
+static const TickType_t PIN_VERIFIED_WINDOW_TICKS = pdMS_TO_TICKS(60000);
+static const TickType_t USER_PRESENCE_WINDOW_TICKS = pdMS_TO_TICKS(10000);
+static const TickType_t USER_PRESENCE_COOLDOWN_TICKS = pdMS_TO_TICKS(1500);
 
 static size_t encode_len(uint8_t *out, size_t len);
 static bool respond_data(const uint8_t *data, size_t data_len, uint8_t *response,
                          size_t *response_len, size_t response_cap);
-
-#define TRACE_RECORDS 64
-#define TRACE_APDU_BYTES 12
-typedef struct {
-  uint8_t len;
-  uint8_t bytes[TRACE_APDU_BYTES];
-  uint16_t sw;
-} trace_record_t;
-
-static trace_record_t trace_records[TRACE_RECORDS];
-static size_t trace_next;
-static size_t trace_count;
-
-static void trace_apdu(const uint8_t *apdu, size_t apdu_len,
-                       const uint8_t *response, size_t response_len) {
-  trace_record_t *rec = &trace_records[trace_next];
-  rec->len = apdu_len > 255 ? 255 : (uint8_t)apdu_len;
-  memset(rec->bytes, 0, sizeof(rec->bytes));
-  size_t copy = apdu_len < sizeof(rec->bytes) ? apdu_len : sizeof(rec->bytes);
-  memcpy(rec->bytes, apdu, copy);
-  rec->sw = response_len >= 2 ? ((uint16_t)response[response_len - 2] << 8) |
-                                response[response_len - 1] : 0x0000;
-  trace_next = (trace_next + 1) % TRACE_RECORDS;
-  if (trace_count < TRACE_RECORDS) trace_count++;
-}
-
-static bool respond_trace(uint8_t *response, size_t *response_len, size_t response_cap) {
-  uint8_t object[4 + TRACE_RECORDS * (1 + TRACE_APDU_BYTES + 2)];
-  size_t off = 0;
-  object[off++] = 0x53;
-  off += encode_len(object + off, trace_count * (1 + TRACE_APDU_BYTES + 2));
-  size_t start = trace_count == TRACE_RECORDS ? trace_next : 0;
-  for (size_t i = 0; i < trace_count; i++) {
-    const trace_record_t *rec = &trace_records[(start + i) % TRACE_RECORDS];
-    object[off++] = rec->len;
-    memcpy(object + off, rec->bytes, TRACE_APDU_BYTES);
-    off += TRACE_APDU_BYTES;
-    object[off++] = (uint8_t)(rec->sw >> 8);
-    object[off++] = (uint8_t)rec->sw;
-  }
-  return respond_data(object, off, response, response_len, response_cap);
-}
 
 static void decode_pem_cert(const char *pem, uint8_t *der, size_t der_cap, size_t *der_len) {
   *der_len = 0;
@@ -306,12 +266,6 @@ static bool handle_get_data(const uint8_t *apdu, size_t apdu_len, uint8_t *respo
   size_t data_len = 0;
   if (!read_lc_data(apdu, apdu_len, &data, &data_len)) return append_sw(response, response_len, response_cap, 0x6700);
 
-  // Private diagnostic object for development: 0x7f7f01.
-  if (data_len == 5 && data[0] == 0x5c && data[1] == 0x03 &&
-      data[2] == 0x7f && data[3] == 0x7f && data[4] == 0x01) {
-    return respond_trace(response, response_len, response_cap);
-  }
-
   // PIV discovery object tag: 0x7e.
   if (data_len == 3 && data[0] == 0x5c && data[1] == 0x01 && data[2] == 0x7e) {
     return respond_maybe_chunked(DISCOVERY_OBJECT, sizeof(DISCOVERY_OBJECT), apdu, apdu_len,
@@ -384,16 +338,23 @@ static bool handle_get_data(const uint8_t *apdu, size_t apdu_len, uint8_t *respo
   return append_sw(response, response_len, response_cap, 0x6a88);
 }
 
-static bool handle_verify(uint8_t *response, size_t *response_len, size_t response_cap) {
-  // Prototype policy: the UI PIN is only a macOS prompt compatibility shim.
-  // The actual user-presence check happens before each private-key operation.
-  // Real token policy should also enforce retry counters and block state.
+static bool handle_verify(const uint8_t *apdu, size_t apdu_len,
+                          uint8_t *response, size_t *response_len, size_t response_cap) {
+  const uint8_t *data = NULL;
+  size_t data_len = 0;
+  if (apdu[2] != 0x00 || apdu[3] != 0x80 ||
+      !read_lc_data(apdu, apdu_len, &data, &data_len)) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6a86);
+  }
+  (void)data;
+  (void)data_len;
   pin_verified_until = xTaskGetTickCount() + PIN_VERIFIED_WINDOW_TICKS;
   return append_sw(response, response_len, response_cap, 0x9000);
 }
 
-void piv_note_biometric_verified(void) {
-  biometric_verified_until = xTaskGetTickCount() + BIOMETRIC_VERIFIED_WINDOW_TICKS;
+void piv_note_user_presence(void) {
+  user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
 }
 
 static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
@@ -405,26 +366,19 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   }
   if (pin_verified_until == 0 ||
       (TickType_t)(pin_verified_until - xTaskGetTickCount()) > PIN_VERIFIED_WINDOW_TICKS) {
+    pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6982);
   }
-  bool biometric_valid = biometric_verified_until != 0 &&
-                         (TickType_t)(biometric_verified_until - xTaskGetTickCount()) <=
-                           BIOMETRIC_VERIFIED_WINDOW_TICKS;
-  if (!biometric_valid) {
-    if (!fingerprint_authorize_once()) {
-      pin_verified_until = 0;
-      biometric_verified_until = 0;
-      return append_sw(response, response_len, response_cap, 0x6982);
-    }
-    biometric_verified_until = xTaskGetTickCount() + BIOMETRIC_VERIFIED_WINDOW_TICKS;
-  }
-
   const uint8_t *data = NULL;
   size_t data_len = 0;
-  if (!read_lc_data(apdu, apdu_len, &data, &data_len)) return append_sw(response, response_len, response_cap, 0x6700);
+  if (!read_lc_data(apdu, apdu_len, &data, &data_len)) {
+    return append_sw(response, response_len, response_cap, 0x6700);
+  }
 
   size_t outer_off = 0;
-  if (data_len < 2 || data[outer_off++] != 0x7c) return append_sw(response, response_len, response_cap, 0x6a80);
+  if (data_len < 2 || data[outer_off++] != 0x7c) {
+    return append_sw(response, response_len, response_cap, 0x6a80);
+  }
   size_t outer_len = 0;
   if (!tlv_read_len(data, data_len, &outer_off, &outer_len) || outer_off + outer_len > data_len) {
     return append_sw(response, response_len, response_cap, 0x6a80);
@@ -435,12 +389,36 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   if (!tlv_find_one(data + outer_off, outer_len, 0x81, &challenge, &challenge_len)) {
     return append_sw(response, response_len, response_cap, 0x6a80);
   }
+  mbedtls_pk_context *key = apdu[3] == 0x9d ? &key_mgmt_key : &auth_key;
+  if (mbedtls_pk_get_type(key) != MBEDTLS_PK_RSA) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6f00);
+  }
+
+  if (apdu[3] == 0x9a) {
+    TickType_t now = xTaskGetTickCount();
+    bool user_presence_valid = user_presence_until != 0 &&
+                               (TickType_t)(user_presence_until - now) <=
+                                 USER_PRESENCE_WINDOW_TICKS;
+    if (!user_presence_valid) {
+      if (last_user_presence_attempt != 0 &&
+          (TickType_t)(now - last_user_presence_attempt) < USER_PRESENCE_COOLDOWN_TICKS) {
+        return append_sw(response, response_len, response_cap, 0x6985);
+      }
+      last_user_presence_attempt = now;
+      if (!fingerprint_authorize_once()) {
+        pin_verified_until = 0;
+        user_presence_until = 0;
+        return append_sw(response, response_len, response_cap, 0x6982);
+      }
+    }
+    user_presence_until = 0;
+  }
 
   uint8_t sig[256];
   size_t sig_len = sizeof(sig);
   int rc = 0;
-  mbedtls_pk_context *key = apdu[3] == 0x9d ? &key_mgmt_key : &auth_key;
-  if (challenge_len == sizeof(sig) && mbedtls_pk_get_type(key) == MBEDTLS_PK_RSA) {
+  if (challenge_len == sizeof(sig)) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*key);
     rc = mbedtls_rsa_private(rsa, piv_rng, NULL, challenge, sig);
   } else {
@@ -449,6 +427,7 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     rc = mbedtls_pk_sign(key, MBEDTLS_MD_SHA256, hash, sizeof(hash),
                          sig, sizeof(sig), &sig_len, piv_rng, NULL);
   }
+  pin_verified_until = 0;
   if (rc != 0) {
     ESP_LOGE(TAG, "sign failed: -0x%x", -rc);
     return append_sw(response, response_len, response_cap, 0x6f00);
@@ -494,14 +473,11 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
                      size_t response_cap) {
   *response_len = 0;
   if (apdu_len < 4) {
-    bool ok = append_sw(response, response_len, response_cap, 0x6700);
-    trace_apdu(apdu, apdu_len, response, *response_len);
-    return ok;
+    return append_sw(response, response_len, response_cap, 0x6700);
   }
 
   uint8_t ins = apdu[1];
   uint8_t cla = apdu[0];
-  bool ok = false;
 
   if ((cla & 0x10) && ins == 0x87) {
     const uint8_t *data = NULL;
@@ -509,18 +485,14 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
     if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
         data_len > sizeof(chained_apdu_data)) {
       chained_apdu_data_len = 0;
-      ok = append_sw(response, response_len, response_cap, 0x6700);
-      trace_apdu(apdu, apdu_len, response, *response_len);
-      return ok;
+      return append_sw(response, response_len, response_cap, 0x6700);
     }
     memcpy(chained_apdu_data, data, data_len);
     chained_apdu_data_len = data_len;
     chained_ins = ins;
     chained_p1 = apdu[2];
     chained_p2 = apdu[3];
-    ok = append_sw(response, response_len, response_cap, 0x9000);
-    trace_apdu(apdu, apdu_len, response, *response_len);
-    return ok;
+    return append_sw(response, response_len, response_cap, 0x9000);
   }
 
   uint8_t chained_apdu[8 + sizeof(chained_apdu_data)];
@@ -530,9 +502,7 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
     if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
         chained_apdu_data_len + data_len > sizeof(chained_apdu_data)) {
       chained_apdu_data_len = 0;
-      ok = append_sw(response, response_len, response_cap, 0x6700);
-      trace_apdu(apdu, apdu_len, response, *response_len);
-      return ok;
+      return append_sw(response, response_len, response_cap, 0x6700);
     }
     memcpy(chained_apdu_data + chained_apdu_data_len, data, data_len);
     chained_apdu_data_len += data_len;
@@ -554,24 +524,16 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
 
   switch (ins) {
     case 0xa4:
-      ok = handle_select(apdu, apdu_len, response, response_len, response_cap);
-      break;
+      return handle_select(apdu, apdu_len, response, response_len, response_cap);
     case 0xc0:
-      ok = handle_get_response(apdu, apdu_len, response, response_len, response_cap);
-      break;
+      return handle_get_response(apdu, apdu_len, response, response_len, response_cap);
     case 0xcb:
-      ok = handle_get_data(apdu, apdu_len, response, response_len, response_cap);
-      break;
+      return handle_get_data(apdu, apdu_len, response, response_len, response_cap);
     case 0x20:
-      ok = handle_verify(response, response_len, response_cap);
-      break;
+      return handle_verify(apdu, apdu_len, response, response_len, response_cap);
     case 0x87:
-      ok = handle_general_authenticate(apdu, apdu_len, response, response_len, response_cap);
-      break;
+      return handle_general_authenticate(apdu, apdu_len, response, response_len, response_cap);
     default:
-      ok = append_sw(response, response_len, response_cap, 0x6d00);
-      break;
+      return append_sw(response, response_len, response_cap, 0x6d00);
   }
-  trace_apdu(apdu, apdu_len, response, *response_len);
-  return ok;
 }
