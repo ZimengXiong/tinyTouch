@@ -1,117 +1,176 @@
 <img width="2304" height="1152" alt="tinyTouch" src="https://github.com/user-attachments/assets/17b27345-39a5-42aa-a6cd-3cb3b17ddde8" />
 
-# **tinyTouch** authenticates you insecurely 🙂
-authenticate, sudo, login with your fingerprint wire(less)ly without having to spend $149
+# tinytouch
+
+authenticate, sudo, and log in with your fingerprint wire(less)ly without having
+to spend $149.
 
 https://github.com/user-attachments/assets/efede271-6d84-441d-919c-f5532f687c4e
 
-if you don't feel comfortable with our security model. dont fret! just wait some time...should have a smart card compatiable solution working...soon...maybe watch the repo?
-<img width="381" height="106" alt="image" src="https://github.com/user-attachments/assets/3f6a9332-8906-4be8-afdc-e7568ca70de1" />
+## red pill or blue pill?
 
-## lazy? let your agent set everything up
+there are two ways to use tinyTouch on your computer: `HID` and `PIV/PAM` mode. read about how they work in the following subsection.
+
+each has it's advantages, and we want to scare you a tiny bit so you actually do your diligence and understand the security implications of such a device, and if you are willing to take on the risks:
+
+| features | HID | PIV/PAM* |
+| -- | -- | -- |
+| keyboardless login | ✅ | ✅ |
+| sudo prompts | ✅ | ✅ |
+| apple TCC (privacy & security) | ✅ | ✅|
+| general settings | ✅ | ❌ |
+| keychain/apple passwords | ✅ | ❌ |
+| everywhere your password is accepted (remote SSH sessions, etc) | ✅ | depends, but prob not |
+
+| security | HID | PIV/PAM* |
+| -- | -- | -- |
+| fingerprint sensor <-> esp | 🔴 (unauth'ed UART) | 🔴 (unauth'ed UART) |
+| esp <-> computer negotiation | 🟢 (shared-key mac/encryption) | 🔴 (plain usb ccid/apdu) |
+| authentication | 🔴 (password typed over hid) | 🟢 (piv challenge/response) |
+
+| attack | HID | PIV/PAM* |
+| -- | -- | -- |
+| sensor uart spoofing^ | yes | yes |
+| wrong focused field | yes | no |
+| malicious password field | yes | no |
+| usb traffic sniffing | low impact (channel is encrypted/mac'ed) | can observe apdus, not piv private key |
+| usb keylogger | can reveal password | cannot reveal key|
+| usb command injection | reject bad macs/replays | device may receive apdus, but auth still needs fingerprint-gated key use |
+| flash dumping (secure boot/flash encryption off) | shared-key exposable | piv key exposable |
+| flash dumping (secure boot/flash encryption on) | shared-key non-exportable | piv key non-exportable |
+| flash dumping (with secure element) | shared key non-exportable | piv key non-exportable |
+
+*PIV/PAM always uses HID to deliver the mandatory PIV PIN, which we do not use. authorization is still gated by your fingerprint. the PIV PIN is not your password, and is not considered to be sensitive in our scenario.
+
+^this is the major security issue with this device. since all authentication happens inside the fingrprint sensor, and the sensor communicates with the ESP via unauthenticated UART, it can be easily spoofed. basic countermeasures invovle filling the insides of the device with black epoxy. more a proper fix would be to upgrade to an more secure fingerprint sensor element.
+
+### so... which pill?
+this depends on 
+1. your tolerance to security
+2. your enviorment
+3. current/future criminal background
+4. family/roommates relations
+5. technical skill set of family members/roommates
+
+risks are low to begin with since every method of attack requires *physical access* to BOTH the device and your mac.
+
+so ask yourself, will your device ever leave your desk? can your roomates perform a flash dump in half an hour? how about your family members? do they have anything against you that would create a motive? are you wanted by any government agency? are you protecting sensitive or classified information? are you using a company device? will you be personally implicated if you leak company secrets? 
+
+if the answer is yes to any of the above questions, i think the magic keyboard presents an excellent value at $149 and is worth the added security.
+
+if the answer is no, i think the chances are you will be just fine having a slightly-insecure method of authentication. personally, i am happy with the red pill and love the convience of having it work everywhere, i don't mind.
+
+### hid mode
+
+in hid mode, the esp acts like a usb keyboard.
+
+the mac helper keeps your real password encrypted and stored on your mac, this way any attacker cannot extract your password from just the ESP alone. the esp keeps a shared pairing key. after a fingerprint match, the esp sends a signed request to the helper, the helper checks it, encrypts the password for that one request, and sends it back. the esp decrypts it in ram, types it, then wipes it.
+
+this is why it works almost everywhere. it is also why it is scary: the final
+step is still your real password being typed into whatever has focus.
+
+to make it less bad, the esp never stores the password. requests use a nonce and mac so old requests cannot just be replayed, and the helper only sends back an encrypted one-time response. the password only exists on the esp briefly in ram.
+
+### piv mode
+
+in piv mode, the esp acts like a usb smart card.
+
+macos sends normal piv commands over ccid. when macos needs authentication, it asks the card to use the piv private key. the esp only allows that key operation right after a fingerprint match.
+
+macos also expects a piv pin, so the firmware has a tiny hid side path that types the dummy pin `000000`. that pin is not your mac password but just there to get through the macos piv prompt while the real authorization is the fingerprint gate around the piv key.
+
+this avoids typing your real password, but only works where macos accepts smart cards, like login and `sudo` with pam.
+
+## red pill
+use this if you just want the thing to type your password.
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+
+pairing_key="$(openssl rand -hex 32)"
+.venv/bin/python tinytouch_helper.py --set-pairing-key "$pairing_key"
+.venv/bin/python tinytouch_helper.py --set-password 'your-password-here'
+
+cp firmware/tiny_touch_keyboard/secrets.example.h firmware/tiny_touch_keyboard/secrets.h
 ```
-I have everything wired, setup gh/ZimengXiong/tinyTouch
+
+edit `firmware/tiny_touch_keyboard/secrets.h` so it contains the same pairing
+key bytes, then flash `firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino`
+with arduino ide.
+
+board settings used here:
+
+```text
+usb cdc on boot: enabled
+usb mode: usb-otg
 ```
 
-## bom
+run the helper:
 
-| Item                          | Used here                 | Notes                                                                                                                              |
-| ----------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| esp32s3              | seeed studio esp32s3 | any microcontroller works; must support native hid and a hardware uart. (and preferably secure boot and flash encryption |
-| fingerprint module       | zw101                     | uses the common `0xEF01` packet protocol, `GenImg`, `Img2Tz`, `Search`, `Match`, and led command `0x3C`.                      |
-| mac                           |        | stores the password and pairing key in Keychain.                                                                                   |
-| misc. wiring, etc |                           |                                                                                                                                    |
+```sh
+.venv/bin/python tinytouch_helper.py
+```
 
+for launchd, edit paths in `launchd/com.tinytouch.helper.plist`, then copy it
+to `~/Library/LaunchAgents/`.
+
+## blue pill
+
+use this if you want the current better path. it exposes piv over ccid, plus hid only for the dummy pin `000000`.
+
+```sh
+cd firmware/tiny_touch_smartcard
+cp main/secrets.example.h main/secrets.h
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.usbmodem101 flash
+```
+
+`main/secrets.h` needs the piv certs and private keys for slots `9a` and `9d`.
+
+after flashing:
+
+```sh
+system_profiler SPSmartCardsDataType
+sc_auth identities
+sudo sc_auth pair -u "$USER" -h <auth-cert-hash>
+```
+
+to test sudo:
+
+```sh
+sudo -k
+sudo -v
+```
+
+when macos asks for the pin, touch the sensor.
+
+## hardware
+
+| part | used here | notes |
+| -- | -- | -- |
+| microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended |
+| fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol |
+| computer | macos | hid mode needs the helper. piv/pam mode needs macos smart card support |
+| case | printed top/bottom stl | `case_top.stl` and `case_bottom.stl` are in the repo |
+| wiring, solder, blah blah
+
+other esp32-s3 boards should work if the usb and uart pins are available. other
+fingerprint sensors may work if they speak the same uart protocol. other microcontroller families can work, but are not currently supported.
 
 ## wiring
 
-standard uart (tx->rx) and int pin (detect finger press) to any pin
+the fingerprint sensor wires via UART to pin 6 and 7 for TX and RX
 
+the interrupt pin can be connected anywhere, in firmware, it is connected to pin 1
 
-## security
+## notes
 
-esp never stores the password. it stores only a 32-byte pairing key
+do not commit:
 
-for each successful fingerprint match:
+- `firmware/tiny_touch_keyboard/secrets.h`
+- `firmware/tiny_touch_smartcard/main/secrets.h`
 
-1. esp creates a random nonce
-2. esp sends an authenticated `EV ...` request to the mac helper
-3. helper rejects bad macs and replayed nonces
-4. helper encrypts the Keychain password with aes-ctr using a session key derived from the pairing key and nonce
-5. esp verifies the reply, decrypts the password in ram, types it, then wipes the password buffer
-
-anyone with the programmed ESP and the paired Mac can request the password when the fingerprint matches (or uart is spoofed). secure separately but not together
-
-## setup
-```
-1. install dependencies
-
-    cd ~/Projects/tinyTouch
-    python3 -m venv .venv
-    . .venv/bin/activate
-    pip install -r requirements.txt
-
-2. create a pairing key
-
-    PAIRING_KEY="$(openssl rand -hex 32)"
-    echo "$PAIRING_KEY"
-
-3. store that key in the macOS Keychain:
-
-    .venv/bin/python tinytouch_helper.py --set-pairing-key "$PAIRING_KEY"
-
-4. create the ESP secret file:
-
-    cp firmware/tiny_touch_keyboard/secrets.example.h firmware/tiny_touch_keyboard/secrets.h
-
-5. edit firmware/tiny_touch_keyboard/secrets.h so the 32 bytes match PAIRING_KEY.
-
-6. store the password in Keychain
-
-    .venv/bin/python tinytouch_helper.py --set-password 'your-password-here'
-
-7. flash the ESP firmware
-
-    open firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino in Arduino IDE.
-
-    use these board settings:
-
-        USB CDC on Boot: Enabled
-        USB Mode: USB-OTG
-
-8. run the helper once
-
-    .venv/bin/python tinytouch_helper.py
-
-    you should see helper listening on .... touching an enrolled finger should produce MATCH, then TYPED.
-
-9. install the macOS background worker
-
-    the included plist uses my local repo path, you should change it to yours:
-
-    /Users/xzm/Projects/tinyTouch
-
-10. install it
-
-    mkdir -p ~/Library/LaunchAgents
-    cp launchd/com.tinytouch.helper.plist ~/Library/LaunchAgents/
-    launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist 2>/dev/null || true
-    launchctl load ~/Library/LaunchAgents/com.tinytouch.helper.plist
-```
-## other
-logs are written to:
-
-```text
-/tmp/tinytouch-helper.log
-/tmp/tinytouch-helper.err
-```
-
-stop the launchd worker
-
-```sh
-launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist
-```
-
-do not commit `firmware/tiny_touch_keyboard/secrets.h`
-
-[cad](https://cad.onshape.com/documents/d0e6bb7977e6171d4e4a5086/w/1ded27ad6c634fd1fdaf26d0/e/aca67210e400490a08d0b29a?renderMode=0&uiState=6a4c1df32e292f12144a65fe). if you make changes, please make them open source as well (link in PR/issue)
+[cad](https://cad.onshape.com/documents/d0e6bb7977e6171d4e4a5086/w/1ded27ad6c634fd1fdaf26d0/e/aca67210e400490a08d0b29a?renderMode=0&uiState=6a4c1df32e292f12144a65fe). if you make changes, please make them open source as well.
