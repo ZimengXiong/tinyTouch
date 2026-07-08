@@ -9,9 +9,11 @@ https://github.com/user-attachments/assets/efede271-6d84-441d-919c-f5532f687c4e
 
 ## red pill or blue pill?
 
-there are two ways to use tinyTouch on your computer: `HID` and `PIV/PAM` mode. read about how they work in the following subsection.
+there are two ways to use tinytouch on your computer: `HID` and `PIV/PAM` mode. read about how they work in the sections below.
 
-each has it's advantages, and we want to scare you a tiny bit so you actually do your diligence and understand the security implications of such a device, and if you are willing to take on the risks:
+each has its advantages, and we want to scare you a tiny bit so you actually do
+your diligence and understand the security implications of such a device before
+you decide whether you are willing to take on the risks:
 
 | features | HID | PIV/PAM* |
 | -- | -- | -- |
@@ -20,7 +22,7 @@ each has it's advantages, and we want to scare you a tiny bit so you actually do
 | apple TCC (privacy & security) | ✅ | ✅|
 | general settings | ✅ | ❌ |
 | keychain/apple passwords | ✅ | ❌ |
-| everywhere your password is accepted (remote SSH sessions, etc) | ✅ | depends, but prob not |
+| everywhere your password is accepted (remote SSH sessions, etc) | ✅ | depends, but probably not |
 
 | security | HID | PIV/PAM* |
 | -- | -- | -- |
@@ -34,52 +36,78 @@ each has it's advantages, and we want to scare you a tiny bit so you actually do
 | wrong focused field | yes | no |
 | malicious password field | yes | no |
 | usb traffic sniffing | low impact (channel is encrypted/mac'ed) | can observe apdus, not piv private key |
-| usb keylogger | can reveal password | cannot reveal key|
+| usb keylogger | can reveal password | cannot reveal key |
 | usb command injection | reject bad macs/replays | device may receive apdus, but auth still needs fingerprint-gated key use |
 | flash dumping (secure boot/flash encryption off) | shared-key exposable | piv key exposable |
 | flash dumping (secure boot/flash encryption on) | shared-key non-exportable | piv key non-exportable |
 | flash dumping (with secure element) | shared key non-exportable | piv key non-exportable |
 
-*PIV/PAM always uses HID to deliver the mandatory PIV PIN, which we do not use. authorization is still gated by your fingerprint. the PIV PIN is not your password, and is not considered to be sensitive in our scenario.
+*PIV/PAM always uses HID to deliver the mandatory PIV PIN, which we do not use.
+authorization is still gated by your fingerprint. the PIV PIN is not your
+password, and is not considered sensitive in our scenario.
 
-^this is the major security issue with this device. since all authentication happens inside the fingrprint sensor, and the sensor communicates with the ESP via unauthenticated UART, it can be easily spoofed. basic countermeasures invovle filling the insides of the device with black epoxy. more a proper fix would be to upgrade to an more secure fingerprint sensor element.
+^this is the major security issue with this device. since all authentication
+happens inside the fingerprint sensor, and the sensor communicates with the esp
+over unauthenticated uart, it can be easily spoofed. basic countermeasures
+involve filling the insides of the device with black epoxy. a more proper fix
+would be upgrading to a more secure fingerprint sensor.
 
-### so... which pill?
-this depends on 
-1. your tolerance to security
-2. your enviorment
+### so... which pill, if any?
+this depends on:
+
+1. your security tolerance
+2. your environment
 3. current/future criminal background
-4. family/roommates relations
+4. family/roommate relations
 5. technical skill set of family members/roommates
 
-risks are low to begin with since every method of attack requires *physical access* to BOTH the device and your mac.
+risks are low to begin with since every attack here requires *physical access* to
+both the device and your mac.
 
-so ask yourself, will your device ever leave your desk? can your roomates perform a flash dump in half an hour? how about your family members? do they have anything against you that would create a motive? are you wanted by any government agency? are you protecting sensitive or classified information? are you using a company device? will you be personally implicated if you leak company secrets? 
+so ask yourself: will your device ever leave your desk? can your roommates
+perform a flash dump in half an hour? how about your family members? do they have
+anything against you that would create a motive? are you wanted by any government
+agency? are you protecting sensitive or classified information? are you using a
+company device? would you be personally implicated if you leaked company secrets?
 
 if the answer is yes to any of the above questions, i think the magic keyboard presents an excellent value at $149 and is worth the added security.
 
-if the answer is no, i think the chances are you will be just fine having a slightly-insecure method of authentication. personally, i am happy with the red pill and love the convience of having it work everywhere, i don't mind.
+if the answer is no, chances are you will be fine with a slightly insecure method
+of authentication. personally, i am happy with the red pill and love the
+convenience of having it work everywhere.
 
 ### hid mode
 
 in hid mode, the esp acts like a usb keyboard.
 
-the mac helper keeps your real password encrypted and stored on your mac, this way any attacker cannot extract your password from just the ESP alone. the esp keeps a shared pairing key. after a fingerprint match, the esp sends a signed request to the helper, the helper checks it, encrypts the password for that one request, and sends it back. the esp decrypts it in ram, types it, then wipes it.
+the mac helper keeps your real password encrypted and stored on your mac. this
+way, an attacker cannot extract your password from the esp alone. the esp keeps a
+shared pairing key. after a fingerprint match, the esp sends a signed request to
+the helper, the helper checks it, encrypts the password for that one request, and
+sends it back. the esp decrypts it in ram, types it, then wipes it.
 
 this is why it works almost everywhere. it is also why it is scary: the final
 step is still your real password being typed into whatever has focus.
 
-to make it less bad, the esp never stores the password. requests use a nonce and mac so old requests cannot just be replayed, and the helper only sends back an encrypted one-time response. the password only exists on the esp briefly in ram.
+to make it less bad, the esp never stores the password. requests use a nonce and
+mac so old requests cannot just be replayed, and the helper only sends back an
+encrypted one-time response. the password only exists on the esp briefly in ram.
 
 ### piv mode
 
 in piv mode, the esp acts like a usb smart card.
 
-macos sends normal piv commands over ccid. when macos needs authentication, it asks the card to use the piv private key. the esp only allows that key operation right after a fingerprint match.
+macos sends normal piv commands over ccid. when macos needs authentication, it
+asks the card to use the piv private key. the esp only allows that key operation
+right after a fingerprint match.
 
-macos also expects a piv pin, so the firmware has a tiny hid side path that types the dummy pin `000000`. that pin is not your mac password but just there to get through the macos piv prompt while the real authorization is the fingerprint gate around the piv key.
+macos also expects a piv pin, so the firmware has a tiny hid side path that types
+the dummy pin `000000`. that pin is not your mac password. it is just there to
+get through the macos piv prompt while the real authorization is the fingerprint
+gate around the piv key.
 
-this avoids typing your real password, but only works where macos accepts smart cards, like login and `sudo` with pam.
+this avoids typing your real password, but only works where macos accepts smart
+cards, like login and `sudo` with pam.
 
 ## red pill
 use this if you just want the thing to type your password.
@@ -87,11 +115,11 @@ use this if you just want the thing to type your password.
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r software/macos-helper/requirements.txt
 
 pairing_key="$(openssl rand -hex 32)"
-.venv/bin/python tinytouch_helper.py --set-pairing-key "$pairing_key"
-.venv/bin/python tinytouch_helper.py --set-password 'your-password-here'
+.venv/bin/python software/macos-helper/tinytouch_helper.py --set-pairing-key "$pairing_key"
+.venv/bin/python software/macos-helper/tinytouch_helper.py --set-password 'your-password-here'
 
 cp firmware/tiny_touch_keyboard/secrets.example.h firmware/tiny_touch_keyboard/secrets.h
 ```
@@ -110,15 +138,17 @@ usb mode: usb-otg
 run the helper:
 
 ```sh
-.venv/bin/python tinytouch_helper.py
+.venv/bin/python software/macos-helper/tinytouch_helper.py
 ```
 
-for launchd, edit paths in `launchd/com.tinytouch.helper.plist`, then copy it
-to `~/Library/LaunchAgents/`.
+for launchd, edit paths in
+`software/macos-helper/launchd/com.tinytouch.helper.plist`, then copy it to
+`~/Library/LaunchAgents/`.
 
 ## blue pill
 
-use this if you want the current better path. it exposes piv over ccid, plus hid only for the dummy pin `000000`.
+use this if you want the current better path. it exposes piv over ccid, plus hid
+only for the dummy pin `000000`.
 
 ```sh
 cd firmware/tiny_touch_smartcard
@@ -154,17 +184,19 @@ when macos asks for the pin, touch the sensor.
 | microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended |
 | fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol |
 | computer | macos | hid mode needs the helper. piv/pam mode needs macos smart card support |
-| case | printed top/bottom stl | `case_top.stl` and `case_bottom.stl` are in the repo |
-| wiring, solder, blah blah
+| case | printed top/bottom stl | `hardware/case/case_top.stl` and `hardware/case/case_bottom.stl` |
+| wiring/solder/etc | misc | whatever your build needs |
 
 other esp32-s3 boards should work if the usb and uart pins are available. other
-fingerprint sensors may work if they speak the same uart protocol. other microcontroller families can work, but are not currently supported.
+fingerprint sensors may work if they speak the same uart protocol. other
+microcontroller families can work, but are not currently supported.
 
 ## wiring
 
-the fingerprint sensor wires via UART to pin 6 and 7 for TX and RX
+the fingerprint sensor connects over uart to pins 6 and 7 for tx and rx.
 
-the interrupt pin can be connected anywhere, in firmware, it is connected to pin 1
+the interrupt pin can be connected anywhere. in firmware, it is connected to pin
+1.
 
 ## notes
 

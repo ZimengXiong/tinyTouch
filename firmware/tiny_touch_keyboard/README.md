@@ -46,7 +46,7 @@ Install dependencies:
 cd ~/Projects/tinyTouch
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r software/macos-helper/requirements.txt
 ```
 
 Create a pairing key:
@@ -59,7 +59,7 @@ echo "$PAIRING_KEY"
 Store the pairing key in the macOS Keychain:
 
 ```sh
-.venv/bin/python tinytouch_helper.py --set-pairing-key "$PAIRING_KEY"
+.venv/bin/python software/macos-helper/tinytouch_helper.py --set-pairing-key "$PAIRING_KEY"
 ```
 
 Create the ESP secret file:
@@ -74,7 +74,7 @@ Edit `firmware/tiny_touch_keyboard/secrets.h` so the 32 bytes match
 Store the password in the macOS Keychain:
 
 ```sh
-.venv/bin/python tinytouch_helper.py --set-password 'your-password-here'
+.venv/bin/python software/macos-helper/tinytouch_helper.py --set-password 'your-password-here'
 ```
 
 Flash with Arduino IDE.
@@ -89,7 +89,7 @@ USB Mode: USB-OTG
 Run the helper once:
 
 ```sh
-.venv/bin/python tinytouch_helper.py
+.venv/bin/python software/macos-helper/tinytouch_helper.py
 ```
 
 Touching an enrolled finger should produce a match and type the password.
@@ -99,14 +99,14 @@ Touching an enrolled finger should produce a match and type the password.
 The included launchd plist may need local path edits:
 
 ```text
-launchd/com.tinytouch.helper.plist
+software/macos-helper/launchd/com.tinytouch.helper.plist
 ```
 
 Install:
 
 ```sh
 mkdir -p ~/Library/LaunchAgents
-cp launchd/com.tinytouch.helper.plist ~/Library/LaunchAgents/
+cp software/macos-helper/launchd/com.tinytouch.helper.plist ~/Library/LaunchAgents/
 launchctl unload ~/Library/LaunchAgents/com.tinytouch.helper.plist 2>/dev/null || true
 launchctl load ~/Library/LaunchAgents/com.tinytouch.helper.plist
 ```
