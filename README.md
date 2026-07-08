@@ -7,6 +7,11 @@ to spend $149.
 
 https://github.com/user-attachments/assets/efede271-6d84-441d-919c-f5532f687c4e
 
+PIV authentication in action:
+
+https://github.com/user-attachments/assets/c197dd9c-81e5-4150-9793-d2e445651dfd
+
+
 ## table of contents
 
 - [red pill or blue pill?](#red-pill-or-blue-pill)
