@@ -7,6 +7,16 @@ to spend $149.
 
 https://github.com/user-attachments/assets/efede271-6d84-441d-919c-f5532f687c4e
 
+## table of contents
+
+- [red pill or blue pill?](#red-pill-or-blue-pill)
+- [install](#install)
+  - [red pill](#red-pill)
+  - [blue pill](#blue-pill)
+- [hardware](#hardware)
+- [wiring](#wiring)
+- [notes](#notes)
+
 ## red pill or blue pill?
 
 there are two ways to use tinytouch on your computer: `HID` and `PIV/PAM` mode. read about how they work in the sections below.
@@ -109,7 +119,9 @@ gate around the piv key.
 this avoids typing your real password, but only works where macos accepts smart
 cards, like login and `sudo` with pam.
 
-## red pill
+## install
+
+### red pill
 use this if you just want the thing to type your password.
 
 ```sh
@@ -145,20 +157,36 @@ for launchd, edit paths in
 `software/macos-helper/launchd/com.tinytouch.helper.plist`, then copy it to
 `~/Library/LaunchAgents/`.
 
-## blue pill
+### blue pill
 
 use this if you want the current better path. it exposes piv over ccid, plus hid
 only for the dummy pin `000000`.
 
+`main/secrets.h` needs the piv certs and private keys for slots `9a` and `9d`.
+
+generate test keys:
+
 ```sh
 cd firmware/tiny_touch_smartcard
+openssl req -newkey rsa:2048 -nodes -keyout piv_key_9a.pem -x509 -days 3650 -out piv_cert_9a.pem -subj "/CN=tinytouch piv auth/"
+openssl req -newkey rsa:2048 -nodes -keyout piv_key_9d.pem -x509 -days 3650 -out piv_cert_9d.pem -subj "/CN=tinytouch piv key management/"
 cp main/secrets.example.h main/secrets.h
+```
+
+then paste:
+
+- `piv_cert_9a.pem` into `PIV_CERT_9A_PEM`
+- `piv_key_9a.pem` into `PIV_PRIVATE_KEY_9A_PEM`
+- `piv_cert_9d.pem` into `PIV_CERT_9D_PEM`
+- `piv_key_9d.pem` into `PIV_PRIVATE_KEY_9D_PEM`
+
+build and flash:
+
+```sh
 idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/cu.usbmodem101 flash
 ```
-
-`main/secrets.h` needs the piv certs and private keys for slots `9a` and `9d`.
 
 after flashing:
 

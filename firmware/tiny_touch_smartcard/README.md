@@ -134,6 +134,20 @@ cp main/secrets.example.h main/secrets.h
 `main/secrets.h` must contain the PIV certificates and private keys for `9A`
 and `9D`.
 
+Generate test keys:
+
+```sh
+openssl req -newkey rsa:2048 -nodes -keyout piv_key_9a.pem -x509 -days 3650 -out piv_cert_9a.pem -subj "/CN=tinytouch piv auth/"
+openssl req -newkey rsa:2048 -nodes -keyout piv_key_9d.pem -x509 -days 3650 -out piv_cert_9d.pem -subj "/CN=tinytouch piv key management/"
+```
+
+Then paste:
+
+- `piv_cert_9a.pem` into `PIV_CERT_9A_PEM`
+- `piv_key_9a.pem` into `PIV_PRIVATE_KEY_9A_PEM`
+- `piv_cert_9d.pem` into `PIV_CERT_9D_PEM`
+- `piv_key_9d.pem` into `PIV_PRIVATE_KEY_9D_PEM`
+
 Do not commit real secrets.
 
 ## Flashing
