@@ -27,8 +27,6 @@ LED behavior:
 
 ## What Works
 
-Confirmed macOS behavior during development:
-
 - macOS enumerates the device as `tinyTouch tinyTouch PIV`.
 - PIV authentication identity appears in `sc_auth identities`.
 - macOS can pair the PIV auth certificate.
@@ -57,8 +55,6 @@ authorize the PIV operation and type `000000` + Enter.
 
 ## What Does Not Work
 
-This is not a full Touch ID replacement.
-
 It does not unlock:
 
 - The macOS Passwords app.
@@ -67,8 +63,7 @@ It does not unlock:
 - App prompts that use LocalAuthentication, Keychain UI, or Authorization
   Services without smart-card support.
 
-PAM helps with `sudo` and other PAM-aware command-line paths. It does not make
-every GUI password prompt use the ESP.
+PAM helps with `sudo` and other PAM-aware command-line paths. 
 
 ## Security Model
 
@@ -91,13 +86,6 @@ Not protected against yet:
 - A compromised Mac using the token while the user is present.
 - A malicious focused field receiving `000000` if the user touches the sensor
   while the HID interface is active.
-
-Important design decision:
-
-Automatic fallback password typing was tested and removed. Firmware cannot
-reliably know when macOS currently has a smartcard PIN prompt open. APDU timing
-is not enough. Any real password fallback should require an explicit gesture or
-host-side confirmation.
 
 ## PIV Slots
 
@@ -249,14 +237,4 @@ Be careful editing PAM files. A bad PAM configuration can break `sudo`.
 - The fingerprint UART is mutex-protected so background HID polling and PIV auth
   do not corrupt sensor packets.
 - The HID PIN typing sends six separate `0` press/release events with short
-  delays; sending all six zeros in one HID report only produced one `0` on
-  macOS.
-
-## Next Hardening Steps
-
-- Move `9A` and `9D` private-key operations into a secure element.
-- Enable ESP secure boot and flash encryption.
-- Replace the dummy PIN compatibility shim with a cleaner user-presence policy
-  if macOS integration allows it.
-- Add a physical button or explicit host command before any future password
-  fallback.
+  delays
