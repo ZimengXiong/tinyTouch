@@ -12,6 +12,18 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 
 
+class SerialFramingTests(unittest.TestCase):
+    def test_event_glued_behind_a_truncated_one_is_recovered(self):
+        nonce = "c51a6405ed821b8fe1b574ee20c6d05f"
+        intact = f"EV {nonce} 5 1 1 deadbeef"
+        glued = f"EV d5327a6c756644e27{intact}"
+        self.assertEqual(helper.resynchronize_event(glued), intact)
+
+    def test_resynchronize_leaves_clean_lines_alone(self):
+        for line in ("EV aabb 1 1 1 ccdd", "PONG", "OK STATUS firmware=unified", ""):
+            self.assertEqual(helper.resynchronize_event(line), line)
+
+
 class HelperProtocolTests(unittest.TestCase):
     @staticmethod
     def decrypt_response(key, nonce, response):
