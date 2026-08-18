@@ -195,6 +195,24 @@ then paste:
 - `piv_cert_9d.pem` into `PIV_CERT_9D_PEM`
 - `piv_key_9d.pem` into `PIV_PRIVATE_KEY_9D_PEM`
 
+this firmware needs esp-idf **5.3.x**. it does not build on 6.0.
+
+idf 6.0 ships mbedtls 4.x, which moved the legacy crypto modules into
+tf-psa-crypto and dropped the public headers. `main/piv.c` needs
+`mbedtls/rsa.h` and `main/touch_pin_hid.c` needs `mbedtls/aes.h`, so the build
+fails partway through. the espressif installer (eim) currently defaults to
+6.0.x, so this catches most people.
+
+```sh
+git clone -b v5.3.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.3.3
+cd ~/esp/esp-idf-v5.3.3 && ./install.sh esp32s3
+source ~/esp/esp-idf-v5.3.3/export.sh
+```
+
+if you previously tried building with 6.0, delete `build/`, `sdkconfig`, and
+`dependencies.lock` in `firmware/tiny_touch_unified` first. a stale
+`dependencies.lock` pins the old idf version and keeps the build broken.
+
 build and flash:
 
 ```sh
