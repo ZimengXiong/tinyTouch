@@ -7,6 +7,7 @@
 #include "tinyusb_default_config.h"
 #include "tusb.h"
 #include "device/usbd_pvt.h"
+#include "touch_pin_hid.h"
 #include "usb_descriptors.h"
 
 static const char *TAG = "usb_ccid";
@@ -20,6 +21,11 @@ static uint8_t tx_buf[CCID_BUF_SIZE];
 static uint8_t rhport_active;
 static ccid_apdu_handler_t apdu_handler;
 static bool ep_ready;
+
+static void usb_event_cb(tinyusb_event_t *event, void *arg) {
+  (void)arg;
+  if (event->id == TINYUSB_EVENT_ATTACHED) touch_pin_hid_usb_attached();
+}
 
 static uint32_t le32(const uint8_t *p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -163,6 +169,7 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.string = tiny_touch_string_descriptors;
   tusb_cfg.descriptor.string_count = tiny_touch_string_descriptor_count;
   tusb_cfg.descriptor.full_speed_config = tiny_touch_fs_configuration_descriptor;
+  tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 }
 

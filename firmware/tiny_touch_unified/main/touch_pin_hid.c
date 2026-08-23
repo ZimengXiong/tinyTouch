@@ -24,6 +24,11 @@ static QueueHandle_t password_responses;
 static uint32_t event_counter;
 static volatile bool hid_suspended;
 static volatile bool hid_needs_release;
+static volatile bool hid_reconnect_pending;
+static volatile bool hid_reconnect_attempted;
+static volatile TickType_t hid_suspended_at;
+
+#define USB_LONG_SUSPEND_MS 5000
 
 static void secure_wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -316,6 +321,21 @@ static void touch_hid_task(void *arg) {
   bool wait_for_lift = false;
 
   while (true) {
+    if (hid_suspended && !hid_reconnect_attempted &&
+        (TickType_t)(xTaskGetTickCount() - hid_suspended_at) >=
+            pdMS_TO_TICKS(USB_LONG_SUSPEND_MS)) {
+      hid_reconnect_pending = true;
+    }
+    if (hid_reconnect_pending) {
+      hid_reconnect_pending = false;
+      hid_reconnect_attempted = true;
+      ESP_LOGW(TAG, "long USB suspend; forcing device reconnect");
+      tud_disconnect();
+      vTaskDelay(pdMS_TO_TICKS(250));
+      tud_connect();
+      hid_needs_release = true;
+      continue;
+    }
     if (hid_needs_release && tud_hid_ready()) {
       tud_hid_keyboard_report(0, 0, NULL);
       hid_needs_release = false;
@@ -353,16 +373,32 @@ void touch_pin_hid_start(void) {
   xTaskCreate(touch_hid_task, "touch_hid", 6144, NULL, 4, NULL);
 }
 
+void touch_pin_hid_usb_attached(void) {
+  hid_suspended = false;
+  hid_reconnect_pending = false;
+  hid_reconnect_attempted = false;
+  hid_needs_release = true;
+}
+
 // The host can suspend the USB bus while the HID task is between a key-down
 // and key-up report.  Mark the report state dirty so the task emits a release
 // after resume instead of leaving the host with a stuck key.
 void tud_suspend_cb(bool remote_wakeup_en) {
   (void)remote_wakeup_en;
+  if (!hid_suspended) {
+    hid_suspended_at = xTaskGetTickCount();
+    hid_reconnect_attempted = false;
+  }
   hid_suspended = true;
   hid_needs_release = true;
 }
 
 void tud_resume_cb(void) {
+  if (!hid_reconnect_attempted &&
+      (TickType_t)(xTaskGetTickCount() - hid_suspended_at) >=
+          pdMS_TO_TICKS(USB_LONG_SUSPEND_MS)) {
+    hid_reconnect_pending = true;
+  }
   hid_suspended = false;
   hid_needs_release = true;
 }
