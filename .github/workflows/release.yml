@@ -131,6 +131,8 @@ jobs:
             dist/release/factory/ota_data_initial.bin \
             dist/release/tiny_touch_unified.bin \
             dist/release/ota_slot1.bin \
+            dist/release/recovery/recovery_bootloader.bin \
+            dist/release/recovery/tiny_touch_recovery.bin \
             dist/release/recovery/tiny_touch_recovery_full.bin \
             dist/release/tinytouch-macos-arm64.tar.gz \
             dist/release/tinytouch-macos-x86_64.tar.gz \

@@ -58,6 +58,24 @@ def write_ota_slot1(path: Path) -> None:
     path.write_bytes(entry + (b"\xFF" * (8192 - len(entry))))
 
 
+def require_consistent_asset_names(value: object, seen: dict[str, str] | None = None) -> None:
+    """Reject manifests where one public filename refers to different bytes."""
+    if seen is None:
+        seen = {}
+    if isinstance(value, dict):
+        if isinstance(value.get("file"), str) and isinstance(value.get("sha256"), str):
+            filename = value["file"]
+            checksum = value["sha256"]
+            if filename in seen and seen[filename] != checksum:
+                raise SystemExit(f"public asset name has conflicting contents: {filename}")
+            seen[filename] = checksum
+        for child in value.values():
+            require_consistent_asset_names(child, seen)
+    elif isinstance(value, list):
+        for child in value:
+            require_consistent_asset_names(child, seen)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware-build", type=Path, required=True)
@@ -87,7 +105,7 @@ def main() -> None:
         "recovery": (
             args.recovery_build,
             [
-                ("Bootloader", "bootloader/bootloader.bin", "bootloader.bin", 0x0),
+                ("Bootloader", "bootloader/bootloader.bin", "recovery_bootloader.bin", 0x0),
                 ("Partition table", "partition_table/partition-table.bin", "partition-table.bin", 0x8000),
                 ("Recovery firmware", "tiny_touch_unified.bin", "tiny_touch_recovery.bin", 0x10000),
                 ("OTA state", "ota_data_initial.bin", "ota_data_initial.bin", 0x210000),
@@ -162,6 +180,7 @@ def main() -> None:
                 "format": "tar.gz",
             }
         }
+    require_consistent_asset_names(release)
     (output / "release-manifest.json").write_text(
         json.dumps(release, indent=2) + "\n", encoding="utf-8"
     )
