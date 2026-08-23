@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
-          test "$(jq -r .manifest channels/batch-0.json)" = \
+          test "$(python -c 'import json; print(json.load(open("channels/batch-0.json"))["manifest"])')" = \
             "https://github.com/ZimengXiong/TinyTouch/releases/download/$GITHUB_REF_NAME/release-manifest.json"
       - run: |
           source /opt/esp/idf/export.sh
