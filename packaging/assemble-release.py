@@ -5,6 +5,7 @@ import argparse
 import binascii
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -64,6 +65,7 @@ def main() -> None:
     parser.add_argument("--cli", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "release")
     parser.add_argument("--web-root", type=Path)
+    parser.add_argument("--build-id")
     args = parser.parse_args()
 
     output = args.output.resolve()
@@ -122,10 +124,14 @@ def main() -> None:
     shutil.copy2(built_app, ota_image)
     migration_state = output / "ota_slot1.bin"
     write_ota_slot1(migration_state)
-    build_id = subprocess.run(
-        ["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT,
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
+    build_id = args.build_id or os.environ.get("GITHUB_SHA", "")[:12]
+    if not build_id:
+        build_id = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    if len(build_id) != 12 or any(character not in "0123456789abcdef" for character in build_id):
+        raise SystemExit("build ID must be the first 12 lowercase hex characters of the commit SHA")
     release = {
         "version": VERSION,
         "build": build_id,
