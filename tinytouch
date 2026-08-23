@@ -29,6 +29,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import certifi
+import ssl
+
 
 FROZEN = bool(getattr(sys, "frozen", False))
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
@@ -55,6 +58,7 @@ SUPPORT_EMAIL = "tinytouch@alpacaengineer.ing"
 RELEASE_CHANNEL_URL = (
     "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
 )
+TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 class ToolError(RuntimeError):
@@ -99,9 +103,10 @@ def download_bytes(url: str, *, timeout: float = 10.0) -> bytes:
     verbose(f"download: {url}")
     request = urllib.request.Request(url, headers={"User-Agent": f"tinytouch/{CLI_VERSION}"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=TLS_CONTEXT) as response:
             return response.read()
     except (OSError, urllib.error.URLError) as exc:
+        verbose(f"download failed: {exc!r}")
         raise ToolError("Could not reach the tinyTouch update service. Check your connection and try again.") from exc
 
 
@@ -1919,11 +1924,18 @@ def main() -> int:
         helper_main()
         return 0
     if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_package_test":
+        import certifi  # type: ignore  # noqa: F401
         import serial  # type: ignore  # noqa: F401
         import esptool  # type: ignore  # noqa: F401
         from esptool.targets.esp32s3 import ESP32S3ROM  # type: ignore  # noqa: F401
 
         say(f"package ok ({platform.machine()})")
+        return 0
+    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_network_test":
+        channel = json.loads(download_bytes(RELEASE_CHANNEL_URL).decode("utf-8"))
+        if not isinstance(channel.get("manifest"), str):
+            raise SupportError("The tinyTouch release channel is incomplete.")
+        say("network ok")
         return 0
     if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_auto_update":
         auto_update_cli(force=True)
