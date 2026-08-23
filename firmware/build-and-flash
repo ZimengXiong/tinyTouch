@@ -46,7 +46,7 @@ fi
 
 if [[ -z "$idf_export" ]]; then
   print -u2 "ESP-IDF was not found."
-  print -u2 "Install ESP-IDF 5.3 or newer, then set IDF_PATH or place it at ~/esp/esp-idf."
+  print -u2 "Install ESP-IDF 5.3.x, then set IDF_PATH or place it at ~/esp/esp-idf."
   exit 1
 fi
 
@@ -54,7 +54,8 @@ print "Step 1 of 3: Load ESP-IDF"
 set +u
 source "$idf_export" >/dev/null
 set -u
-print "  ✓ ESP-IDF tools are ready."
+idf_version="$("${0:A:h}/check-idf-version")"
+print "  ✓ $idf_version"
 
 print
 print "Step 2 of 3: Build unified factory firmware"

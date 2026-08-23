@@ -75,6 +75,12 @@ static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
 static TickType_t pairing_mode_until;
+
+static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
+  if (deadline == 0) return false;
+  int32_t remaining = (int32_t)(deadline - xTaskGetTickCount());
+  return remaining > 0 && remaining <= (int32_t)maximum_window;
+}
 static const TickType_t PIN_VERIFIED_WINDOW_TICKS = pdMS_TO_TICKS(60000);
 static const TickType_t USER_PRESENCE_WINDOW_TICKS = pdMS_TO_TICKS(10000);
 static const TickType_t PAIRING_MODE_WINDOW_TICKS = pdMS_TO_TICKS(120000);
@@ -376,9 +382,7 @@ void piv_set_pairing_mode(bool enabled) {
 }
 
 bool piv_pairing_mode_active(void) {
-  TickType_t now = xTaskGetTickCount();
-  return pairing_mode_until != 0 &&
-         (TickType_t)(pairing_mode_until - now) <= PAIRING_MODE_WINDOW_TICKS;
+  return deadline_active(pairing_mode_until, PAIRING_MODE_WINDOW_TICKS);
 }
 
 static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
@@ -387,8 +391,7 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   if (apdu[2] != 0x07 || !(apdu[3] == 0x9a || apdu[3] == 0x9d)) {
     return append_sw(response, response_len, response_cap, 0x6a86);
   }
-  if (pin_verified_until == 0 ||
-      (TickType_t)(pin_verified_until - xTaskGetTickCount()) > PIN_VERIFIED_WINDOW_TICKS) {
+  if (!deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)) {
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6982);
   }
@@ -418,21 +421,18 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     return append_sw(response, response_len, response_cap, 0x6f00);
   }
 
-  if (apdu[3] == 0x9a) {
-    TickType_t now = xTaskGetTickCount();
-    bool user_presence_valid = user_presence_until != 0 &&
-                               (TickType_t)(user_presence_until - now) <=
-                                 USER_PRESENCE_WINDOW_TICKS;
-    bool pairing_mode_valid = pairing_mode_until != 0 &&
-                              (TickType_t)(pairing_mode_until - now) <=
-                                PAIRING_MODE_WINDOW_TICKS;
-    if (!user_presence_valid && !pairing_mode_valid) {
-      pin_verified_until = 0;
-      user_presence_until = 0;
-      return append_sw(response, response_len, response_cap, 0x6982);
-    }
+  bool user_presence_valid = deadline_active(user_presence_until,
+                                             USER_PRESENCE_WINDOW_TICKS);
+  bool pairing_mode_valid = deadline_active(pairing_mode_until,
+                                            PAIRING_MODE_WINDOW_TICKS);
+  if (!user_presence_valid && !pairing_mode_valid) {
+    pin_verified_until = 0;
     user_presence_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6982);
   }
+  // One touch authorizes one private-key operation, regardless of slot.
+  // Pairing mode remains the explicit, time-limited provisioning exception.
+  if (!pairing_mode_valid) user_presence_until = 0;
 
   uint8_t sig[256];
   size_t sig_len = sizeof(sig);
@@ -536,6 +536,14 @@ void piv_reload_keys(void) {
   pending_response_len = 0;
   pending_response_off = 0;
   piv_init();
+}
+
+void piv_reset_transport_state(void) {
+  pending_response_len = 0;
+  pending_response_off = 0;
+  chained_apdu_data_len = 0;
+  pin_verified_until = 0;
+  user_presence_until = 0;
 }
 
 bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,

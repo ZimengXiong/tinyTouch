@@ -1,0 +1,26 @@
+#!/bin/zsh
+set -euo pipefail
+
+if ! command -v idf.py >/dev/null 2>&1; then
+  print -u2 "ESP-IDF was not found. Install ESP-IDF 5.3.x and source its export.sh."
+  exit 1
+fi
+
+version_output="$(idf.py --version 2>&1)" || {
+  print -u2 "Could not read the ESP-IDF version. Select an ESP-IDF 5.3.x installation."
+  exit 1
+}
+
+if [[ ! "$version_output" =~ 'ESP-IDF[[:space:]]+v?([0-9]+)\.([0-9]+)(\.[0-9]+)?' ]]; then
+  print -u2 "Could not parse the ESP-IDF version: $version_output"
+  print -u2 "tinyTouch requires ESP-IDF 5.3.x."
+  exit 1
+fi
+
+if [[ "${match[1]}" != "5" || "${match[2]}" != "3" ]]; then
+  print -u2 "Unsupported ESP-IDF version: $version_output"
+  print -u2 "tinyTouch requires ESP-IDF 5.3.x. Select its export.sh and build again."
+  exit 1
+fi
+
+print "$version_output"

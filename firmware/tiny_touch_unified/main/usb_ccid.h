@@ -9,4 +9,3 @@ typedef bool (*ccid_apdu_handler_t)(const uint8_t *apdu, size_t apdu_len,
                                     size_t response_cap);
 
 void usb_ccid_start(ccid_apdu_handler_t handler);
-void usb_ccid_task(void);

@@ -25,8 +25,9 @@ static uint32_t event_counter;
 static volatile bool hid_suspended;
 static volatile bool hid_needs_release;
 static volatile bool hid_reconnect_pending;
-static volatile bool hid_reconnect_attempted;
 static volatile TickType_t hid_suspended_at;
+static volatile bool hid_remote_wakeup_enabled;
+static volatile bool hid_remote_wakeup_attempted;
 
 #define USB_LONG_SUSPEND_MS 5000
 
@@ -51,27 +52,32 @@ static bool send_key(uint8_t modifier, uint8_t key) {
   uint8_t report[6] = {key, 0, 0, 0, 0, 0};
   if (!wait_hid_ready()) return false;
   if (!tud_hid_keyboard_report(0, modifier, report)) return false;
-  vTaskDelay(pdMS_TO_TICKS(7));
+  vTaskDelay(pdMS_TO_TICKS(device_config_typing_delay_ms()));
   if (!wait_hid_ready()) return false;
   if (!tud_hid_keyboard_report(0, 0, NULL)) return false;
-  vTaskDelay(pdMS_TO_TICKS(7));
+  vTaskDelay(pdMS_TO_TICKS(device_config_typing_delay_ms()));
   return true;
 }
 
 static bool type_dummy_pin(void) {
   for (int i = 0; i < 6; i++) {
-    if (!send_key(0, HID_KEY_0)) return false;
+    // Numeric-keypad usages are independent of the active keyboard layout.
+    if (!send_key(0, HID_KEY_KEYPAD_1)) return false;
   }
   return send_key(0, HID_KEY_ENTER);
 }
 
 static bool type_ascii(const uint8_t *data, size_t length) {
+  // Validate the complete payload before emitting any key. A malformed helper
+  // response must never leave a password prefix in the focused field.
   for (size_t i = 0; i < length; i++) {
     if (data[i] >= 128 || ascii_to_keycode[data[i]][1] == 0) return false;
+  }
+  for (size_t i = 0; i < length; i++) {
     uint8_t modifier = ascii_to_keycode[data[i]][0] ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
     if (!send_key(modifier, ascii_to_keycode[data[i]][1])) return false;
   }
-  return send_key(0, HID_KEY_ENTER);
+  return device_config_submit_enter() ? send_key(0, HID_KEY_ENTER) : true;
 }
 
 static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
@@ -239,7 +245,7 @@ done:
   return ok;
 }
 
-static bool request_and_type_password(void) {
+static bool request_and_type_password(fingerprint_match_t match) {
   uint8_t pairing_key[32];
   uint8_t nonce_bytes[16];
   uint8_t event_mac[32];
@@ -259,25 +265,25 @@ static bool request_and_type_password(void) {
   event_counter++;
   xQueueReset(password_responses);
   if (host_count == 1) {
-    snprintf(material, sizeof(material), "EV|%s|%lu|1|1", nonce,
-             (unsigned long)event_counter);
+    snprintf(material, sizeof(material), "EV|%s|%lu|%u|%u", nonce,
+             (unsigned long)event_counter, match.slot, match.score);
     if (!hmac_sha256(pairing_key, material, event_mac)) goto done;
     bytes_to_hex(event_mac, sizeof(event_mac), mac_hex);
-    snprintf(event, sizeof(event), "EV %s %lu 1 1 %s", nonce,
-             (unsigned long)event_counter, mac_hex);
+    snprintf(event, sizeof(event), "EV %s %lu %u %u %s", nonce,
+             (unsigned long)event_counter, match.slot, match.score, mac_hex);
     config_console_send_line(event);
     if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(6000)) != pdTRUE ||
         !decrypt_password(pairing_key, nonce, response, password, &password_length)) goto done;
   } else {
-    int used = snprintf(event, sizeof(event), "EV2 %s %lu 1 1", nonce,
-                        (unsigned long)event_counter);
+    int used = snprintf(event, sizeof(event), "EV2 %s %lu %u %u", nonce,
+                        (unsigned long)event_counter, match.slot, match.score);
     for (size_t i = 0; i < host_count && used > 0 && used < sizeof(event); i++) {
       device_hid_host_t host;
       char id_hex[DEVICE_CONFIG_HID_KEY_ID_SIZE * 2 + 1];
       if (!device_config_get_hid_host(i, &host)) goto done;
       bytes_to_hex(host.id, sizeof(host.id), id_hex);
-      snprintf(material, sizeof(material), "EV2|%s|%s|%lu|1|1", id_hex, nonce,
-               (unsigned long)event_counter);
+      snprintf(material, sizeof(material), "EV2|%s|%s|%lu|%u|%u", id_hex, nonce,
+               (unsigned long)event_counter, match.slot, match.score);
       if (!hmac_sha256(host.key, material, event_mac)) {
         secure_wipe(&host, sizeof(host));
         goto done;
@@ -294,12 +300,12 @@ static bool request_and_type_password(void) {
       goto done;
     }
     password_length = sizeof(password);
-    snprintf(material, sizeof(material), "EV|%s|%lu|1|1", nonce,
-             (unsigned long)event_counter);
+    snprintf(material, sizeof(material), "EV|%s|%lu|%u|%u", nonce,
+             (unsigned long)event_counter, match.slot, match.score);
     if (!hmac_sha256(pairing_key, material, event_mac)) goto done;
     bytes_to_hex(event_mac, sizeof(event_mac), mac_hex);
-    snprintf(event, sizeof(event), "EV %s %lu 1 1 %s", nonce,
-             (unsigned long)event_counter, mac_hex);
+    snprintf(event, sizeof(event), "EV %s %lu %u %u %s", nonce,
+             (unsigned long)event_counter, match.slot, match.score, mac_hex);
     config_console_send_line(event);
     if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(4500)) != pdTRUE ||
         !decrypt_password(pairing_key, nonce, response, password, &password_length)) goto done;
@@ -321,15 +327,14 @@ static void touch_hid_task(void *arg) {
   bool wait_for_lift = false;
 
   while (true) {
-    if (hid_suspended && !hid_reconnect_attempted &&
-        (TickType_t)(xTaskGetTickCount() - hid_suspended_at) >=
-            pdMS_TO_TICKS(USB_LONG_SUSPEND_MS)) {
-      hid_reconnect_pending = true;
+    if (hid_suspended && hid_remote_wakeup_enabled &&
+        !hid_remote_wakeup_attempted && fingerprint_present_hint()) {
+      hid_remote_wakeup_attempted = true;
+      tud_remote_wakeup();
     }
-    if (hid_reconnect_pending) {
+    if (hid_reconnect_pending && !hid_suspended) {
       hid_reconnect_pending = false;
-      hid_reconnect_attempted = true;
-      ESP_LOGW(TAG, "long USB suspend; forcing device reconnect");
+      ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
       tud_disconnect();
       vTaskDelay(pdMS_TO_TICKS(250));
       tud_connect();
@@ -343,16 +348,22 @@ static void touch_hid_task(void *arg) {
     TickType_t now = xTaskGetTickCount();
     bool present = fingerprint_present_hint();
     if (wait_for_lift && !present &&
-        (TickType_t)(now - last_success) > pdMS_TO_TICKS(800)) {
+        (TickType_t)(now - last_success) >
+            pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
       wait_for_lift = false;
     }
     TickType_t min_interval = present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
     if (!wait_for_lift && tud_hid_ready() &&
-        (TickType_t)(now - last_poll) >= min_interval &&
-        fingerprint_authorize_poll_once()) {
+        (TickType_t)(now - last_poll) >= min_interval) {
+      fingerprint_match_t match = fingerprint_authorize_poll_match();
+      if (match.slot == 0) {
+        last_poll = xTaskGetTickCount();
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
       if (device_config_mode() == DEVICE_MODE_HID) {
         ESP_LOGI(TAG, "finger matched; requesting HID password");
-        if (!request_and_type_password()) ESP_LOGW(TAG, "HID helper request failed");
+        if (!request_and_type_password(match)) ESP_LOGW(TAG, "HID helper request failed");
       } else {
         ESP_LOGI(TAG, "finger matched; authorizing PIV and typing PIN");
         piv_note_user_presence();
@@ -376,31 +387,34 @@ void touch_pin_hid_start(void) {
 void touch_pin_hid_usb_attached(void) {
   hid_suspended = false;
   hid_reconnect_pending = false;
-  hid_reconnect_attempted = false;
   hid_needs_release = true;
+  hid_remote_wakeup_enabled = false;
+  hid_remote_wakeup_attempted = false;
 }
 
 // The host can suspend the USB bus while the HID task is between a key-down
 // and key-up report.  Mark the report state dirty so the task emits a release
 // after resume instead of leaving the host with a stuck key.
 void tud_suspend_cb(bool remote_wakeup_en) {
-  (void)remote_wakeup_en;
   if (!hid_suspended) {
     hid_suspended_at = xTaskGetTickCount();
-    hid_reconnect_attempted = false;
   }
   hid_suspended = true;
   hid_needs_release = true;
+  hid_remote_wakeup_enabled = remote_wakeup_en;
+  hid_remote_wakeup_attempted = false;
 }
 
 void tud_resume_cb(void) {
-  if (!hid_reconnect_attempted &&
+  if (hid_suspended &&
       (TickType_t)(xTaskGetTickCount() - hid_suspended_at) >=
           pdMS_TO_TICKS(USB_LONG_SUSPEND_MS)) {
     hid_reconnect_pending = true;
   }
   hid_suspended = false;
   hid_needs_release = true;
+  hid_remote_wakeup_enabled = false;
+  hid_remote_wakeup_attempted = false;
 }
 
 bool touch_pin_hid_submit_response(const char *response) {

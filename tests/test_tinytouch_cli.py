@@ -7,6 +7,9 @@ from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 import base64
+import hashlib
+import os
+import subprocess
 import sys
 import serial
 
@@ -19,6 +22,73 @@ loader.exec_module(cli)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_browser_flash_manifests_and_assets_are_synchronized(self):
+        import json
+
+        version = (ROOT / "VERSION").read_text().strip()
+        for site in ("flasher", "recovery"):
+            web_manifest_path = ROOT / "web" / site / "manifest.json"
+            manifest = json.loads(web_manifest_path.read_text())
+            self.assertEqual((manifest["version"], manifest["protocol"]), (version, 3))
+            firmware = web_manifest_path.parent / "firmware"
+            referenced = {manifest["fullImage"]["file"]}
+            for image in manifest["images"]:
+                referenced.add(image["file"])
+                path = firmware / image["file"]
+                self.assertEqual(path.stat().st_size, image["size"])
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), image["sha256"])
+            full = firmware / manifest["fullImage"]["file"]
+            self.assertEqual(full.stat().st_size, manifest["fullImage"]["size"])
+            self.assertEqual(
+                hashlib.sha256(full.read_bytes()).hexdigest(), manifest["fullImage"]["sha256"]
+            )
+            self.assertEqual({path.name for path in firmware.iterdir()}, referenced)
+
+    def test_web_flasher_progress_tracks_manifest_length(self):
+        for path in (ROOT / "web" / "flasher" / "app.js",):
+            source = path.read_text()
+            self.assertIn("fileArray.map(() => 0)", source)
+            self.assertNotIn("[0, 0, 0]", source)
+
+    def test_idf_version_guard_accepts_only_5_3(self):
+        checker = ROOT / "firmware" / "check-idf-version"
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "idf.py"
+            fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$FAKE_IDF_VERSION\"\n")
+            fake.chmod(0o755)
+            environment = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
+            for version in ("ESP-IDF v5.3", "ESP-IDF v5.3.2"):
+                result = subprocess.run(
+                    [str(checker)], env=dict(environment, FAKE_IDF_VERSION=version),
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            for version in ("ESP-IDF v5.2.4", "ESP-IDF v5.4.0", "ESP-IDF v6.0", "unknown"):
+                result = subprocess.run(
+                    [str(checker)], env=dict(environment, FAKE_IDF_VERSION=version),
+                    text=True, capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0, version)
+
+    def test_factory_migration_stops_when_fingerprint_authorization_fails(self):
+        authorization_error = cli.ToolError("Fingerprint not recognized.")
+        with (
+            mock.patch.object(cli, "run_idf") as run_idf,
+            mock.patch.object(cli, "port_usb_location", return_value="1-2"),
+            mock.patch.object(cli, "port_is_download_mode", return_value=False),
+            mock.patch.object(cli, "status_fields", return_value={"firmware": "unified"}),
+            mock.patch.object(
+                cli, "unlock_configuration", side_effect=authorization_error
+            ),
+            mock.patch.object(cli, "serial_command") as serial_command,
+            mock.patch.object(cli, "wait_for_download_port") as wait_for_download_port,
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "Fingerprint not recognized"):
+                cli.flash_piv("/dev/cu.example")
+        serial_command.assert_not_called()
+        wait_for_download_port.assert_not_called()
+        run_idf.assert_not_called()
+
     def test_version_comes_from_shared_version_file(self):
         self.assertEqual(cli.CLI_VERSION, (ROOT / "VERSION").read_text().strip())
 
@@ -287,6 +357,50 @@ class PackagingTests(unittest.TestCase):
         migrate.assert_not_called()
         say.assert_called_once_with("tinyTouch is up to date.")
 
+    def test_config_set_validates_and_sends_authenticated_setting(self):
+        args = cli.parser().parse_args(["config", "set", "typing-delay", "20"])
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.example"),
+            mock.patch.object(cli, "status_fields", return_value={"firmware": "unified"}),
+            mock.patch.object(cli, "unlock_configuration") as unlock,
+            mock.patch.object(cli, "serial_command") as serial_command,
+        ):
+            cli.command_config(args)
+        unlock.assert_called_once_with("/dev/cu.example")
+        serial_command.assert_called_once_with(
+            "/dev/cu.example", "SETTING typing_delay_ms 20", timeout=3
+        )
+
+    def test_password_set_replaces_keychain_secret_without_printing_it(self):
+        args = cli.parser().parse_args(["password", "set", "--fingerprint", "5"])
+        with (
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.example"),
+            mock.patch.object(cli, "status_fields", return_value={"firmware": "unified"}),
+            mock.patch.object(cli, "pairing_account_for_port", return_value="DEVICE"),
+            mock.patch.object(cli, "prompt_password", return_value="top secret"),
+            mock.patch.object(cli, "keychain_set") as keychain_set,
+            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/tmp/python")),
+            mock.patch.object(cli, "install_helper"),
+            mock.patch.object(cli, "say") as say,
+        ):
+            cli.command_password(args)
+        keychain_set.assert_called_once_with(
+            cli.PASSWORD_SERVICE, "DEVICE:fingerprint:5", "top secret"
+        )
+        self.assertNotIn("top secret", " ".join(str(call) for call in say.call_args_list))
+
+    def test_keychain_secrets_never_use_process_arguments(self):
+        cli_source = (ROOT / "tinytouch").read_text()
+        helper_source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        self.assertNotIn("add-generic-password", cli_source)
+        self.assertNotIn("add-generic-password", helper_source)
+        self.assertNotIn("--set-password", helper_source)
+        self.assertNotIn("--set-pairing-key", helper_source)
+        self.assertIn("SecKeychainAddGenericPassword", (
+            ROOT / "software" / "macos-helper" / "tinytouch_keychain.py"
+        ).read_text())
+
 
 class ParserTests(unittest.TestCase):
     def test_setup_mode(self):
@@ -377,6 +491,14 @@ class ParserTests(unittest.TestCase):
     def test_enroll_defaults_to_guided_profile(self):
         args = cli.parser().parse_args(["enroll"])
         self.assertIsNone(args.slot)
+
+    def test_customization_commands_are_customer_commands(self):
+        password = cli.parser().parse_args(["password", "set", "--fingerprint", "5"])
+        config = cli.parser().parse_args(["config", "set", "enter", "off"])
+        layout = cli.parser().parse_args(["keyboard-layout", "auto"])
+        self.assertEqual(password.fingerprint, 5)
+        self.assertEqual((config.setting, config.value), ("enter", "off"))
+        self.assertEqual(layout.layout, "auto")
 
 
 if __name__ == "__main__":

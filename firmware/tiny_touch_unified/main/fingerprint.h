@@ -3,10 +3,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef struct {
+  uint16_t slot;
+  uint16_t score;
+} fingerprint_match_t;
+
 void fingerprint_init(void);
 bool fingerprint_present_hint(void);
 void fingerprint_led_idle(void);
 bool fingerprint_authorize_poll_once(void);
+fingerprint_match_t fingerprint_authorize_poll_match(void);
 bool fingerprint_authorize_once(void);
 int fingerprint_count(void);
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message));

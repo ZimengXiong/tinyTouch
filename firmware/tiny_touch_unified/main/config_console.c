@@ -248,7 +248,7 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[256];
+  char line[384];
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
@@ -256,24 +256,30 @@ static void handle_command(void) {
     if (count < 0) {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
-               "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u ota=%s build=%s",
+               "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
                device_config_hid_key_configured() ? "configured" : "unconfigured",
                (unsigned)device_config_hid_host_count(),
+               (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
+               (unsigned)device_config_touch_cooldown_ms(),
                firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
       send_line(line);
     } else {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
-               "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u ota=%s build=%s",
+               "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), count,
                (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
                device_config_hid_key_configured() ? "configured" : "unconfigured",
                (unsigned)device_config_hid_host_count(),
+               (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
+               (unsigned)device_config_touch_cooldown_ms(),
                firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
       send_line(line);
     }
@@ -319,6 +325,32 @@ static void handle_command(void) {
       ok = device_config_set_mode(DEVICE_MODE_HID);
     }
     snprintf(line, sizeof(line), ok ? "OK MODE mode=%s" : "ERR MODE mode=%s", command + 5);
+    send_line(line);
+  } else if (strncmp(command, "SETTING ", 8) == 0) {
+    if (!require_config_authorization()) return;
+    char *name = command + 8;
+    char *value_text = strchr(name, ' ');
+    bool ok = value_text != NULL;
+    unsigned long value = 0;
+    if (ok) {
+      *value_text++ = '\0';
+      char *end = NULL;
+      value = strtoul(value_text, &end, 10);
+      ok = end && *end == '\0';
+    }
+    if (ok && strcmp(name, "typing_delay_ms") == 0) {
+      ok = value >= 1 && value <= 100 &&
+           device_config_set_typing_delay_ms((uint16_t)value);
+    } else if (ok && strcmp(name, "submit_enter") == 0) {
+      ok = value <= 1 && device_config_set_submit_enter(value != 0);
+    } else if (ok && strcmp(name, "touch_cooldown_ms") == 0) {
+      ok = value >= 100 && value <= 5000 &&
+           device_config_set_touch_cooldown_ms((uint16_t)value);
+    } else {
+      ok = false;
+    }
+    snprintf(line, sizeof(line), ok ? "OK SETTING name=%s value=%lu" :
+                                      "ERR SETTING name=%s value=%lu", name, value);
     send_line(line);
   } else if (strncmp(command, "HID_KEY ", 8) == 0) {
     if (!require_config_authorization()) return;

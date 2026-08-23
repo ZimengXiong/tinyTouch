@@ -13,13 +13,14 @@ elif [[ -f "$HOME/esp/esp-idf/export.sh" ]]; then
 fi
 
 if [[ -z "$idf_export" ]]; then
-  print -u2 "ESP-IDF was not found. Set IDF_PATH or install it at ~/esp/esp-idf."
+  print -u2 "ESP-IDF 5.3.x was not found. Set IDF_PATH or install it at ~/esp/esp-idf."
   exit 1
 fi
 
 set +u
 source "$idf_export" >/dev/null
 set -u
+"${0:A:h}/check-idf-version" >/dev/null
 
 print "Building one-time tinyTouch recovery firmware..."
 idf.py -C "$firmware_dir" -B "$build_dir" \

@@ -44,7 +44,8 @@ const tusb_desc_device_t tiny_touch_device_descriptor = {
 };
 
 const uint8_t tiny_touch_fs_configuration_descriptor[] = {
-  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0, 100),
+  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN,
+                        TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
 
   9, TUSB_DESC_INTERFACE, ITF_NUM_CCID, 0, 2, 0x0b, 0x00, 0x00, 0,
 

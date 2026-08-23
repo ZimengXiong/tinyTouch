@@ -9,6 +9,27 @@ static device_mode_t current_mode = DEVICE_MODE_PIV;
 static device_hid_host_t hid_hosts[DEVICE_CONFIG_MAX_HID_HOSTS];
 static size_t hid_host_count;
 static uint8_t fingerprint_profile_views;
+static uint16_t typing_delay_ms = 7;
+static bool submit_enter = true;
+static uint16_t touch_cooldown_ms = 800;
+
+static bool save_u16(const char *key, uint16_t value) {
+  nvs_handle_t handle;
+  if (nvs_open("device", NVS_READWRITE, &handle) != ESP_OK) return false;
+  esp_err_t result = nvs_set_u16(handle, key, value);
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  return result == ESP_OK;
+}
+
+static bool save_u8(const char *key, uint8_t value) {
+  nvs_handle_t handle;
+  if (nvs_open("device", NVS_READWRITE, &handle) != ESP_OK) return false;
+  esp_err_t result = nvs_set_u8(handle, key, value);
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  return result == ESP_OK;
+}
 
 static void derive_key_id(const uint8_t key[32], uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE]) {
   uint8_t digest[32];
@@ -38,6 +59,9 @@ void device_config_reload(void) {
   memset(hid_hosts, 0, sizeof(hid_hosts));
   hid_host_count = 0;
   fingerprint_profile_views = 0;
+  typing_delay_ms = 7;
+  submit_enter = true;
+  touch_cooldown_ms = 800;
 
   nvs_handle_t handle;
   if (nvs_open("device", NVS_READONLY, &handle) != ESP_OK) return;
@@ -51,6 +75,20 @@ void device_config_reload(void) {
   uint8_t stored_views = 0;
   if (nvs_get_u8(handle, "finger_views", &stored_views) == ESP_OK && stored_views <= 5) {
     fingerprint_profile_views = stored_views;
+  }
+
+  uint16_t stored_u16 = 0;
+  if (nvs_get_u16(handle, "type_delay", &stored_u16) == ESP_OK &&
+      stored_u16 >= 1 && stored_u16 <= 100) {
+    typing_delay_ms = stored_u16;
+  }
+  uint8_t stored_u8 = 0;
+  if (nvs_get_u8(handle, "submit_enter", &stored_u8) == ESP_OK && stored_u8 <= 1) {
+    submit_enter = stored_u8 != 0;
+  }
+  if (nvs_get_u16(handle, "touch_cool", &stored_u16) == ESP_OK &&
+      stored_u16 >= 100 && stored_u16 <= 5000) {
+    touch_cooldown_ms = stored_u16;
   }
 
   size_t hosts_length = sizeof(hid_hosts);
@@ -210,4 +248,28 @@ bool device_config_set_fingerprint_profile_views(uint8_t views) {
   nvs_close(handle);
   if (result == ESP_OK) fingerprint_profile_views = views;
   return result == ESP_OK;
+}
+
+uint16_t device_config_typing_delay_ms(void) { return typing_delay_ms; }
+
+bool device_config_set_typing_delay_ms(uint16_t value) {
+  if (value < 1 || value > 100 || !save_u16("type_delay", value)) return false;
+  typing_delay_ms = value;
+  return true;
+}
+
+bool device_config_submit_enter(void) { return submit_enter; }
+
+bool device_config_set_submit_enter(bool value) {
+  if (!save_u8("submit_enter", value ? 1 : 0)) return false;
+  submit_enter = value;
+  return true;
+}
+
+uint16_t device_config_touch_cooldown_ms(void) { return touch_cooldown_ms; }
+
+bool device_config_set_touch_cooldown_ms(uint16_t value) {
+  if (value < 100 || value > 5000 || !save_u16("touch_cool", value)) return false;
+  touch_cooldown_ms = value;
+  return true;
 }

@@ -83,8 +83,6 @@ void app_main(void) {
   config_console_start();
   touch_pin_hid_start();
 
-  while (true) {
-    usb_ccid_task();
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
+  // tinyusb_driver_install owns the only tud_task() service loop. The
+  // configuration console and fingerprint/HID workers run in their own tasks.
 }

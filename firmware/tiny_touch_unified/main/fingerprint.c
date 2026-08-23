@@ -22,7 +22,6 @@ static const uint32_t FINGER_WAIT_MS = 7000;
 static const uint8_t FP_LED_BLUE = 0x01;
 static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
-static const uint8_t FP_LED_FUNC_FLASH = 2;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
 
 static uint8_t current_led = 0xff;
@@ -132,19 +131,16 @@ static void set_aura(uint8_t color) {
   if (color == current_led) return;
   uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
   uint8_t confirm = 0xff;
-  fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000);
-  current_led = color;
-}
-
-static void flash_aura(uint8_t color) {
-  uint8_t params[] = {FP_LED_FUNC_FLASH, 40, color, 2};
-  uint8_t confirm = 0xff;
-  fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000);
-  current_led = 0xff;
+  if (fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) &&
+      confirm == 0x00) {
+    current_led = color;
+  } else {
+    current_led = 0xff;
+  }
 }
 
 static void show_result(bool ok) {
-  flash_aura(ok ? FP_LED_GREEN : FP_LED_RED);
+  set_aura(ok ? FP_LED_GREEN : FP_LED_RED);
   vTaskDelay(pdMS_TO_TICKS(350));
   set_aura(FP_LED_BLUE);
 }
@@ -163,7 +159,8 @@ bool fingerprint_present_hint(void) {
   return finger_present();
 }
 
-static bool fingerprint_match_captured(bool quiet) {
+static fingerprint_match_t fingerprint_match_captured(bool quiet) {
+  fingerprint_match_t no_match = {0};
   uint8_t confirm = 0xff;
   uint8_t img2tz[] = {0x01};
   if (!fp_command(0x02, img2tz, sizeof(img2tz), &confirm, NULL, NULL, 2000) || confirm != 0x00) {
@@ -171,7 +168,7 @@ static bool fingerprint_match_captured(bool quiet) {
       ESP_LOGW(TAG, "img2tz failed confirm=0x%02x", confirm);
       show_result(false);
     }
-    return false;
+    return no_match;
   }
 
   uint16_t count = END_SLOT - START_SLOT + 1;
@@ -186,14 +183,15 @@ static bool fingerprint_match_captured(bool quiet) {
     if (!quiet) ESP_LOGW(TAG, "search command failed");
   } else if (confirm == 0x00 && search_len == sizeof(search_data)) {
     uint16_t score = ((uint16_t)search_data[2] << 8) | search_data[3];
-    bool ok = score > 0;
-    ESP_LOGI(TAG, "fingerprint search: %s score=%u", ok ? "ok" : "failed", score);
+    uint16_t slot = ((uint16_t)search_data[0] << 8) | search_data[1];
+    bool ok = score > 0 && slot >= START_SLOT && slot <= END_SLOT;
+    ESP_LOGI(TAG, "fingerprint search: %s slot=%u score=%u", ok ? "ok" : "failed",
+             slot, score);
     if (!quiet) {
       show_result(ok);
-    } else if (!ok) {
-      flash_aura(FP_LED_RED);
     }
-    return ok;
+    if (ok) return (fingerprint_match_t){.slot = slot, .score = score};
+    return no_match;
   } else if (!quiet) {
     ESP_LOGW(TAG, "search failed confirm=0x%02x len=%u", confirm, (unsigned)search_len);
   }
@@ -218,8 +216,8 @@ static bool fingerprint_match_captured(bool quiet) {
       uint16_t score = ((uint16_t)match_data[0] << 8) | match_data[1];
       if (score > 0) {
         ESP_LOGI(TAG, "fingerprint match: ok slot=%u score=%u", slot, score);
-        show_result(true);
-        return true;
+        if (!quiet) show_result(true);
+        return (fingerprint_match_t){.slot = slot, .score = score};
       }
     }
     if (!quiet) {
@@ -228,20 +226,25 @@ static bool fingerprint_match_captured(bool quiet) {
   }
 
   if (!quiet) show_result(false);
-  return false;
+  return no_match;
 }
 
-bool fingerprint_authorize_poll_once(void) {
-  if (!fp_take(0)) return false;
+fingerprint_match_t fingerprint_authorize_poll_match(void) {
+  fingerprint_match_t no_match = {0};
+  if (!fp_take(0)) return no_match;
   uint8_t confirm = 0xff;
   if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
     fp_give();
-    return false;
+    return no_match;
   }
-  flash_aura(FP_LED_GREEN);
-  bool ok = fingerprint_match_captured(true);
+  fingerprint_match_t match = fingerprint_match_captured(true);
+  if (match.slot) set_aura(FP_LED_GREEN);
   fp_give();
-  return ok;
+  return match;
+}
+
+bool fingerprint_authorize_poll_once(void) {
+  return fingerprint_authorize_poll_match().slot != 0;
 }
 
 void fingerprint_init(void) {
@@ -299,7 +302,7 @@ bool fingerprint_authorize_once(void) {
     return false;
   }
 
-  bool ok = fingerprint_match_captured(false);
+  bool ok = fingerprint_match_captured(false).slot != 0;
   fp_give();
   return ok;
 }
@@ -315,21 +318,43 @@ int fingerprint_count(void) {
   return ok ? ((int)data[0] << 8) | data[1] : -1;
 }
 
-static bool wait_finger_state(bool present, uint32_t timeout_ms) {
+static bool wait_capture_template(uint8_t buffer_id, uint32_t timeout_ms) {
   TickType_t start = xTaskGetTickCount();
   TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
   while ((xTaskGetTickCount() - start) < deadline) {
-    if (finger_present() == present) return true;
-    vTaskDelay(pdMS_TO_TICKS(50));
+    uint8_t confirm = 0xff;
+    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 600) && confirm == 0x00) {
+      uint8_t params[] = {buffer_id};
+      if (fp_command(0x02, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
+          confirm == 0x00) {
+        return true;
+      }
+      ESP_LOGW(TAG, "enrollment conversion failed confirm=0x%02x; retrying", confirm);
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
   }
   return false;
 }
 
-static bool capture_template(uint8_t buffer_id) {
-  uint8_t confirm = 0xff;
-  if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 1500) || confirm != 0x00) return false;
-  uint8_t params[] = {buffer_id};
-  return fp_command(0x02, params, sizeof(params), &confirm, NULL, NULL, 2000) && confirm == 0x00;
+static bool wait_finger_removed(uint32_t timeout_ms) {
+  TickType_t start = xTaskGetTickCount();
+  TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
+  unsigned absent_samples = 0;
+  while ((xTaskGetTickCount() - start) < deadline) {
+    uint8_t confirm = 0xff;
+    bool answered = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500);
+    if (answered && confirm == 0x02) {
+      if (++absent_samples >= 3) return true;
+    } else if (answered && confirm == 0x00) {
+      absent_samples = 0;
+    } else {
+      // A UART timeout or sensor error is not evidence that the finger lifted.
+      absent_samples = 0;
+      ESP_LOGW(TAG, "finger-removal check failed confirm=0x%02x", confirm);
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  return false;
 }
 
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
@@ -337,12 +362,12 @@ bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
   bool ok = false;
   set_aura(FP_LED_BLUE);
   if (prompt) prompt("TOUCH");
-  if (!wait_finger_state(true, 15000) || !capture_template(1)) goto done;
+  if (!wait_capture_template(1, 15000)) goto done;
   if (prompt) prompt("LIFT");
-  if (!wait_finger_state(false, 10000)) goto done;
+  if (!wait_finger_removed(10000)) goto done;
   vTaskDelay(pdMS_TO_TICKS(250));
   if (prompt) prompt("TOUCH_AGAIN");
-  if (!wait_finger_state(true, 15000) || !capture_template(2)) goto done;
+  if (!wait_capture_template(2, 15000)) goto done;
 
   uint8_t confirm = 0xff;
   if (!fp_command(0x05, NULL, 0, &confirm, NULL, NULL, 2000) || confirm != 0x00) goto done;

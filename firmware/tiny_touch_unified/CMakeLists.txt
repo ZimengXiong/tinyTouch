@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 option(TINYTOUCH_RECOVERY_BUILD "Build one-time destructive recovery firmware" OFF)
 
-file(READ "${CMAKE_CURRENT_LIST_DIR}/../../VERSION" TINYTOUCH_VERSION)
+set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
+file(READ "${TINYTOUCH_VERSION_FILE}" TINYTOUCH_VERSION)
 string(STRIP "${TINYTOUCH_VERSION}" TINYTOUCH_VERSION)
 set(PROJECT_VER "${TINYTOUCH_VERSION}")
 
@@ -21,4 +23,9 @@ if(NOT TINYTOUCH_BUILD_ID)
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+if(NOT (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR EQUAL 3))
+  message(FATAL_ERROR
+    "tinyTouch requires ESP-IDF 5.3.x; found ${IDF_VERSION}. "
+    "Install or select ESP-IDF 5.3 before building.")
+endif()
 project(tiny_touch_unified)

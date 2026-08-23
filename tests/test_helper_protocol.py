@@ -12,6 +12,16 @@ spec.loader.exec_module(helper)
 
 
 class HelperProtocolTests(unittest.TestCase):
+    @staticmethod
+    def decrypt_response(key, nonce, response):
+        parts = response.split()
+        offset = 1 if parts[0] == "PW" else 2
+        iv_hex, ciphertext_hex = parts[offset + 1], parts[offset + 2]
+        return helper.aes_ctr_crypt(
+            helper.session_key(key, nonce), bytes.fromhex(iv_hex),
+            bytes.fromhex(ciphertext_hex),
+        )
+
     def test_authenticated_event_returns_decryptable_password(self):
         key = bytes(range(32))
         password = b"correct horse battery staple!"
@@ -94,6 +104,60 @@ class HelperProtocolTests(unittest.TestCase):
             persist_state=False,
         )
         self.assertIsNone(response)
+
+    def test_fingerprint_slot_selects_override_and_falls_back_to_default(self):
+        key = bytes(range(32))
+        passwords = {0: b"default", 5: b"fifth finger"}
+        for slot, expected in ((5, b"fifth finger"), (2, b"default")):
+            nonce = f"{slot:02x}" * 16
+            event_mac = helper.mac_hex(key, f"EV|{nonce}|1|{slot}|42")
+            response = helper.handle_event(
+                f"EV {nonce} 1 {slot} 42 {event_mac}", passwords, key,
+                {"seen_nonces": []}, persist_state=False,
+            )
+            self.assertEqual(self.decrypt_response(key, nonce, response), expected)
+
+    def test_layout_translation_happens_before_encryption(self):
+        key = bytes(range(32))
+        nonce = "0a" * 16
+        event_mac = helper.mac_hex(key, f"EV|{nonce}|1|1|42")
+        response = helper.handle_event(
+            f"EV {nonce} 1 1 42 {event_mac}", b";", key,
+            {"seen_nonces": []}, persist_state=False,
+            keyboard_map={";": "<"},
+        )
+        self.assertEqual(self.decrypt_response(key, nonce, response), b"<")
+
+    def test_unsupported_layout_character_refuses_complete_event(self):
+        key = bytes(range(32))
+        nonce = "0b" * 16
+        event_mac = helper.mac_hex(key, f"EV|{nonce}|1|1|42")
+        state = {"seen_nonces": []}
+        response = helper.handle_event(
+            f"EV {nonce} 1 1 42 {event_mac}", "é".encode(), key, state,
+            persist_state=False, keyboard_map={"e": "e"},
+        )
+        self.assertIsNone(response)
+        self.assertEqual(state["seen_nonces"], [])
+
+    def test_serial_framing_preserves_split_and_multiple_events(self):
+        lines, remainder = helper.split_serial_lines(b"EV2 abc", b" def\nPONG\nEV x")
+        self.assertEqual(lines, [b"EV2 abc def", b"PONG"])
+        self.assertEqual(remainder, b"EV x")
+        lines, remainder = helper.split_serial_lines(remainder, b" y\n")
+        self.assertEqual(lines, [b"EV x y"])
+        self.assertEqual(remainder, b"")
+
+    def test_serial_framing_drops_oversized_incomplete_line(self):
+        lines, remainder = helper.split_serial_lines(
+            b"", b"x" * (helper.MAX_SERIAL_LINE_BYTES + 1)
+        )
+        self.assertEqual(lines, [])
+        self.assertEqual(remainder, b"")
+
+    def test_oversized_password_is_refused(self):
+        with self.assertRaises(ValueError):
+            helper.translate_password(b"x" * 161, None)
 
 
 if __name__ == "__main__":

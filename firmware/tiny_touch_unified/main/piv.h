@@ -6,6 +6,7 @@
 
 void piv_init(void);
 void piv_reload_keys(void);
+void piv_reset_transport_state(void);
 void piv_note_user_presence(void);
 void piv_set_pairing_mode(bool enabled);
 bool piv_pairing_mode_active(void);

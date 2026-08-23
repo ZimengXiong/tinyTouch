@@ -60,6 +60,16 @@ RELEASE_CHANNEL_URL = (
 )
 TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
+HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
+if not FROZEN and str(HELPER_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(HELPER_MODULE_DIR))
+from tinytouch_keychain import (  # type: ignore  # noqa: E402
+    delete_password as native_keychain_delete,
+    get_password as native_keychain_get,
+    has_password as native_keychain_exists,
+    set_password as native_keychain_set,
+)
+
 
 class ToolError(RuntimeError):
     pass
@@ -611,40 +621,19 @@ def wait_for_runtime_port(*, location: str | None = None, wait_seconds: int = 20
 
 
 def keychain_set(service: str, account: str, value: str) -> None:
-    run(
-        ["security", "add-generic-password", "-U", "-a", account, "-s", service, "-w", value],
-        display=f"security add-generic-password -U -a {account} -s {service} -w [REDACTED]",
-    )
+    native_keychain_set(service, account, value)
 
 
 def keychain_delete(service: str, account: str) -> None:
-    subprocess.run(
-        ["security", "delete-generic-password", "-a", account, "-s", service],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    native_keychain_delete(service, account)
 
 
 def keychain_exists(service: str, account: str) -> bool:
-    result = subprocess.run(
-        ["security", "find-generic-password", "-a", account, "-s", service],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return result.returncode == 0
+    return native_keychain_exists(service, account)
 
 
 def keychain_get(service: str, account: str) -> str | None:
-    result = subprocess.run(
-        ["security", "find-generic-password", "-a", account, "-s", service, "-w"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    return result.stdout.strip() if result.returncode == 0 else None
+    return native_keychain_get(service, account)
 
 
 def pairing_account_for_port(port: str | None) -> str:
@@ -661,6 +650,24 @@ def pairing_account_for_port(port: str | None) -> str:
     except ImportError:
         pass
     return re.sub(r"[^A-Za-z0-9_.-]", "", Path(port).name).upper() or DEFAULT_DEVICE_ACCOUNT
+
+
+def fingerprint_password_account(account: str, slot: int) -> str:
+    return f"{account}:fingerprint:{slot}"
+
+
+def keyboard_settings_path(account: str) -> Path:
+    safe_account = re.sub(r"[^A-Za-z0-9_.-]", "", account).upper()
+    return SUPPORT_DIR / f"settings-{safe_account}.json"
+
+
+def save_keyboard_layout(account: str, layout: str) -> None:
+    destination = keyboard_settings_path(account)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"keyboard_layout": layout}, separators=(",", ":")),
+                         encoding="utf-8")
+    temporary.replace(destination)
 
 
 def ensure_helper_environment() -> Path:
@@ -788,6 +795,8 @@ def prompt_password() -> str:
         ) from exc
     if not first:
         raise ToolError("Password cannot be empty.")
+    if len(first.encode("utf-8")) > 160:
+        raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
     if first != second:
         raise ToolError("Passwords did not match.")
     return first
@@ -819,6 +828,7 @@ def generate_piv_bundle() -> dict[str, str]:
 
 def run_idf(arguments: list[str]) -> None:
     if shutil.which("idf.py"):
+        run([str(ROOT / "firmware" / "check-idf-version")], capture=True)
         run(["idf.py", *arguments], cwd=UNIFIED_FIRMWARE_PROJECT)
         return
     candidates = [
@@ -828,8 +838,10 @@ def run_idf(arguments: list[str]) -> None:
     export = next((path for path in candidates if path and path.exists()), None)
     if export is None:
         raise ToolError("idf.py is not available. Source ESP-IDF's export.sh or set IDF_PATH.")
-    shell_command = "source {} >/dev/null && idf.py {}".format(
-        shlex.quote(str(export)), " ".join(shlex.quote(item) for item in arguments)
+    checker = ROOT / "firmware" / "check-idf-version"
+    shell_command = "source {} >/dev/null && {} >/dev/null && idf.py {}".format(
+        shlex.quote(str(export)), shlex.quote(str(checker)),
+        " ".join(shlex.quote(item) for item in arguments)
     )
     run(
         ["/bin/zsh", "-lc", shell_command],
@@ -839,16 +851,20 @@ def run_idf(arguments: list[str]) -> None:
 
 
 def flash_piv(port: str) -> str:
-    run_idf(["set-target", "esp32s3"])
-    run_idf(["build"])
     location = port_usb_location(port)
-    if not port_is_download_mode(port):
-        try:
-            fields = status_fields(port)
-            if fields.get("firmware") == "unified":
-                unlock_configuration(port)
-        except ToolError:
-            pass
+    download_mode = port_is_download_mode(port)
+    if not download_mode:
+        fields = status_fields(port)
+        if fields.get("firmware") == "unified":
+            # Never continue after a failed fingerprint check. BOOTLOADER is
+            # configuration-gated, so suppressing this error only turns an
+            # actionable authorization failure into a misleading reconnect
+            # timeout.
+            unlock_configuration(port)
+    # sdkconfig fixes the target to ESP32-S3. Re-running set-target here forces
+    # a full clean build on every update and delays the touch prompt.
+    run_idf(["build"])
+    if not download_mode:
         try:
             serial_command(port, "BOOTLOADER", timeout=3)
         except ToolError:
@@ -1531,6 +1547,91 @@ def command_computers(args: argparse.Namespace) -> None:
     say(f"Removed HID computer {host_id}.")
 
 
+def command_password(args: argparse.Namespace) -> None:
+    require_macos()
+    port = choose_port(args.port)
+    require_unified_firmware(status_fields(port))
+    account = pairing_account_for_port(port)
+    password_account = (fingerprint_password_account(account, args.fingerprint)
+                        if args.fingerprint else account)
+    if args.action == "set":
+        password = prompt_password()
+        keychain_set(PASSWORD_SERVICE, password_account, password)
+        del password
+        install_helper(ensure_helper_environment())
+        label = f"fingerprint {args.fingerprint}" if args.fingerprint else "default"
+        say(f"Password updated for {label}.")
+        return
+    if args.action == "remove":
+        if not args.fingerprint:
+            raise ToolError("Specify --fingerprint to remove an override; replace the default with 'tinytouch password set'.")
+        keychain_delete(PASSWORD_SERVICE, password_account)
+        if LAUNCH_AGENT.exists() and not HELPER_SUSPENDED:
+            load_helper()
+        say(f"Password override removed for fingerprint {args.fingerprint}.")
+        return
+    say("HID passwords:")
+    say(f"  default: {'configured' if keychain_exists(PASSWORD_SERVICE, account) else 'missing'}")
+    for slot in range(1, 6):
+        state = "custom" if keychain_exists(
+            PASSWORD_SERVICE, fingerprint_password_account(account, slot)
+        ) else "default"
+        say(f"  fingerprint {slot}: {state}")
+
+
+def command_config(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    status = status_fields(port)
+    require_unified_firmware(status)
+    if args.action == "show":
+        say(f"Typing delay: {status.get('typing_delay_ms', '7')} ms")
+        say(f"Press Enter: {'on' if status.get('submit_enter', '1') == '1' else 'off'}")
+        say(f"Touch cooldown: {status.get('touch_cooldown_ms', '800')} ms")
+        return
+    if not args.setting or args.value is None:
+        raise ToolError("Use 'tinytouch config set SETTING VALUE'.")
+    protocol_name: str
+    protocol_value: int
+    if args.setting == "typing-delay":
+        protocol_name = "typing_delay_ms"
+        try:
+            protocol_value = int(args.value)
+        except ValueError as exc:
+            raise ToolError("Typing delay must be from 1 to 100 milliseconds.") from exc
+        if not 1 <= protocol_value <= 100:
+            raise ToolError("Typing delay must be from 1 to 100 milliseconds.")
+    elif args.setting == "enter":
+        protocol_name = "submit_enter"
+        if args.value not in {"on", "off"}:
+            raise ToolError("Enter must be 'on' or 'off'.")
+        protocol_value = 1 if args.value == "on" else 0
+    else:
+        protocol_name = "touch_cooldown_ms"
+        try:
+            protocol_value = int(args.value)
+        except ValueError as exc:
+            raise ToolError("Touch cooldown must be from 100 to 5000 milliseconds.") from exc
+        if not 100 <= protocol_value <= 5000:
+            raise ToolError("Touch cooldown must be from 100 to 5000 milliseconds.")
+    unlock_configuration(port)
+    serial_command(port, f"SETTING {protocol_name} {protocol_value}", timeout=3)
+    say("Setting updated.")
+
+
+def command_keyboard_layout(args: argparse.Namespace) -> None:
+    require_macos()
+    port = choose_port(args.port)
+    require_unified_firmware(status_fields(port))
+    account = pairing_account_for_port(port)
+    save_keyboard_layout(account, args.layout)
+    if LAUNCH_AGENT.exists() and not HELPER_SUSPENDED:
+        load_helper()
+    if args.layout == "auto":
+        say("Keyboard layout will follow macOS.")
+    else:
+        say("Keyboard layout set to US.")
+
+
 def command_status(args: argparse.Namespace) -> None:
     ports = detect_ports()
     say("tinyTouch status")
@@ -1849,6 +1950,30 @@ def parser() -> argparse.ArgumentParser:
     computers.add_argument("--port", help="use a specific /dev/cu.* device")
     computers.set_defaults(func=command_computers)
 
+    password = sub.add_parser("password", help="manage the HID password")
+    add_verbose_option(password)
+    password.add_argument("action", choices=("set", "remove", "list"))
+    password.add_argument("--fingerprint", type=int, choices=range(1, 6),
+                          help="use a separate password for this fingerprint slot")
+    password.add_argument("--port", help="use a specific /dev/cu.* device")
+    password.set_defaults(func=command_password)
+
+    config = sub.add_parser("config", help="show or change HID behavior")
+    add_verbose_option(config)
+    config.add_argument("action", choices=("show", "set"))
+    config.add_argument("setting", nargs="?", choices=("typing-delay", "enter", "cooldown"))
+    config.add_argument("value", nargs="?")
+    config.add_argument("--port", help="use a specific /dev/cu.* device")
+    config.set_defaults(func=command_config)
+
+    keyboard_layout = sub.add_parser(
+        "keyboard-layout", help="choose how HID passwords map to keys"
+    )
+    add_verbose_option(keyboard_layout)
+    keyboard_layout.add_argument("layout", choices=("auto", "us"))
+    keyboard_layout.add_argument("--port", help="use a specific /dev/cu.* device")
+    keyboard_layout.set_defaults(func=command_keyboard_layout)
+
     status = sub.add_parser("status", help="show device and host status")
     add_verbose_option(status)
     status.add_argument("--port", help="use a specific /dev/cu.* device")
@@ -1927,6 +2052,8 @@ def main() -> int:
         import certifi  # type: ignore  # noqa: F401
         import serial  # type: ignore  # noqa: F401
         import esptool  # type: ignore  # noqa: F401
+        import tinytouch_helper  # type: ignore  # noqa: F401
+        import tinytouch_keychain  # type: ignore  # noqa: F401
         from esptool.targets.esp32s3 import ESP32S3ROM  # type: ignore  # noqa: F401
 
         say(f"package ok ({platform.machine()})")
@@ -1947,7 +2074,8 @@ def main() -> int:
         schedule_auto_update()
     device_commands = {
         "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
-        "factory-reset", "delete", "bootloader", "update",
+        "factory-reset", "delete", "bootloader", "update", "password", "config",
+        "keyboard-layout",
     }
     helper_was_loaded = os.environ.pop("_TINYTOUCH_RESTART_HELPER", "") == "1"
     try:
@@ -1969,7 +2097,10 @@ def main() -> int:
     finally:
         if HELPER_SUSPENDED:
             HELPER_SUSPENDED = False
-            if LAUNCH_AGENT.exists() and (helper_was_loaded or args.command in {"setup", "mode"}):
+            helper_installing_commands = {"setup", "mode", "add-computer", "password"}
+            if LAUNCH_AGENT.exists() and (
+                helper_was_loaded or args.command in helper_installing_commands
+            ):
                 try:
                     load_helper()
                 except ToolError as exc:

@@ -100,7 +100,7 @@ button.addEventListener("click", async () => {
     const { files: fileArray, manifest } = await loadFirmware();
     const totalBytes = manifest.images.reduce((sum, image) => sum + image.size, 0);
     stage.textContent = "Writing firmware";
-    const written = [0, 0, 0];
+    const written = fileArray.map(() => 0);
     await loader.writeFlash({
       fileArray, flashMode:"dio", flashFreq:"80m", flashSize:manifest.flashSize,
       eraseAll:manifest.eraseAll, compress:manifest.compress,

@@ -195,6 +195,8 @@ def main() -> None:
         for kind, site_name in (("factory", "flasher"), ("recovery", "recovery")):
             site = args.web_root / site_name
             firmware = site / "firmware"
+            if firmware.exists():
+                shutil.rmtree(firmware)
             firmware.mkdir(parents=True, exist_ok=True)
             for path in (output / kind).iterdir():
                 target = site / "manifest.json" if path.name == "manifest.json" else firmware / path.name

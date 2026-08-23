@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "piv.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "tusb.h"
@@ -71,7 +72,9 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
 
   switch (type) {
     case 0x62: {
-      const uint8_t atr[] = {0x3b, 0x80, 0x01, 0x01};
+      // TCK is the XOR of every byte from T0 through the final interface byte.
+      // Strict readers, including Windows, reject the former 0x01 value.
+      const uint8_t atr[] = {0x3b, 0x80, 0x01, 0x81};
       send_ccid(0x80, slot, seq, 0x00, 0x00, atr, sizeof(atr));
       break;
     }
@@ -107,6 +110,7 @@ static void ccid_init(void) {}
 static void ccid_reset(uint8_t rhport) {
   (void)rhport;
   ep_ready = false;
+  piv_reset_transport_state();
 }
 
 static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
@@ -171,9 +175,4 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.full_speed_config = tiny_touch_fs_configuration_descriptor;
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
-}
-
-void usb_ccid_task(void) {
-  (void)ep_ready;
-  tud_task();
 }
