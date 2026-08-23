@@ -22,6 +22,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - name: Create ephemeral firmware signing key
+        run: |
+          source /opt/esp/idf/export.sh
+          espsecure.py generate_signing_key --version 2 \
+            firmware/tiny_touch_unified/secure_boot_signing_key.pem >/dev/null
       - name: Build factory firmware
         run: |
           source /opt/esp/idf/export.sh
@@ -54,13 +59,22 @@ jobs:
           path: dist/release
 
   macos-cli:
-    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - architecture: arm64
+            expected_arch: arm64
+            runner: macos-15
+          - architecture: x64
+            expected_arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-          architecture: arm64
+          architecture: ${{ matrix.architecture }}
       - name: Test CLI and HID protocol
         run: |
           python -m pip install -r software/macos-helper/requirements.txt
@@ -69,19 +83,30 @@ jobs:
           zsh -n packaging/build-standalone-macos.sh firmware/build-and-flash firmware/build-recovery
           node --check web/flasher/app.js
           node --check web/recovery/app.js
-      - name: Build Apple Silicon executable
+      - name: Build macOS executable
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
         run: packaging/build-standalone-macos.sh
       - name: Verify executable
         run: |
-          test "$(dist/tinytouch --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
-          codesign --verify --strict --verbose=2 dist/tinytouch
-          file dist/tinytouch | grep -q arm64
+          mkdir dist/verify
+          tar -C dist/verify -xzf dist/tinytouch.tar.gz
+          cli=dist/verify/tinytouch/tinytouch
+          test "$("$cli" --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
+          "$cli" _package_test | grep -q "package ok (${{ matrix.expected_arch }})"
+          codesign --verify --strict --verbose=2 "$cli"
+          file "$cli" | grep -q "${{ matrix.expected_arch }}"
+          python - <<'PY'
+          import subprocess, time
+          command = ["dist/verify/tinytouch/tinytouch", "--version"]
+          started = time.monotonic()
+          for _ in range(5): subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+          assert time.monotonic() - started < 5, "CLI startup is unexpectedly slow"
+          PY
       - uses: actions/upload-artifact@v7
         with:
-          name: tinytouch-macos-arm64
-          path: dist/tinytouch
+          name: tinytouch-macos-${{ matrix.expected_arch }}
+          path: dist/tinytouch.tar.gz
 
   consistency:
     runs-on: ubuntu-latest

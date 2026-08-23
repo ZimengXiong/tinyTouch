@@ -5,6 +5,7 @@ __pycache__/
 
 firmware/tiny_touch_unified/.cache/
 firmware/tiny_touch_unified/main/secrets.h
+firmware/tiny_touch_unified/secure_boot_signing_key.pem
 firmware/tiny_touch_unified/build/
 firmware/tiny_touch_unified/build-recovery/
 firmware/tiny_touch_unified/managed_components/

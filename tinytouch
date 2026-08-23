@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import filecmp
 import getpass
 import glob
 import hashlib
+import io
+import json
 import os
+import platform
 import plistlib
 import re
 import secrets
@@ -20,6 +24,9 @@ import sys
 import termios
 import tempfile
 import time
+import tarfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -44,9 +51,17 @@ CLI_INSTALL_PATH = CLI_INSTALL_DIR / "tinytouch"
 VERBOSE = False
 HELPER_SUSPENDED = False
 FACTORY_FLASH_URL = "https://alpacaengineer.ing/tinytouch/batch-0/flash/"
+SUPPORT_EMAIL = "tinytouch@alpacaengineer.ing"
+RELEASE_CHANNEL_URL = (
+    "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
+)
 
 
 class ToolError(RuntimeError):
+    pass
+
+
+class SupportError(ToolError):
     pass
 
 
@@ -55,7 +70,7 @@ def say(message: str = "") -> None:
 
 
 def show_startup_mark() -> None:
-    if not sys.stdout.isatty():
+    if not VERBOSE or not sys.stdout.isatty():
         return
     # Mechanically rasterized from https://alpacaengineer.ing/assets/alpaca.svg
     # (source SHA-256 fe0152b54901fbb7f5baa54363e17d1ed0831d1883806aacc5aa305979522eda).
@@ -77,8 +92,149 @@ def verbose(message: str) -> None:
 
 
 def step(number: int, total: int, title: str) -> None:
-    say()
-    say(f"Step {number} of {total}: {title}")
+    verbose(f"step {number} of {total}: {title}")
+
+
+def download_bytes(url: str, *, timeout: float = 10.0) -> bytes:
+    verbose(f"download: {url}")
+    request = urllib.request.Request(url, headers={"User-Agent": f"tinytouch/{CLI_VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except (OSError, urllib.error.URLError) as exc:
+        raise ToolError("Could not reach the tinyTouch update service. Check your connection and try again.") from exc
+
+
+def release_manifest() -> dict:
+    try:
+        channel = json.loads(download_bytes(RELEASE_CHANNEL_URL).decode("utf-8"))
+        manifest_url = channel.get("manifest")
+        if not isinstance(manifest_url, str) or not manifest_url.startswith(
+            "https://github.com/ZimengXiong/TinyTouch/releases/download/"
+        ):
+            raise ValueError("invalid channel manifest URL")
+        manifest = json.loads(download_bytes(manifest_url).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SupportError("The tinyTouch update manifest is invalid.") from exc
+    if not isinstance(manifest.get("version"), str) or not isinstance(manifest.get("firmware"), dict):
+        raise SupportError("The tinyTouch update manifest is incomplete.")
+    return manifest
+
+
+def release_base_url(manifest: dict) -> str:
+    version = manifest.get("version")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z._-]+", version):
+        raise SupportError("The tinyTouch update manifest has an invalid version.")
+    return f"https://github.com/ZimengXiong/TinyTouch/releases/download/v{version}"
+
+
+def verified_release_asset(metadata: dict, manifest: dict) -> bytes:
+    name = metadata.get("file")
+    expected = metadata.get("sha256")
+    if not isinstance(name, str) or not isinstance(expected, str):
+        raise SupportError("The tinyTouch update manifest is missing an asset checksum.")
+    payload = download_bytes(
+        f"{release_base_url(manifest)}/{name}?sha256={expected}", timeout=30.0
+    )
+    if len(payload) != metadata.get("size") or hashlib.sha256(payload).hexdigest() != expected:
+        raise SupportError(f"{name} failed its integrity check. Nothing was installed.")
+    return payload
+
+
+def update_installed_cli(manifest: dict, *, announce: bool) -> bool:
+    if not FROZEN:
+        return False
+    machine = platform.machine()
+    if machine == "x86_64" and sys.platform == "darwin":
+        translated = subprocess.run(
+            ["/usr/sbin/sysctl", "-in", "sysctl.proc_translated"],
+            check=False, text=True, capture_output=True,
+        )
+        if translated.stdout.strip() == "1":
+            machine = "arm64"
+    architecture = {"arm64": "macos-arm64", "x86_64": "macos-x86_64"}.get(machine)
+    if architecture is None:
+        raise ToolError(f"This Mac architecture is not supported: {platform.machine()}.")
+    metadata = manifest.get("cli", {}).get(architecture)
+    if not isinstance(metadata, dict):
+        raise ToolError("This release does not include a CLI update.")
+    marker = SUPPORT_DIR / "installed-cli-sha256"
+    try:
+        if marker.read_text(encoding="ascii").strip() == metadata.get("sha256"):
+            return False
+    except OSError:
+        pass
+    if metadata.get("format") != "tar.gz":
+        raise SupportError("The CLI update has an unsupported package format.")
+    payload = verified_release_asset(metadata, manifest)
+    bundle = SUPPORT_DIR / f"cli-{metadata['sha256'][:16]}"
+    if not bundle.exists():
+        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="tinytouch-cli-", dir=SUPPORT_DIR) as directory:
+            staging = Path(directory)
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+                archive.extractall(staging, filter="data")
+            extracted = staging / "tinytouch"
+            executable = extracted / "tinytouch"
+            if not executable.is_file() or not (extracted / "_internal").is_dir():
+                raise SupportError("The CLI update package is incomplete.")
+            extracted.replace(bundle)
+    executable = bundle / "tinytouch"
+    CLI_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = CLI_INSTALL_PATH.with_suffix(".update")
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(executable)
+    temporary.replace(CLI_INSTALL_PATH)
+    marker.write_text(metadata["sha256"] + "\n", encoding="ascii")
+    if announce:
+        say("CLI updated.")
+    return True
+
+
+def auto_update_cli(*, force: bool = False) -> bool:
+    if not FROZEN:
+        return False
+    check_file = SUPPORT_DIR / "last-update-check"
+    try:
+        if not force and time.time() - check_file.stat().st_mtime < 6 * 60 * 60:
+            return False
+    except OSError:
+        pass
+    try:
+        updated = update_installed_cli(release_manifest(), announce=False)
+        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+        check_file.touch()
+        return updated
+    except ToolError as exc:
+        verbose(f"automatic CLI update skipped: {exc}")
+        return False
+
+
+def schedule_auto_update() -> None:
+    if not FROZEN:
+        return
+    check_file = SUPPORT_DIR / "last-update-check"
+    try:
+        if time.time() - check_file.stat().st_mtime < 6 * 60 * 60:
+            return
+    except OSError:
+        pass
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    check_file.touch()
+    with open(os.devnull, "wb") as devnull:
+        subprocess.Popen(
+            [sys.executable, "_auto_update"], stdin=devnull, stdout=devnull, stderr=devnull,
+            start_new_session=True,
+        )
+
+
+def wait_for_port_departure(port: str, *, wait_seconds: int = 10) -> None:
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if port not in detect_ports():
+            return
+        time.sleep(0.1)
+    raise SupportError("tinyTouch did not restart after accepting the firmware update.")
 
 
 def install_command_if_needed() -> None:
@@ -87,18 +243,33 @@ def install_command_if_needed() -> None:
         return
     source = Path(sys.executable).resolve()
     installed = False
-    if source != CLI_INSTALL_PATH.resolve() and (
-        not CLI_INSTALL_PATH.exists() or not filecmp.cmp(source, CLI_INSTALL_PATH, shallow=False)
-    ):
+    if source != CLI_INSTALL_PATH.resolve():
         CLI_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-        temporary = CLI_INSTALL_PATH.with_suffix(".tmp")
-        shutil.copy2(source, temporary)
-        temporary.chmod(0o755)
-        try:
-            os.removexattr(temporary, "com.apple.quarantine")
-        except (AttributeError, OSError):
-            pass
-        temporary.replace(CLI_INSTALL_PATH)
+        if (source.parent / "_internal").is_dir():
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+            bundle = SUPPORT_DIR / f"cli-local-{digest}"
+            if not bundle.exists():
+                SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+                staging = SUPPORT_DIR / f".cli-local-{digest}"
+                if staging.exists():
+                    shutil.rmtree(staging)
+                shutil.copytree(source.parent, staging)
+                staging.replace(bundle)
+            target = bundle / source.name
+            temporary = CLI_INSTALL_PATH.with_suffix(".tmp")
+            temporary.unlink(missing_ok=True)
+            temporary.symlink_to(target)
+            temporary.replace(CLI_INSTALL_PATH)
+        elif not CLI_INSTALL_PATH.exists() or not filecmp.cmp(source, CLI_INSTALL_PATH, shallow=False):
+            # Compatibility for the old one-file pre-production CLI.
+            temporary = CLI_INSTALL_PATH.with_suffix(".tmp")
+            shutil.copy2(source, temporary)
+            temporary.chmod(0o755)
+            try:
+                os.removexattr(temporary, "com.apple.quarantine")
+            except (AttributeError, OSError):
+                pass
+            temporary.replace(CLI_INSTALL_PATH)
         installed = True
 
     path_added = False
@@ -179,6 +350,30 @@ def human_device_error(line: str) -> str:
         "ERR FACTORY_RESET": (
             "Factory reset did not complete. The enrolled fingerprint may not have authorized it, "
             "or the fingerprint sensor/NVS did not respond. Run 'tinytouch status --verbose'."
+        ),
+        "ERR UPDATE_BEGIN": (
+            "The firmware image does not fit the inactive update slot. Nothing was changed."
+        ),
+        "ERR UPDATE_UNLOCK fingerprint_required": (
+            "Enroll a fingerprint before updating firmware. Run 'tinytouch enroll'."
+        ),
+        "ERR UPDATE_UNLOCK fingerprint": (
+            "The fingerprint was not recognized. Run 'tinytouch update' again and use an enrolled finger."
+        ),
+        "ERR UPDATE_LOCKED run=UPDATE_UNLOCK": (
+            "Firmware update authorization expired. Run 'tinytouch update' again."
+        ),
+        "ERR UPDATE_SESSION": (
+            "The firmware transfer session expired. The current firmware is still active; run 'tinytouch update' again."
+        ),
+        "ERR UPDATE_CHUNK": (
+            "The firmware transfer was interrupted. The current firmware is still active."
+        ),
+        "ERR UPDATE_COMMIT": (
+            "The firmware failed validation. The current firmware is still active."
+        ),
+        "ERR CONFIRM_FIRMWARE": (
+            "The updated firmware did not pass its final health confirmation. The device will roll back automatically."
         ),
         "ERR DELETE_ALL": (
             "The fingerprint sensor could not erase its enrolled fingerprints. "
@@ -379,8 +574,8 @@ def wait_for_download_port(
             return candidates[0].device
         time.sleep(0.25)
     raise ToolError(
-        "The ESP32-S3 did not appear in firmware download mode. Hold BOOT, tap RESET, "
-        "release BOOT, and try again. Also confirm that the USB cable carries data."
+        "tinyTouch could not restart its firmware updater automatically. Reconnect it with a "
+        f"USB data cable and run the command again. Contact {SUPPORT_EMAIL} if this repeats."
     )
 
 
@@ -490,7 +685,7 @@ def reexec_in_environment_if_needed() -> None:
 
 
 def launch_agent_contents(python: Path) -> bytes:
-    arguments = [str(INSTALLED_SERVICE), "_helper"] if FROZEN else [str(python), str(HELPER)]
+    arguments = [str(CLI_INSTALL_PATH), "_helper"] if FROZEN else [str(python), str(HELPER)]
     payload = {
         "Label": "com.tinytouch.helper",
         "ProgramArguments": arguments,
@@ -513,7 +708,7 @@ def helper_job_loaded() -> bool:
 
 
 def helper_processes_running() -> bool:
-    patterns = (str(INSTALLED_SERVICE) + " _helper", str(HELPER))
+    patterns = (str(CLI_INSTALL_PATH) + " _helper", str(HELPER))
     return any(
         subprocess.run(
             ["pgrep", "-f", pattern],
@@ -536,7 +731,7 @@ def unload_helper() -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    patterns = (str(INSTALLED_SERVICE) + " _helper", str(HELPER))
+    patterns = (str(CLI_INSTALL_PATH) + " _helper", str(HELPER))
     for pattern in patterns:
         subprocess.run(
             ["pkill", "-TERM", "-f", pattern],
@@ -569,15 +764,7 @@ def load_helper() -> None:
 def install_helper(python: Path) -> None:
     unload_helper()
     if FROZEN:
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        temporary = INSTALLED_SERVICE.with_suffix(".tmp")
-        shutil.copy2(Path(sys.executable).resolve(), temporary)
-        temporary.chmod(0o755)
-        try:
-            os.removexattr(temporary, "com.apple.quarantine")
-        except (AttributeError, OSError):
-            pass
-        temporary.replace(INSTALLED_SERVICE)
+        install_command_if_needed()
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.write_bytes(launch_agent_contents(python))
     if not HELPER_SUSPENDED:
@@ -715,6 +902,153 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
     return lines
 
 
+def serial_exchange(device, command: str, *, timeout: float = 5.0) -> list[str]:
+    device.write((command + "\n").encode("ascii"))
+    device.flush()
+    lines: list[str] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = device.readline()
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        lines.append(line)
+        show_device_line(line)
+        if line.startswith(("OK ", "ERR ")) or line in {"PONG", "OK"}:
+            break
+    if not lines:
+        raise ToolError("tinyTouch stopped responding during the firmware update.")
+    if lines[-1].startswith("ERR "):
+        raise ToolError(human_device_error(lines[-1]))
+    return lines
+
+
+def install_ota_firmware(port: str, image: bytes, expected_sha256: str) -> str:
+    commit_started = False
+    try:
+        import serial  # type: ignore
+    except ImportError as exc:
+        raise ToolError("The CLI is missing its serial support. Run the installer again.") from exc
+
+    location = port_usb_location(port)
+    say("Touch the sensor to authorize the update.")
+    serial_command(port, "UPDATE_UNLOCK", timeout=15)
+    say("Updating firmware...")
+    token = secrets.token_hex(16)
+    try:
+        with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
+            time.sleep(0.4)
+            device.reset_input_buffer()
+            serial_exchange(device, f"UPDATE_BEGIN {token} {len(image)} {expected_sha256}")
+            try:
+                for offset in range(0, len(image), 360):
+                    chunk = base64.b64encode(image[offset:offset + 360]).decode("ascii")
+                    lines = serial_exchange(device, f"UPDATE_CHUNK {token} {offset} {chunk}")
+                    expected_next = min(offset + 360, len(image))
+                    if not any(f"next={expected_next}" in line for line in lines):
+                        raise ToolError("tinyTouch acknowledged an unexpected firmware offset.")
+                commit_started = True
+                serial_exchange(device, f"UPDATE_COMMIT {token}", timeout=8)
+            except BaseException:
+                try:
+                    serial_exchange(device, f"UPDATE_ABORT {token}", timeout=2)
+                except BaseException:
+                    pass
+                raise
+    except (OSError, serial.SerialException, termios.error) as exc:
+        # A successful commit restarts USB and can close the port before macOS
+        # delivers the final acknowledgment.
+        if not commit_started:
+            raise ToolError(serial_failure_message(port, exc)) from exc
+        verbose(f"update port closed during restart: {exc}")
+    wait_for_port_departure(port)
+    return wait_for_runtime_port(location=location, wait_seconds=30)
+
+
+def migrate_partition_layout(port: str, manifest: dict) -> str:
+    try:
+        import esptool  # type: ignore
+    except ImportError as exc:
+        raise ToolError("The CLI is missing its firmware migration support. Run the installer again.") from exc
+
+    factory = manifest.get("firmware", {}).get("factory", {})
+    images = factory.get("images", [])
+    required = {item.get("file"): item for item in images if isinstance(item, dict)}
+    names = ("bootloader.bin", "partition-table.bin", "tiny_touch_unified.bin")
+    if any(name not in required for name in names):
+        raise ToolError("The release is missing a firmware migration image.")
+
+    payloads = {name: verified_release_asset(required[name], manifest) for name in names}
+    migration_state = manifest.get("migration", {}).get("otaState")
+    if not isinstance(migration_state, dict):
+        raise SupportError("The release is missing its migration state image.")
+    payloads["ota_slot1.bin"] = verified_release_asset(migration_state, manifest)
+    location = port_usb_location(port)
+    if port_is_download_mode(port):
+        download_port = port
+    else:
+        say("Touch the sensor to authorize the update.")
+        unlock_configuration(port)
+        try:
+            serial_command(port, "BOOTLOADER", timeout=3)
+        except ToolError as exc:
+            try:
+                download_port = wait_for_download_port(port, location=location, wait_seconds=5)
+            except ToolError:
+                raise exc
+        else:
+            download_port = wait_for_download_port(port, location=location)
+    say("Preparing firmware updates...")
+    with tempfile.TemporaryDirectory(prefix="tinytouch-update-") as directory_name:
+        directory = Path(directory_name)
+        paths = {}
+        for name, payload in payloads.items():
+            path = directory / name
+            path.write_bytes(payload)
+            paths[name] = path
+        common = [
+            "--chip", "esp32s3", "--port", download_port, "--baud", "460800",
+            "--before", "no_reset", "--after", "no_reset", "write_flash",
+            "--flash_mode", "dio", "--flash_freq", "80m", "--flash_size", "4MB",
+        ]
+        stage_arguments = [*common,
+            "0x110000", str(paths["tiny_touch_unified.bin"]),
+        ]
+        activate_arguments = [*common,
+            "0x0", str(paths["bootloader.bin"]),
+            "0x8000", str(paths["partition-table.bin"]),
+            "0x210000", str(paths["ota_slot1.bin"]),
+            "0x10000", str(paths["tiny_touch_unified.bin"]),
+        ]
+        activate_arguments[9] = "hard_reset"
+        output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(sys.stdout if VERBOSE else output), \
+                 contextlib.redirect_stderr(sys.stderr if VERBOSE else output):
+                esptool.main(stage_arguments)
+                esptool.main(activate_arguments)
+        except SystemExit as exc:
+            if exc.code not in {None, 0}:
+                verbose(output.getvalue())
+                raise SupportError("The firmware migration failed. Run 'tinytouch update --verbose'.") from exc
+    return wait_for_runtime_port(location=location, wait_seconds=30)
+
+
+def enroll_finger_profile(port: str) -> None:
+    orientations = (
+        "center of your finger",
+        "left edge of the same finger",
+        "right edge of the same finger",
+        "fingertip of the same finger",
+    )
+    for index in range(len(orientations)):
+        say(f"Enroll {orientations[index]} ({index + 1} of {len(orientations)}).")
+        serial_command(port, f"ENROLL {index + 1}", timeout=45)
+    serial_command(port, "PROFILE_COMPLETE 4", timeout=3)
+
+
 def provision_piv_keys(port: str, bundle: dict[str, str]) -> str:
     say("Creating this device's unique smart-card identity. This does not reflash firmware.")
     serial_command(port, "PROVISION_BEGIN", timeout=3)
@@ -754,10 +1088,9 @@ def provision_piv_keys(port: str, bundle: dict[str, str]) -> str:
 
 
 def unlock_configuration(port: str) -> None:
-    say("Authorizing configuration changes.")
-    say("If fingerprints are already enrolled, touch the sensor when instructed.")
+    verbose("requesting fingerprint authorization")
     serial_command(port, "CONFIG_UNLOCK", timeout=15)
-    say("  ✓ Configuration authorized for two minutes.")
+    verbose("configuration authorized for two minutes")
 
 
 def provision_hid_key(port: str, key: bytes) -> None:
@@ -996,6 +1329,10 @@ def configure_unified_device(
         fingerprint_count = int(status.get("fingerprints", "0"))
     except ValueError:
         fingerprint_count = 0
+    try:
+        fingerprint_profile = int(status.get("fingerprint_profile", "0"))
+    except ValueError:
+        fingerprint_profile = 0
 
     local_hid_ready = False
     if mode == "hid":
@@ -1015,7 +1352,7 @@ def configure_unified_device(
     changes_needed = (
         status.get("keys") != "nvs"
         or status.get("mode") != mode
-        or (not args.skip_enroll and fingerprint_count == 0)
+        or (not args.skip_enroll and fingerprint_profile != 4)
         or (mode == "hid" and not local_hid_ready)
     )
     step(first_step, total_steps, "Secure this device")
@@ -1033,12 +1370,17 @@ def configure_unified_device(
 
     step(first_step + 1, total_steps, "Set up fingerprint")
     if not args.skip_enroll:
-        if fingerprint_count > 0:
-            say(f"  ✓ Preserving {fingerprint_count} enrolled fingerprint(s).")
+        if fingerprint_profile == 4:
+            verbose("preserving the four-view fingerprint profile")
         else:
-            say("Enroll your first fingerprint.")
-            serial_command(port, "ENROLL 1", timeout=45)
-            say("  ✓ Fingerprint enrolled in slot 1.")
+            if fingerprint_count:
+                answer = ask(
+                    "Replace the existing fingerprint enrollment with four views? [y/N] ",
+                    noninteractive_hint="Run setup in a terminal to approve fingerprint replacement.",
+                )
+                if answer.lower() not in {"y", "yes"}:
+                    raise ToolError("Fingerprint enrollment was not changed.")
+            enroll_finger_profile(port)
     else:
         say("Fingerprint enrollment was skipped as requested.")
 
@@ -1050,14 +1392,19 @@ def configure_unified_device(
         pair_piv(port=port)
     elif mode == "piv":
         say("macOS smart-card pairing was skipped as requested.")
-    say()
-    say(f"Setup complete — {mode.upper()} mode is ready.")
-    say("Unplug tinyTouch, reconnect it, then run: tinytouch test")
+    location = port_usb_location(port)
+    try:
+        serial_command(port, "USB_RECONNECT", timeout=3)
+    except ToolError:
+        pass
+    time.sleep(1.0)
+    wait_for_runtime_port(location=location)
+    say(f"tinyTouch is ready in {mode.upper()} mode.")
 
 
 def command_setup(args: argparse.Namespace) -> None:
     require_macos()
-    say("tinyTouch setup")
+    say("Setting up tinyTouch...")
     mode = choose_mode(args.mode)
     step(1, 4, "Connect tinyTouch")
     port = choose_port(args.port)
@@ -1128,11 +1475,9 @@ def command_add_computer(args: argparse.Namespace) -> None:
     if fingerprint_count == 0:
         if not configuration_unlocked:
             unlock_configuration(port)
-        say("Enroll your first fingerprint.")
-        serial_command(port, "ENROLL 1", timeout=45)
-        say("  ✓ Fingerprint enrolled in slot 1.")
+        enroll_finger_profile(port)
     else:
-        say(f"  ✓ Preserving {fingerprint_count} enrolled fingerprint(s).")
+        verbose(f"preserving {fingerprint_count} enrolled fingerprint views")
 
     if mode == "hid":
         step(4, 4, "Add HID access for this Mac")
@@ -1277,14 +1622,58 @@ def command_test(args: argparse.Namespace) -> None:
 
 def command_enroll(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    say(f"Add a fingerprint in slot {args.slot}")
     status = status_fields(port)
     require_unified_firmware(status)
     require_fingerprint_sensor(status)
     unlock_configuration(port)
-    say("Follow each sensor instruction below.")
-    serial_command(port, f"ENROLL {args.slot}", timeout=45)
-    say(f"  ✓ Fingerprint enrolled in slot {args.slot}.")
+    if args.slot:
+        say(f"Enroll fingerprint slot {args.slot}.")
+        serial_command(port, f"ENROLL {args.slot}", timeout=45)
+    else:
+        try:
+            existing = int(status.get("fingerprints", "0"))
+        except ValueError:
+            existing = 0
+        if existing:
+            answer = ask("Replace slots 1–4 with four views of one finger? [y/N] ")
+            if answer.lower() not in {"y", "yes"}:
+                raise ToolError("Fingerprint enrollment was not changed.")
+        enroll_finger_profile(port)
+    say("Fingerprint enrollment complete.")
+
+
+def command_update(args: argparse.Namespace) -> None:
+    require_macos()
+    manifest = release_manifest()
+    if update_installed_cli(manifest, announce=True):
+        os.execv(str(CLI_INSTALL_PATH), [str(CLI_INSTALL_PATH), *sys.argv[1:]])
+    port = choose_port(args.port)
+    if port_is_download_mode(port):
+        port = migrate_partition_layout(port, manifest)
+    status = status_fields(port)
+    require_unified_firmware(status)
+    require_fingerprint_sensor(status)
+    if firmware_protocol(status) < 3 or status.get("ota") != "ready":
+        port = migrate_partition_layout(port, manifest)
+        status = status_fields(port)
+        if firmware_protocol(status) < 3 or status.get("ota") != "ready":
+            raise SupportError("tinyTouch restarted, but its update system is not ready.")
+    else:
+        metadata = manifest.get("ota")
+        if not isinstance(metadata, dict):
+            raise ToolError("This release does not include a firmware update.")
+        image = verified_release_asset(metadata, manifest)
+        port = install_ota_firmware(port, image, metadata["sha256"])
+        status = status_fields(port)
+    if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
+        raise SupportError("tinyTouch restarted with an unexpected firmware version.")
+    time.sleep(3)
+    confirmed_status = status_fields(port)
+    require_fingerprint_sensor(confirmed_status)
+    if confirmed_status.get("build") != manifest.get("build"):
+        raise SupportError("tinyTouch did not remain on the expected firmware build.")
+    serial_command(port, f"CONFIRM_FIRMWARE {manifest['build']}", timeout=3)
+    say("tinyTouch is up to date.")
 
 
 def command_pair(args: argparse.Namespace) -> None:
@@ -1457,12 +1846,17 @@ def parser() -> argparse.ArgumentParser:
     test.add_argument("--port", help="use a specific /dev/cu.* device")
     test.set_defaults(func=command_test)
 
-    enroll = sub.add_parser("enroll", help="enroll a fingerprint")
+    enroll = sub.add_parser("enroll", help="enroll four views of one finger")
     add_verbose_option(enroll)
-    enroll.add_argument("--slot", type=int, choices=range(1, 6), default=1,
-                        help="fingerprint slot, from 1 through 5")
+    enroll.add_argument("--slot", type=int, choices=range(1, 6),
+                        help="advanced: replace one fingerprint slot")
     enroll.add_argument("--port", help="use a specific /dev/cu.* device")
     enroll.set_defaults(func=command_enroll)
+
+    update = sub.add_parser("update", help="update the CLI and firmware")
+    add_verbose_option(update)
+    update.add_argument("--port", help="use a specific /dev/cu.* device")
+    update.set_defaults(func=command_update)
 
     pair = sub.add_parser("pair", help="pair the current Mac user with the attached PIV device")
     add_verbose_option(pair)
@@ -1516,25 +1910,41 @@ def main() -> int:
 
         helper_main()
         return 0
+    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_package_test":
+        import serial  # type: ignore  # noqa: F401
+        import esptool  # type: ignore  # noqa: F401
+        from esptool.targets.esp32s3 import ESP32S3ROM  # type: ignore  # noqa: F401
+
+        say(f"package ok ({platform.machine()})")
+        return 0
+    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_auto_update":
+        auto_update_cli(force=True)
+        return 0
     install_command_if_needed()
     args = parser().parse_args()
     VERBOSE = args.verbose
+    if args.command != "update":
+        schedule_auto_update()
     device_commands = {
         "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
-        "factory-reset", "delete", "bootloader",
+        "factory-reset", "delete", "bootloader", "update",
     }
-    helper_was_loaded = False
+    helper_was_loaded = os.environ.pop("_TINYTOUCH_RESTART_HELPER", "") == "1"
     try:
         show_startup_mark()
         if args.command in device_commands:
             reexec_in_environment_if_needed()
-            helper_was_loaded = unload_helper()
+            helper_was_loaded = unload_helper() or helper_was_loaded
+            if helper_was_loaded:
+                os.environ["_TINYTOUCH_RESTART_HELPER"] = "1"
             HELPER_SUSPENDED = True
         args.func(args)
         return 0
     except (ToolError, KeyboardInterrupt, EOFError) as exc:
         message = str(exc) or "cancelled"
         print(f"tinytouch: {message}", file=sys.stderr)
+        if isinstance(exc, SupportError):
+            print(f"Contact {SUPPORT_EMAIL} if this continues.", file=sys.stderr)
         return 1
     finally:
         if HELPER_SUSPENDED:

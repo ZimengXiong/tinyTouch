@@ -17,9 +17,20 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - name: Load firmware signing key
+        env:
+          SIGNING_KEY_B64: ${{ secrets.TINYTOUCH_FIRMWARE_SIGNING_KEY_B64 }}
+        run: |
+          test -n "$SIGNING_KEY_B64"
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > \
+            firmware/tiny_touch_unified/secure_boot_signing_key.pem
+          test -s firmware/tiny_touch_unified/secure_boot_signing_key.pem
       - name: Match tag to shared version
         shell: bash
-        run: test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
+          test "$(jq -r .manifest channels/batch-0.json)" = \
+            "https://github.com/ZimengXiong/TinyTouch/releases/download/$GITHUB_REF_NAME/release-manifest.json"
       - run: |
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified build
@@ -38,7 +49,14 @@ jobs:
           path: dist/release
 
   cli:
-    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+          - architecture: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - name: Match tag to shared version
@@ -46,18 +64,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-          architecture: arm64
+          architecture: ${{ matrix.architecture }}
       - name: Build and ad-hoc sign executable
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
         run: packaging/build-standalone-macos.sh
       - run: |
-          test "$(dist/tinytouch --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
-          codesign --verify --strict --verbose=2 dist/tinytouch
+          mkdir dist/verify
+          tar -C dist/verify -xzf dist/tinytouch.tar.gz
+          cli=dist/verify/tinytouch/tinytouch
+          test "$("$cli" --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
+          "$cli" _package_test
+          codesign --verify --strict --verbose=2 "$cli"
       - uses: actions/upload-artifact@v7
         with:
-          name: cli-release
-          path: dist/tinytouch
+          name: cli-release-${{ matrix.architecture }}
+          path: dist/tinytouch.tar.gz
 
   publish:
     needs: [firmware, cli]
@@ -70,11 +92,17 @@ jobs:
           path: dist/release
       - uses: actions/download-artifact@v8
         with:
-          name: cli-release
-          path: dist/cli
+          name: cli-release-arm64
+          path: dist/cli-arm64
+      - uses: actions/download-artifact@v8
+        with:
+          name: cli-release-x64
+          path: dist/cli-x64
       - name: Finalize unified release
         run: |
-          python3 packaging/attach-cli.py dist/release dist/cli/tinytouch
+          python3 packaging/attach-cli.py dist/release \
+            --arm64 dist/cli-arm64/tinytouch.tar.gz \
+            --x86-64 dist/cli-x64/tinytouch.tar.gz
           mkdir -p dist/site/flasher/firmware dist/site/recovery/firmware
           cp -R web/flasher/index.html web/flasher/styles.css web/flasher/app.js web/flasher/vendor dist/site/flasher/
           cp -R web/recovery/index.html web/recovery/styles.css web/recovery/app.js web/recovery/vendor dist/site/recovery/
@@ -82,6 +110,7 @@ jobs:
           cp dist/release/factory/*.bin dist/site/flasher/firmware/
           cp dist/release/recovery/manifest.json dist/site/recovery/manifest.json
           cp dist/release/recovery/*.bin dist/site/recovery/firmware/
+          cp dist/release/release-manifest.json dist/site/release.json
           tar -C dist/site -czf dist/release/tinytouch-web-flashers.tar.gz .
           tar -C dist/release -czf dist/release/tinytouch-firmware.tar.gz factory recovery release-manifest.json checksums.txt
       - name: Publish GitHub release
@@ -92,15 +121,25 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" "${release_flags[@]}"
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" "${release_flags[@]}"
+          fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
             dist/release/factory/tiny_touch_factory_full.bin \
+            dist/release/factory/bootloader.bin \
+            dist/release/factory/partition-table.bin \
+            dist/release/factory/tiny_touch_unified.bin \
+            dist/release/factory/ota_data_initial.bin \
+            dist/release/tiny_touch_unified.bin \
+            dist/release/ota_slot1.bin \
             dist/release/recovery/tiny_touch_recovery_full.bin \
-            dist/release/release-manifest.json \
-            dist/release/checksums.txt \
-            dist/release/tinytouch-macos-arm64 \
+            dist/release/tinytouch-macos-arm64.tar.gz \
+            dist/release/tinytouch-macos-x86_64.tar.gz \
             dist/release/tinytouch-firmware.tar.gz \
             dist/release/tinytouch-web-flashers.tar.gz
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            dist/release/checksums.txt \
+            dist/release/release-manifest.json
 
       - name: Dispatch site deployment
         env:

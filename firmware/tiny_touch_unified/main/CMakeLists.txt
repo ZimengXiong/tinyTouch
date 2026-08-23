@@ -4,12 +4,13 @@ idf_component_register(
     "config_console.c"
     "device_config.c"
     "fingerprint.c"
+    "firmware_update.c"
     "piv.c"
     "touch_pin_hid.c"
     "usb_ccid.c"
     "usb_descriptors.c"
   INCLUDE_DIRS "."
-  REQUIRES driver esp_timer esp_tinyusb mbedtls nvs_flash
+  REQUIRES app_update driver esp_timer esp_tinyusb mbedtls nvs_flash
 )
 
 if(TINYTOUCH_RECOVERY_BUILD)
@@ -19,5 +20,6 @@ endif()
 target_compile_definitions(
   ${COMPONENT_LIB} PRIVATE
   TINYTOUCH_FIRMWARE_VERSION="${TINYTOUCH_VERSION}"
-  TINYTOUCH_PROTOCOL_VERSION=2
+  TINYTOUCH_BUILD_ID="${TINYTOUCH_BUILD_ID}"
+  TINYTOUCH_PROTOCOL_VERSION=3
 )

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import binascii
 import hashlib
 import json
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-PROTOCOL = 2
+PROTOCOL = 3
 FLASH_SIZE = 4 * 1024 * 1024
 
 
@@ -48,6 +50,13 @@ def merge(images: list[dict], directory: Path, output: Path) -> None:
     subprocess.run(command, check=True)
 
 
+def write_ota_slot1(path: Path) -> None:
+    sequence = struct.pack("<I", 2)
+    crc = binascii.crc32(sequence, 0xFFFFFFFF) & 0xFFFFFFFF
+    entry = sequence + (b"\xFF" * 20) + struct.pack("<II", 0, crc)
+    path.write_bytes(entry + (b"\xFF" * (8192 - len(entry))))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware-build", type=Path, required=True)
@@ -70,6 +79,7 @@ def main() -> None:
                 ("Bootloader", "bootloader/bootloader.bin", "bootloader.bin", 0x0),
                 ("Partition table", "partition_table/partition-table.bin", "partition-table.bin", 0x8000),
                 ("Unified firmware", "tiny_touch_unified.bin", "tiny_touch_unified.bin", 0x10000),
+                ("OTA state", "ota_data_initial.bin", "ota_data_initial.bin", 0x210000),
             ],
         ),
         "recovery": (
@@ -78,6 +88,7 @@ def main() -> None:
                 ("Bootloader", "bootloader/bootloader.bin", "bootloader.bin", 0x0),
                 ("Partition table", "partition_table/partition-table.bin", "partition-table.bin", 0x8000),
                 ("Recovery firmware", "tiny_touch_unified.bin", "tiny_touch_recovery.bin", 0x10000),
+                ("OTA state", "ota_data_initial.bin", "ota_data_initial.bin", 0x210000),
             ],
         ),
     }
@@ -106,14 +117,44 @@ def main() -> None:
             json.dumps(layouts[kind], indent=2) + "\n", encoding="utf-8"
         )
 
-    release = {"version": VERSION, "protocol": PROTOCOL, "firmware": layouts}
+    built_app = output / "factory" / "tiny_touch_unified.bin"
+    ota_image = output / "tiny_touch_unified.bin"
+    shutil.copy2(built_app, ota_image)
+    migration_state = output / "ota_slot1.bin"
+    write_ota_slot1(migration_state)
+    build_id = subprocess.run(
+        ["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    release = {
+        "version": VERSION,
+        "build": build_id,
+        "protocol": PROTOCOL,
+        "boards": ["esp32s3-super-mini", "seeed-xiao-esp32s3"],
+        "firmware": layouts,
+        "ota": {
+            "file": ota_image.name,
+            "size": ota_image.stat().st_size,
+            "sha256": digest(ota_image),
+        },
+        "migration": {
+            "otaState": {
+                "file": migration_state.name,
+                "size": migration_state.stat().st_size,
+                "sha256": digest(migration_state),
+            }
+        },
+    }
     if args.cli:
-        cli_target = output / "tinytouch-macos-arm64"
+        cli_target = output / "tinytouch-macos-arm64.tar.gz"
         shutil.copy2(args.cli, cli_target)
         release["cli"] = {
-            "file": cli_target.name,
-            "size": cli_target.stat().st_size,
-            "sha256": digest(cli_target),
+            "macos-arm64": {
+                "file": cli_target.name,
+                "size": cli_target.stat().st_size,
+                "sha256": digest(cli_target),
+                "format": "tar.gz",
+            }
         }
     (output / "release-manifest.json").write_text(
         json.dumps(release, indent=2) + "\n", encoding="utf-8"

@@ -5,10 +5,12 @@
 #include <string.h>
 
 #include "fingerprint.h"
+#include "firmware_update.h"
 #include "device_config.h"
 #include "piv.h"
 #include "touch_pin_hid.h"
 #include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -26,11 +28,17 @@
 #ifndef TINYTOUCH_PROTOCOL_VERSION
 #define TINYTOUCH_PROTOCOL_VERSION 1
 #endif
+#ifndef TINYTOUCH_BUILD_ID
+#define TINYTOUCH_BUILD_ID "development"
+#endif
 
 static char command[640];
 static size_t command_len;
 static SemaphoreHandle_t cdc_write_mutex;
 static int64_t config_authorized_until;
+static int64_t update_authorized_until;
+static int64_t update_last_activity;
+static char update_token[33];
 
 typedef struct {
   uint8_t data[2400];
@@ -99,6 +107,57 @@ static bool decode_hex(const char *hex, uint8_t *output, size_t output_length) {
 
 static bool decode_hid_key(const char *hex, uint8_t key[32]) {
   return decode_hex(hex, key, 32);
+}
+
+static bool valid_update_token(const char *token) {
+  return update_token[0] && strlen(token) == 32 && strcmp(token, update_token) == 0;
+}
+
+static bool begin_firmware_update(char *arguments) {
+  char *size_text = strchr(arguments, ' ');
+  if (!size_text || size_text - arguments != 32) return false;
+  *size_text++ = '\0';
+  char *digest_hex = strchr(size_text, ' ');
+  if (!digest_hex) return false;
+  *digest_hex++ = '\0';
+  char *end = NULL;
+  unsigned long size = strtoul(size_text, &end, 10);
+  uint8_t digest[32];
+  bool ok = end && *end == '\0' && size > 0 && decode_hex(digest_hex, digest, sizeof(digest)) &&
+            firmware_update_begin((size_t)size, digest);
+  if (ok) {
+    memcpy(update_token, arguments, 33);
+    update_last_activity = esp_timer_get_time();
+  }
+  memset(digest, 0, sizeof(digest));
+  return ok;
+}
+
+static bool append_firmware_chunk(char *arguments, size_t *next_offset) {
+  char *offset_text = strchr(arguments, ' ');
+  if (!offset_text) return false;
+  *offset_text++ = '\0';
+  char *encoded = strchr(offset_text, ' ');
+  if (!encoded) return false;
+  *encoded++ = '\0';
+  char *end = NULL;
+  unsigned long offset = strtoul(offset_text, &end, 10);
+  uint8_t decoded[384];
+  size_t decoded_length = 0;
+  bool ok = valid_update_token(arguments) && end && *end == '\0' &&
+            mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
+                                  (const unsigned char *)encoded, strlen(encoded)) == 0 &&
+            decoded_length > 0 && firmware_update_write((size_t)offset, decoded, decoded_length);
+  if (ok) {
+    update_last_activity = esp_timer_get_time();
+    *next_offset = firmware_update_written();
+  }
+  return ok;
+}
+
+static void clear_update_session(void) {
+  update_token[0] = '\0';
+  update_last_activity = 0;
 }
 
 static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
@@ -189,7 +248,7 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[192];
+  char line[256];
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
@@ -197,22 +256,25 @@ static void handle_command(void) {
     if (count < 0) {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
-               "sensor=no_response fingerprints=unknown keys=%s hid_key=%s hid_hosts=%u",
+               "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u ota=%s build=%s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
-               device_config_mode_name(),
+               device_config_mode_name(), (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
                device_config_hid_key_configured() ? "configured" : "unconfigured",
-               (unsigned)device_config_hid_host_count());
+               (unsigned)device_config_hid_host_count(),
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
       send_line(line);
     } else {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
-               "sensor=ok fingerprints=%d keys=%s hid_key=%s hid_hosts=%u",
+               "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u ota=%s build=%s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), count,
+               (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
                device_config_hid_key_configured() ? "configured" : "unconfigured",
-               (unsigned)device_config_hid_host_count());
+               (unsigned)device_config_hid_host_count(),
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
       send_line(line);
     }
   } else if (strcmp(command, "VERSION") == 0) {
@@ -233,6 +295,19 @@ static void handle_command(void) {
         send_line("OK CONFIG_UNLOCK fingerprint seconds=120");
       } else {
         send_line("ERR CONFIG_UNLOCK fingerprint");
+      }
+    }
+  } else if (strcmp(command, "UPDATE_UNLOCK") == 0) {
+    int count = fingerprint_count();
+    if (count <= 0) {
+      send_line("ERR UPDATE_UNLOCK fingerprint_required");
+    } else {
+      send_line("PROMPT TOUCH");
+      if (fingerprint_authorize_once()) {
+        update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
+        send_line("OK UPDATE_UNLOCK seconds=30");
+      } else {
+        send_line("ERR UPDATE_UNLOCK fingerprint");
       }
     }
   } else if (strncmp(command, "MODE ", 5) == 0) {
@@ -291,17 +366,26 @@ static void handle_command(void) {
     if (!require_config_authorization()) return;
     unsigned long slot = strtoul(command + 7, NULL, 10);
     bool ok = fingerprint_enroll((uint16_t)slot, enrollment_prompt);
+    if (ok) authorize_config();
     snprintf(line, sizeof(line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
     send_line(line);
+  } else if (strncmp(command, "PROFILE_COMPLETE ", 17) == 0) {
+    if (!require_config_authorization()) return;
+    unsigned long views = strtoul(command + 17, NULL, 10);
+    bool ok = views == 4 && device_config_set_fingerprint_profile_views((uint8_t)views);
+    send_line(ok ? "OK PROFILE_COMPLETE views=4" : "ERR PROFILE_COMPLETE");
   } else if (strncmp(command, "DELETE ", 7) == 0) {
     if (!require_config_authorization()) return;
     unsigned long slot = strtoul(command + 7, NULL, 10);
     bool ok = fingerprint_delete((uint16_t)slot);
+    if (ok) ok = device_config_set_fingerprint_profile_views(0);
     snprintf(line, sizeof(line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
     send_line(line);
   } else if (strcmp(command, "DELETE_ALL") == 0) {
     if (!require_config_authorization()) return;
-    send_line(fingerprint_delete_all() ? "OK DELETE_ALL" : "ERR DELETE_ALL");
+    bool ok = fingerprint_delete_all();
+    if (ok) ok = device_config_set_fingerprint_profile_views(0);
+    send_line(ok ? "OK DELETE_ALL" : "ERR DELETE_ALL");
   } else if (strcmp(command, "PAIRING_MODE") == 0) {
     send_line("PROMPT TOUCH");
     if (fingerprint_authorize_once()) {
@@ -325,6 +409,48 @@ static void handle_command(void) {
   } else if (strcmp(command, "PROVISION_COMMIT") == 0) {
     if (!require_config_authorization()) return;
     send_line(commit_provisioning() ? "OK PROVISION_COMMIT" : "ERR PROVISION_COMMIT");
+  } else if (strncmp(command, "UPDATE_BEGIN ", 13) == 0) {
+    if (esp_timer_get_time() >= update_authorized_until) {
+      send_line("ERR UPDATE_LOCKED run=UPDATE_UNLOCK");
+      return;
+    }
+    update_authorized_until = 0;
+    send_line(begin_firmware_update(command + 13) ? "OK UPDATE_BEGIN next=0" : "ERR UPDATE_BEGIN");
+  } else if (strncmp(command, "UPDATE_CHUNK ", 13) == 0) {
+    size_t next_offset = 0;
+    bool ok = append_firmware_chunk(command + 13, &next_offset);
+    snprintf(line, sizeof(line), ok ? "OK UPDATE_CHUNK next=%u" : "ERR UPDATE_CHUNK next=%u",
+             (unsigned)(ok ? next_offset : firmware_update_written()));
+    send_line(line);
+  } else if (strncmp(command, "UPDATE_ABORT ", 13) == 0) {
+    if (!valid_update_token(command + 13)) {
+      send_line("ERR UPDATE_SESSION");
+      return;
+    }
+    firmware_update_abort();
+    clear_update_session();
+    send_line("OK UPDATE_ABORT");
+  } else if (strncmp(command, "UPDATE_COMMIT ", 14) == 0) {
+    if (!valid_update_token(command + 14)) {
+      send_line("ERR UPDATE_SESSION");
+      return;
+    }
+    bool ok = firmware_update_commit();
+    clear_update_session();
+    send_line(ok ? "OK UPDATE_COMMIT" : "ERR UPDATE_COMMIT");
+    if (ok) {
+      vTaskDelay(pdMS_TO_TICKS(150));
+      esp_restart();
+    }
+  } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
+    bool ok = build_matches &&
+              (esp_ota_get_state_partition(running, &state) != ESP_OK ||
+               state != ESP_OTA_IMG_PENDING_VERIFY ||
+               esp_ota_mark_app_valid_cancel_rollback() == ESP_OK);
+    send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
     send_line(factory_reset() ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
@@ -351,6 +477,10 @@ static void handle_command(void) {
 static void console_task(void *arg) {
   (void)arg;
   while (true) {
+    if (update_token[0] && esp_timer_get_time() - update_last_activity > 30LL * 1000000LL) {
+      firmware_update_abort();
+      clear_update_session();
+    }
     while (tud_cdc_available()) {
       char c;
       if (tud_cdc_read(&c, 1) != 1) break;
@@ -376,6 +506,8 @@ static void console_task(void *arg) {
 void config_console_start(void) {
   command_len = 0;
   config_authorized_until = 0;
+  update_authorized_until = 0;
+  clear_update_session();
   cdc_write_mutex = xSemaphoreCreateMutex();
   xTaskCreate(console_task, "config_console", 4096, NULL, 3, NULL);
 }

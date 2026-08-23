@@ -5,6 +5,10 @@ import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
+import base64
+import sys
+import serial
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +21,15 @@ loader.exec_module(cli)
 class PackagingTests(unittest.TestCase):
     def test_version_comes_from_shared_version_file(self):
         self.assertEqual(cli.CLI_VERSION, (ROOT / "VERSION").read_text().strip())
+
+    def test_batch_channel_points_to_a_github_release_manifest(self):
+        import json
+
+        channel = json.loads((ROOT / "channels" / "batch-0.json").read_text())
+        self.assertRegex(
+            channel["manifest"],
+            r"^https://github\.com/ZimengXiong/TinyTouch/releases/download/.+/release-manifest\.json$",
+        )
 
     def test_only_unified_firmware_source_is_present(self):
         firmware = ROOT / "firmware"
@@ -167,6 +180,90 @@ class PackagingTests(unittest.TestCase):
                 )
         self.assertIn("preserves the existing key", str(context.exception))
 
+    def test_guided_enrollment_records_complete_profile(self):
+        commands = []
+        with mock.patch.object(
+            cli, "serial_command",
+            side_effect=lambda _port, command, **_kwargs: commands.append(command) or ["OK"],
+        ):
+            cli.enroll_finger_profile("/dev/cu.example")
+        self.assertEqual(commands, [
+            "ENROLL 1", "ENROLL 2", "ENROLL 3", "ENROLL 4", "PROFILE_COMPLETE 4",
+        ])
+
+    def test_migration_stages_recoverable_slot_before_activation(self):
+        calls = []
+        fake_esptool = SimpleNamespace(main=lambda arguments: calls.append(arguments))
+        images = [
+            {"file": name, "size": 1, "sha256": "0" * 64}
+            for name in ("bootloader.bin", "partition-table.bin", "tiny_touch_unified.bin")
+        ]
+        manifest = {
+            "version": "0.4.3-preprod",
+            "firmware": {"factory": {"images": images}},
+            "migration": {"otaState": {
+                "file": "ota_slot1.bin", "size": 1, "sha256": "0" * 64,
+            }},
+        }
+        with (
+            mock.patch.dict(sys.modules, {"esptool": fake_esptool}),
+            mock.patch.object(cli, "verified_release_asset", return_value=b"x"),
+            mock.patch.object(cli, "port_is_download_mode", return_value=True),
+            mock.patch.object(cli, "port_usb_location", return_value="1-2"),
+            mock.patch.object(cli, "wait_for_runtime_port", return_value="/dev/cu.runtime"),
+        ):
+            result = cli.migrate_partition_layout("/dev/cu.download", manifest)
+        self.assertEqual(result, "/dev/cu.runtime")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("0x110000", calls[0])
+        self.assertNotIn("0x8000", calls[0])
+        self.assertEqual(calls[0][9], "no_reset")
+        self.assertEqual(calls[1][9], "hard_reset")
+        for address in ("0x0", "0x8000", "0x210000", "0x10000"):
+            self.assertIn(address, calls[1])
+
+    def test_ota_transfer_uses_authenticated_ordered_session(self):
+        writes = []
+
+        class FakeSerial:
+            def __init__(self, *_args, **_kwargs):
+                self.responses = []
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def reset_input_buffer(self): pass
+            def flush(self): pass
+            def write(self, payload):
+                command = payload.decode("ascii").strip()
+                writes.append(command)
+                if command.startswith("UPDATE_BEGIN "):
+                    self.responses.append(b"OK UPDATE_BEGIN next=0\n")
+                elif command.startswith("UPDATE_CHUNK "):
+                    _, _, offset, encoded = command.split()
+                    next_offset = int(offset) + len(base64.b64decode(encoded))
+                    self.responses.append(f"OK UPDATE_CHUNK next={next_offset}\n".encode())
+                elif command.startswith("UPDATE_COMMIT "):
+                    self.responses.append(b"OK UPDATE_COMMIT\n")
+                else:
+                    self.responses.append(b"OK\n")
+            def readline(self):
+                return self.responses.pop(0) if self.responses else b""
+
+        image = bytes(range(256)) * 3
+        with (
+            mock.patch.object(serial, "Serial", FakeSerial),
+            mock.patch.object(cli, "serial_command", return_value=["OK UPDATE_UNLOCK"]),
+            mock.patch.object(cli, "port_usb_location", return_value="1-2"),
+            mock.patch.object(cli, "wait_for_port_departure"),
+            mock.patch.object(cli, "wait_for_runtime_port", return_value="/dev/cu.runtime"),
+            mock.patch.object(cli.secrets, "token_hex", return_value="a" * 32),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            result = cli.install_ota_firmware("/dev/cu.example", image, "b" * 64)
+        self.assertEqual(result, "/dev/cu.runtime")
+        self.assertTrue(writes[0].startswith("UPDATE_BEGIN " + "a" * 32))
+        self.assertEqual([item.split()[2] for item in writes[1:-1]], ["0", "360", "720"])
+        self.assertEqual(writes[-1], "UPDATE_COMMIT " + "a" * 32)
+
 
 class ParserTests(unittest.TestCase):
     def test_setup_mode(self):
@@ -249,6 +346,14 @@ class ParserTests(unittest.TestCase):
     def test_verbose_defaults_off(self):
         args = cli.parser().parse_args(["status"])
         self.assertFalse(args.verbose)
+
+    def test_update_is_a_customer_command(self):
+        args = cli.parser().parse_args(["update", "--port", "/dev/cu.example"])
+        self.assertEqual(args.port, "/dev/cu.example")
+
+    def test_enroll_defaults_to_guided_profile(self):
+        args = cli.parser().parse_args(["enroll"])
+        self.assertIsNone(args.slot)
 
 
 if __name__ == "__main__":

@@ -29,4 +29,6 @@ bool device_config_get_hid_host(size_t index, device_hid_host_t *host);
 bool device_config_add_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE],
                                 const uint8_t key[32]);
 bool device_config_remove_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE]);
+uint8_t device_config_fingerprint_profile_views(void);
+bool device_config_set_fingerprint_profile_views(uint8_t views);
 void device_config_reload(void);
