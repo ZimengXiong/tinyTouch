@@ -264,6 +264,29 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual([item.split()[2] for item in writes[1:-1]], ["0", "360", "720"])
         self.assertEqual(writes[-1], "UPDATE_COMMIT " + "a" * 32)
 
+    def test_update_skips_firmware_that_is_already_current(self):
+        args = SimpleNamespace(port="/dev/cu.example")
+        manifest = {"version": "0.4.3-preprod", "build": "abc123def456"}
+        status = {
+            "firmware": "unified", "sensor": "ok", "protocol": "3", "ota": "ready",
+            "firmware_version": manifest["version"], "build": manifest["build"],
+        }
+        with (
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "release_manifest", return_value=manifest),
+            mock.patch.object(cli, "update_installed_cli", return_value=False),
+            mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "port_is_download_mode", return_value=False),
+            mock.patch.object(cli, "status_fields", return_value=status),
+            mock.patch.object(cli, "install_ota_firmware") as install_ota,
+            mock.patch.object(cli, "migrate_partition_layout") as migrate,
+            mock.patch.object(cli, "say") as say,
+        ):
+            cli.command_update(args)
+        install_ota.assert_not_called()
+        migrate.assert_not_called()
+        say.assert_called_once_with("tinyTouch is up to date.")
+
 
 class ParserTests(unittest.TestCase):
     def test_setup_mode(self):

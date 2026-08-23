@@ -128,7 +128,6 @@ jobs:
             dist/release/factory/tiny_touch_factory_full.bin \
             dist/release/factory/bootloader.bin \
             dist/release/factory/partition-table.bin \
-            dist/release/factory/tiny_touch_unified.bin \
             dist/release/factory/ota_data_initial.bin \
             dist/release/tiny_touch_unified.bin \
             dist/release/ota_slot1.bin \

@@ -1653,6 +1653,14 @@ def command_update(args: argparse.Namespace) -> None:
     status = status_fields(port)
     require_unified_firmware(status)
     require_fingerprint_sensor(status)
+    if (
+        firmware_protocol(status) >= 3
+        and status.get("ota") == "ready"
+        and status.get("firmware_version") == manifest.get("version")
+        and status.get("build") == manifest.get("build")
+    ):
+        say("tinyTouch is up to date.")
+        return
     if firmware_protocol(status) < 3 or status.get("ota") != "ready":
         port = migrate_partition_layout(port, manifest)
         status = status_fields(port)
