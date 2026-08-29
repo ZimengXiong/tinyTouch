@@ -38,6 +38,23 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertNotIn("device_config_submit_enter", body)
         self.assertNotIn("HID_KEY_0", body)
 
+    def test_piv_private_key_slots_require_user_presence(self):
+        source = (MAIN / "piv.c").read_text()
+        body = source.split("static bool handle_general_authenticate", 1)[1].split(
+            "void piv_init", 1
+        )[0]
+
+        self.assertIn("apdu[3] == 0x9a || apdu[3] == 0x9d", body)
+        self.assertNotRegex(body, r"if\s*\(\s*apdu\[3\]\s*==\s*0x9a\s*\)")
+        self.assertIn("deadline_active(user_presence_until", body)
+        self.assertIn("if (!user_presence_valid && !pairing_mode_valid)", body)
+
+        presence_gate = body.index("if (!user_presence_valid && !pairing_mode_valid)")
+        denied_path = body[presence_gate:body.index("}", presence_gate)]
+        self.assertIn("0x6982", denied_path)
+        self.assertLess(presence_gate, body.index("mbedtls_rsa_private"))
+        self.assertLess(presence_gate, body.index("mbedtls_pk_sign"))
+
     def test_hid_payload_is_preflighted_before_first_key(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         body = source.split("static bool type_ascii", 1)[1].split(
