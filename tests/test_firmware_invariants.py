@@ -78,6 +78,25 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("hid_remote_wakeup_enabled", hid)
         self.assertIn("tud_remote_wakeup()", hid)
 
+    def test_suspended_touch_does_not_require_sensor_interrupt(self):
+        source = (MAIN / "touch_pin_hid.c").read_text()
+        availability = source.split(
+            "static bool suspended_sensor_poll_available", 1
+        )[1].split("static void handle_fingerprint_match", 1)[0]
+        task = source.split("static void touch_hid_task", 1)[1].split(
+            "void touch_pin_hid_start", 1
+        )[0]
+        self.assertIn("hid_suspended", availability)
+        self.assertIn("hid_remote_wakeup_enabled", availability)
+        self.assertNotIn("fingerprint_present_hint", availability)
+        self.assertIn(
+            "tud_hid_ready() || suspended_sensor_poll_available()", task
+        )
+        self.assertLess(
+            task.index("fingerprint_authorize_poll_match()"),
+            task.index("if (hid_suspended)"),
+        )
+
     def test_tinyusb_has_one_service_task(self):
         sources = "\n".join(path.read_text() for path in MAIN.glob("*.c"))
         self.assertNotIn("tud_task();", sources)

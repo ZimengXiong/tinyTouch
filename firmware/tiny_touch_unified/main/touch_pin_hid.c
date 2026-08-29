@@ -30,6 +30,8 @@ static volatile bool hid_remote_wakeup_enabled;
 static volatile bool hid_remote_wakeup_attempted;
 
 #define USB_LONG_SUSPEND_MS 5000
+#define USB_WAKE_TIMEOUT_MS 2000
+#define SUSPENDED_SENSOR_POLL_MS 250
 
 static void secure_wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -320,11 +322,29 @@ done:
   return result;
 }
 
+static bool suspended_sensor_poll_available(void) {
+  return hid_suspended && hid_remote_wakeup_enabled &&
+         !hid_remote_wakeup_attempted;
+}
+
+static void handle_fingerprint_match(fingerprint_match_t match) {
+  if (device_config_mode() == DEVICE_MODE_HID) {
+    ESP_LOGI(TAG, "finger matched; requesting HID password");
+    if (!request_and_type_password(match)) ESP_LOGW(TAG, "HID helper request failed");
+  } else {
+    ESP_LOGI(TAG, "finger matched; authorizing PIV and typing PIN");
+    piv_note_user_presence();
+    if (!type_dummy_pin()) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
+  }
+}
+
 static void touch_hid_task(void *arg) {
   (void)arg;
   TickType_t last_success = 0;
   TickType_t last_poll = 0;
+  TickType_t pending_since = 0;
   bool wait_for_lift = false;
+  fingerprint_match_t pending_match = {0};
 
   while (true) {
     if (hid_suspended && hid_remote_wakeup_enabled &&
@@ -341,19 +361,37 @@ static void touch_hid_task(void *arg) {
       hid_needs_release = true;
       continue;
     }
+    TickType_t now = xTaskGetTickCount();
+    if (pending_match.slot && hid_suspended &&
+        (TickType_t)(now - pending_since) >= pdMS_TO_TICKS(USB_WAKE_TIMEOUT_MS)) {
+      ESP_LOGW(TAG, "host did not resume after fingerprint remote wake");
+      pending_match = (fingerprint_match_t){0};
+      last_success = now;
+      wait_for_lift = true;
+    }
     if (hid_needs_release && tud_hid_ready()) {
       tud_hid_keyboard_report(0, 0, NULL);
       hid_needs_release = false;
     }
-    TickType_t now = xTaskGetTickCount();
+    if (pending_match.slot && !hid_suspended && tud_hid_ready()) {
+      handle_fingerprint_match(pending_match);
+      pending_match = (fingerprint_match_t){0};
+      last_success = xTaskGetTickCount();
+      wait_for_lift = true;
+      vTaskDelay(pdMS_TO_TICKS(250));
+      fingerprint_led_idle();
+      continue;
+    }
     bool present = fingerprint_present_hint();
     if (wait_for_lift && !present &&
         (TickType_t)(now - last_success) >
             pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
       wait_for_lift = false;
     }
-    TickType_t min_interval = present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
-    if (!wait_for_lift && tud_hid_ready() &&
+    TickType_t min_interval = hid_suspended ? pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS) :
+                              present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
+    if (!wait_for_lift && !pending_match.slot &&
+        (tud_hid_ready() || suspended_sensor_poll_available()) &&
         (TickType_t)(now - last_poll) >= min_interval) {
       fingerprint_match_t match = fingerprint_authorize_poll_match();
       if (match.slot == 0) {
@@ -361,18 +399,19 @@ static void touch_hid_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(10));
         continue;
       }
-      if (device_config_mode() == DEVICE_MODE_HID) {
-        ESP_LOGI(TAG, "finger matched; requesting HID password");
-        if (!request_and_type_password(match)) ESP_LOGW(TAG, "HID helper request failed");
-      } else {
-        ESP_LOGI(TAG, "finger matched; authorizing PIV and typing PIN");
-        piv_note_user_presence();
-        if (!type_dummy_pin()) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
+      pending_match = match;
+      pending_since = xTaskGetTickCount();
+      if (hid_suspended) {
+        // Some supported sensor modules do not provide a usable touch signal.
+        // Polling finds the match; remote wake still requires host permission.
+        hid_remote_wakeup_attempted = true;
+        if (!tud_remote_wakeup()) {
+          ESP_LOGW(TAG, "finger matched, but USB remote wake failed");
+          pending_match = (fingerprint_match_t){0};
+          last_success = xTaskGetTickCount();
+          wait_for_lift = true;
+        }
       }
-      last_success = xTaskGetTickCount();
-      wait_for_lift = true;
-      vTaskDelay(pdMS_TO_TICKS(250));
-      fingerprint_led_idle();
     }
     last_poll = xTaskGetTickCount();
     vTaskDelay(pdMS_TO_TICKS(10));
