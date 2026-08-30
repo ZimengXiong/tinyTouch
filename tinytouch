@@ -83,6 +83,22 @@ def say(message: str = "") -> None:
     print(message, flush=True)
 
 
+def progress(message: str) -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write("\r" + message + "\033[K")
+        sys.stdout.flush()
+        return
+    say(message)
+
+
+def progress_done(message: str = "") -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+    if message:
+        say(message)
+
+
 def show_startup_mark() -> None:
     if not VERBOSE or not sys.stdout.isatty():
         return
@@ -181,7 +197,11 @@ def update_installed_cli(manifest: dict, *, announce: bool) -> bool:
         pass
     if metadata.get("format") != "tar.gz":
         raise SupportError("The CLI update has an unsupported package format.")
+    if announce:
+        say("Downloading CLI...")
     payload = verified_release_asset(metadata, manifest)
+    if announce:
+        say("Installing CLI...")
     bundle = SUPPORT_DIR / f"cli-{metadata['sha256'][:16]}"
     if not bundle.exists():
         SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -244,6 +264,7 @@ def schedule_auto_update() -> None:
 
 
 def wait_for_port_departure(port: str, *, wait_seconds: int = 10) -> None:
+    say("Waiting for tinyTouch to restart...")
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         if port not in detect_ports():
@@ -574,6 +595,7 @@ def wait_for_download_port(
     except ImportError as exc:
         raise ToolError("pyserial is required to follow the device into download mode.") from exc
 
+    say("Waiting for download mode...")
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         candidates = [
@@ -600,6 +622,7 @@ def wait_for_runtime_port(*, location: str | None = None, wait_seconds: int = 20
     except ImportError as exc:
         raise ToolError("pyserial is required to find the restarted tinyTouch.") from exc
 
+    say("Waiting for tinyTouch to reconnect...")
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         candidates = [
@@ -954,25 +977,31 @@ def install_ota_firmware(port: str, image: bytes, expected_sha256: str) -> str:
         raise ToolError("The CLI is missing its serial support. Run the installer again.") from exc
 
     location = port_usb_location(port)
-    say("Touch the sensor to authorize the update.")
+    say("Touch the sensor to authorize the update. Do not press BOOT.")
     serial_command(port, "UPDATE_UNLOCK", timeout=15)
-    say("Updating firmware...")
     token = secrets.token_hex(16)
     try:
         with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
             time.sleep(0.4)
             device.reset_input_buffer()
+            say("Starting firmware write...")
             serial_exchange(device, f"UPDATE_BEGIN {token} {len(image)} {expected_sha256}")
             try:
-                for offset in range(0, len(image), 360):
+                total = len(image)
+                for offset in range(0, total, 360):
                     chunk = base64.b64encode(image[offset:offset + 360]).decode("ascii")
                     lines = serial_exchange(device, f"UPDATE_CHUNK {token} {offset} {chunk}")
-                    expected_next = min(offset + 360, len(image))
+                    expected_next = min(offset + 360, total)
                     if not any(f"next={expected_next}" in line for line in lines):
                         raise ToolError("tinyTouch acknowledged an unexpected firmware offset.")
+                    percent = expected_next * 100 // total
+                    progress(f"Writing firmware... {percent}% ({expected_next}/{total})")
+                progress_done("Firmware written.")
+                say("Committing update...")
                 commit_started = True
                 serial_exchange(device, f"UPDATE_COMMIT {token}", timeout=8)
             except BaseException:
+                progress_done()
                 try:
                     serial_exchange(device, f"UPDATE_ABORT {token}", timeout=2)
                 except BaseException:
@@ -1001,17 +1030,14 @@ def migrate_partition_layout(port: str, manifest: dict) -> str:
     if any(name not in required for name in names):
         raise ToolError("The release is missing a firmware migration image.")
 
-    payloads = {name: verified_release_asset(required[name], manifest) for name in names}
-    migration_state = manifest.get("migration", {}).get("otaState")
-    if not isinstance(migration_state, dict):
-        raise SupportError("The release is missing its migration state image.")
-    payloads["ota_slot1.bin"] = verified_release_asset(migration_state, manifest)
     location = port_usb_location(port)
     if port_is_download_mode(port):
+        say("Device is already in download mode.")
         download_port = port
     else:
-        say("Touch the sensor to authorize the update.")
+        say("Touch the sensor to authorize a one-time flash. This enables later updates without BOOT.")
         unlock_configuration(port)
+        say("Switching to download mode...")
         try:
             serial_command(port, "BOOTLOADER", timeout=3)
         except ToolError as exc:
@@ -1021,7 +1047,13 @@ def migrate_partition_layout(port: str, manifest: dict) -> str:
                 raise exc
         else:
             download_port = wait_for_download_port(port, location=location)
-    say("Preparing firmware updates...")
+    say("Downloading factory firmware...")
+    payloads = {name: verified_release_asset(required[name], manifest) for name in names}
+    migration_state = manifest.get("migration", {}).get("otaState")
+    if not isinstance(migration_state, dict):
+        raise SupportError("The release is missing its migration state image.")
+    payloads["ota_slot1.bin"] = verified_release_asset(migration_state, manifest)
+    say("Flashing firmware...")
     with tempfile.TemporaryDirectory(prefix="tinytouch-update-") as directory_name:
         directory = Path(directory_name)
         paths = {}
@@ -1776,6 +1808,7 @@ def command_update(args: argparse.Namespace) -> None:
         metadata = manifest.get("ota")
         if not isinstance(metadata, dict):
             raise ToolError("This release does not include a firmware update.")
+        say("Downloading firmware update...")
         image = verified_release_asset(metadata, manifest)
         port = install_ota_firmware(port, image, metadata["sha256"])
         status = status_fields(port)
