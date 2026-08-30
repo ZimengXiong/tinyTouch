@@ -118,6 +118,11 @@ static void ota_diagnostics(char *output, size_t output_size) {
            update_last_reason, firmware_update_last_error());
 }
 
+static void secure_wipe(void *data, size_t length) {
+  volatile uint8_t *cursor = data;
+  while (length--) *cursor++ = 0;
+}
+
 void config_console_send_line(const char *line) {
   if (cdc_write_mutex) xSemaphoreTake(cdc_write_mutex, portMAX_DELAY);
   const char *parts[] = {line, "\r\n"};
@@ -244,10 +249,10 @@ static void enrollment_prompt(const char *message) {
 }
 
 static void reset_provisioning(void) {
-  provision_cert9a.length = 0;
-  provision_key9a.length = 0;
-  provision_cert9d.length = 0;
-  provision_key9d.length = 0;
+  secure_wipe(&provision_cert9a, sizeof(provision_cert9a));
+  secure_wipe(&provision_key9a, sizeof(provision_key9a));
+  secure_wipe(&provision_cert9d, sizeof(provision_cert9d));
+  secure_wipe(&provision_key9d, sizeof(provision_key9d));
 }
 
 static provision_buffer_t *provision_buffer(const char *name) {
@@ -268,13 +273,16 @@ static bool append_provision_chunk(char *arguments) {
   size_t encoded_length = strlen(separator + 1);
   uint8_t decoded[480];
   size_t decoded_length = 0;
-  if (mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
-                            encoded, encoded_length) != 0 ||
-      buffer->length + decoded_length + 1 > sizeof(buffer->data)) return false;
-  memcpy(buffer->data + buffer->length, decoded, decoded_length);
-  buffer->length += decoded_length;
-  buffer->data[buffer->length] = '\0';
-  return true;
+  bool ok = mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
+                                  encoded, encoded_length) == 0 &&
+            buffer->length + decoded_length + 1 <= sizeof(buffer->data);
+  if (ok) {
+    memcpy(buffer->data + buffer->length, decoded, decoded_length);
+    buffer->length += decoded_length;
+    buffer->data[buffer->length] = '\0';
+  }
+  secure_wipe(decoded, sizeof(decoded));
+  return ok;
 }
 
 static bool provision_buffers_valid(void) {
@@ -300,7 +308,10 @@ static bool commit_provisioning(void) {
                                                provision_key9d.length + 1);
   if (result == ESP_OK) result = nvs_commit(handle);
   nvs_close(handle);
-  if (result == ESP_OK) piv_reload_keys();
+  if (result == ESP_OK) {
+    piv_reload_keys();
+    reset_provisioning();
+  }
   return result == ESP_OK;
 }
 

@@ -55,6 +55,31 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertLess(presence_gate, body.index("mbedtls_rsa_private"))
         self.assertLess(presence_gate, body.index("mbedtls_pk_sign"))
 
+    def test_piv_command_chaining_accumulates_every_segment(self):
+        source = (MAIN / "piv.c").read_text()
+        body = source.split("if ((cla & 0x10) && ins == 0x87)", 1)[1].split(
+            "uint8_t chained_apdu[", 1
+        )[0]
+        self.assertIn(
+            "sizeof(chained_apdu_data) - chained_apdu_data_len", body
+        )
+        self.assertIn(
+            "chained_apdu_data + chained_apdu_data_len", body
+        )
+        self.assertIn("chained_apdu_data_len += data_len", body)
+
+    def test_piv_provisioning_secrets_are_wiped(self):
+        source = (MAIN / "config_console.c").read_text()
+        reset = source.split("static void reset_provisioning", 1)[1].split(
+            "static provision_buffer_t", 1
+        )[0]
+        commit = source.split("static bool commit_provisioning", 1)[1].split(
+            "static bool factory_reset", 1
+        )[0]
+        self.assertIn("secure_wipe(&provision_key9a", reset)
+        self.assertIn("secure_wipe(&provision_key9d", reset)
+        self.assertIn("reset_provisioning();", commit)
+
     def test_hid_payload_is_preflighted_before_first_key(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         body = source.split("static bool type_ascii", 1)[1].split(
