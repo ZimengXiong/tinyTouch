@@ -31,12 +31,15 @@ jobs:
           test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
           test "$(python -c 'import json; print(json.load(open("channels/batch-0.json"))["manifest"])')" = \
             "https://github.com/ZimengXiong/TinyTouch/releases/download/$GITHUB_REF_NAME/release-manifest.json"
-      - run: |
+      - name: Build unified and recovery firmware in parallel
+        run: |
           source /opt/esp/idf/export.sh
-          idf.py -C firmware/tiny_touch_unified build
-      - run: |
-          source /opt/esp/idf/export.sh
-          idf.py -C firmware/tiny_touch_unified -B firmware/tiny_touch_unified/build-recovery -D TINYTOUCH_RECOVERY_BUILD=ON build
+          idf.py -C firmware/tiny_touch_unified build &
+          PID1=$!
+          idf.py -C firmware/tiny_touch_unified -B firmware/tiny_touch_unified/build-recovery -D TINYTOUCH_RECOVERY_BUILD=ON build &
+          PID2=$!
+          wait "$PID1"
+          wait "$PID2"
       - name: Assemble firmware release
         run: |
           source /opt/esp/idf/export.sh

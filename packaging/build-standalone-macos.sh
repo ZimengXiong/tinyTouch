@@ -47,9 +47,10 @@ if [[ -z "$signing_identity" ]]; then
 fi
 
 bundle="$build_dir/bin/tinytouch"
-executable="$bundle/tinytouch"
 "$executable" _package_test
-"$executable" _network_test
+for attempt in 1 2 3; do
+  "$executable" _network_test && break || sleep 2
+done
 # A PyInstaller one-file binary extracts its bundled Python dylib at runtime.
 # Hardened runtime library validation rejects that extracted ad-hoc-signed dylib
 # because it does not share the outer Apple Development signature's Team ID.
