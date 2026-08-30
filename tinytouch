@@ -898,6 +898,19 @@ def flash_piv(port: str) -> str:
     return wait_for_runtime_port(location=location)
 
 
+def is_terminal_response(command: str, line: str) -> bool:
+    verb = command.split()[0] if command else ""
+    if verb == "PING":
+        return line == "PONG" or line.startswith("ERR ")
+    if line.startswith(f"OK {verb}") or line.startswith(f"ERR {verb}"):
+        return True
+    if line.startswith("ERR ") or line == "OK":
+        return True
+    if line.startswith("OK ") and len(line.split()) >= 2 and line.split()[1] == verb:
+        return True
+    return False
+
+
 def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
     try:
         import serial  # type: ignore
@@ -923,7 +936,7 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
                         continue
                     lines.append(line)
                     show_device_line(line)
-                    if line.startswith(("OK ", "ERR ")) or line in {"PONG", "OK"}:
+                    if is_terminal_response(command, line):
                         break
         except (OSError, serial.SerialException, termios.error) as exc:
             raise ToolError(serial_failure_message(port, exc)) from exc
@@ -960,7 +973,7 @@ def serial_exchange(device, command: str, *, timeout: float = 5.0) -> list[str]:
             continue
         lines.append(line)
         show_device_line(line)
-        if line.startswith(("OK ", "ERR ")) or line in {"PONG", "OK"}:
+        if is_terminal_response(command, line):
             break
     if not lines:
         raise ToolError("tinyTouch stopped responding during the firmware update.")
@@ -972,7 +985,7 @@ def serial_exchange(device, command: str, *, timeout: float = 5.0) -> list[str]:
 def install_ota_firmware(
     port: str, image: bytes, expected_sha256: str, *, chunk_size: int = 360
 ) -> str:
-    commit_started = False
+    commit_sent = False
     try:
         import serial  # type: ignore
     except ImportError as exc:
@@ -994,25 +1007,27 @@ def install_ota_firmware(
                     chunk = base64.b64encode(image[offset:offset + chunk_size]).decode("ascii")
                     lines = serial_exchange(device, f"UPDATE_CHUNK {token} {offset} {chunk}")
                     expected_next = min(offset + chunk_size, total)
-                    if not any(f"next={expected_next}" in line for line in lines):
+                    match = re.search(r"next=(\d+)", " ".join(lines))
+                    if not match or int(match.group(1)) != expected_next:
                         raise ToolError("tinyTouch acknowledged an unexpected firmware offset.")
                     percent = expected_next * 100 // total
                     progress(f"Writing firmware... {percent}% ({expected_next}/{total})")
                 progress_done("Firmware written.")
                 say("Committing update...")
-                commit_started = True
+                commit_sent = True
                 serial_exchange(device, f"UPDATE_COMMIT {token}", timeout=8)
             except BaseException:
                 progress_done()
-                try:
-                    serial_exchange(device, f"UPDATE_ABORT {token}", timeout=2)
-                except BaseException:
-                    pass
+                if not commit_sent:
+                    try:
+                        serial_exchange(device, f"UPDATE_ABORT {token}", timeout=2)
+                    except BaseException:
+                        pass
                 raise
     except (OSError, serial.SerialException, termios.error) as exc:
         # A successful commit restarts USB and can close the port before macOS
         # delivers the final acknowledgment.
-        if not commit_started:
+        if not commit_sent:
             raise ToolError(serial_failure_message(port, exc)) from exc
         verbose(f"update port closed during restart: {exc}")
     wait_for_port_departure(port)

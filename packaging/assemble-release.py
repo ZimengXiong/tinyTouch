@@ -52,10 +52,11 @@ def merge(images: list[dict], directory: Path, output: Path) -> None:
 
 
 def write_ota_slot1(path: Path) -> None:
-    # Sequence 1 points to ota_0 (0x10000) where the factory firmware is installed:
-    payload = struct.pack("<I", 1) + (b"\xFF" * 20) + struct.pack("<I", 0)
-    crc = binascii.crc32(payload) & 0xFFFFFFFF
-    entry = payload + struct.pack("<I", crc)
+    # Sequence 1 points to ota_0 (0x10000) where the factory firmware is installed.
+    # In ESP-IDF esp_ota_ops.c, CRC32 covers ONLY the 4-byte ota_seq field:
+    seq_bytes = struct.pack("<I", 1)
+    crc = binascii.crc32(seq_bytes) & 0xFFFFFFFF
+    entry = seq_bytes + (b"\xFF" * 20) + struct.pack("<I", 0) + struct.pack("<I", crc)
     path.write_bytes(entry + (b"\xFF" * (8192 - len(entry))))
 
 

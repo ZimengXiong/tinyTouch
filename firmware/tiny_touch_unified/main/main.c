@@ -4,6 +4,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "esp_ota_ops.h"
 #include "fingerprint.h"
 #include "config_console.h"
 #include "device_config.h"
@@ -82,6 +83,15 @@ void app_main(void) {
   usb_ccid_start(piv_handle_apdu);
   config_console_start();
   touch_pin_hid_start();
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t ota_state;
+  if (running && esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+    if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+      ESP_LOGI("tiny_touch", "Running partition %s in PENDING_VERIFY; health check OK, confirming valid", running->label);
+      esp_ota_mark_app_valid_cancel_rollback();
+    }
+  }
 
   // tinyusb_driver_install owns the only tud_task() service loop. The
   // configuration console and fingerprint/HID workers run in their own tasks.
