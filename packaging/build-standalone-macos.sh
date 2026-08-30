@@ -47,6 +47,7 @@ if [[ -z "$signing_identity" ]]; then
 fi
 
 bundle="$build_dir/bin/tinytouch"
+executable="$bundle/tinytouch"
 "$executable" _package_test
 for attempt in 1 2 3; do
   "$executable" _network_test && break || sleep 2
