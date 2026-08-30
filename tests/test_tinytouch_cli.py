@@ -101,6 +101,24 @@ class PackagingTests(unittest.TestCase):
             r"^https://github\.com/ZimengXiong/TinyTouch/releases/download/.+/release-manifest\.json$",
         )
 
+    def test_local_release_directory_supplies_manifest_and_asset(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            payload = b"local firmware"
+            (path / "tiny_touch_unified.bin").write_bytes(payload)
+            (path / "release-manifest.json").write_text(json.dumps({
+                "version": "test", "build": "abc", "firmware": {},
+            }))
+            with mock.patch.dict(os.environ, {"TINYTOUCH_LOCAL_RELEASE_DIR": directory}):
+                manifest = cli.release_manifest()
+                result = cli.verified_release_asset({
+                    "file": "tiny_touch_unified.bin",
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }, manifest)
+        self.assertEqual(result, payload)
+
     def test_only_unified_firmware_source_is_present(self):
         firmware = ROOT / "firmware"
         self.assertTrue((firmware / "tiny_touch_unified" / "CMakeLists.txt").is_file())
@@ -375,7 +393,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual([item.split()[2] for item in writes[1:-1]], ["0", "3072"])
 
     def test_update_skips_firmware_that_is_already_current(self):
-        args = SimpleNamespace(port="/dev/cu.example")
+        args = SimpleNamespace(port="/dev/cu.example", force=False)
         manifest = {"version": "0.4.3-preprod", "build": "abc123def456"}
         status = {
             "firmware": "unified", "sensor": "ok", "protocol": "3", "ota": "ready",

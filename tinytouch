@@ -138,14 +138,22 @@ def download_bytes(url: str, *, timeout: float = 10.0) -> bytes:
 
 def release_manifest() -> dict:
     try:
-        channel = json.loads(download_bytes(RELEASE_CHANNEL_URL).decode("utf-8"))
-        manifest_url = channel.get("manifest")
-        if not isinstance(manifest_url, str) or not manifest_url.startswith(
-            "https://github.com/ZimengXiong/TinyTouch/releases/download/"
-        ):
-            raise ValueError("invalid channel manifest URL")
-        manifest = json.loads(download_bytes(manifest_url).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        local_directory = os.environ.get("TINYTOUCH_LOCAL_RELEASE_DIR")
+        if local_directory:
+            manifest = json.loads(
+                (Path(local_directory).expanduser() / "release-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        else:
+            channel = json.loads(download_bytes(RELEASE_CHANNEL_URL).decode("utf-8"))
+            manifest_url = channel.get("manifest")
+            if not isinstance(manifest_url, str) or not manifest_url.startswith(
+                "https://github.com/ZimengXiong/TinyTouch/releases/download/"
+            ):
+                raise ValueError("invalid channel manifest URL")
+            manifest = json.loads(download_bytes(manifest_url).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SupportError("The tinyTouch update manifest is invalid.") from exc
     if not isinstance(manifest.get("version"), str) or not isinstance(manifest.get("firmware"), dict):
         raise SupportError("The tinyTouch update manifest is incomplete.")
@@ -164,9 +172,16 @@ def verified_release_asset(metadata: dict, manifest: dict) -> bytes:
     expected = metadata.get("sha256")
     if not isinstance(name, str) or not isinstance(expected, str):
         raise SupportError("The tinyTouch update manifest is missing an asset checksum.")
-    payload = download_bytes(
-        f"{release_base_url(manifest)}/{name}?sha256={expected}", timeout=30.0
-    )
+    local_directory = os.environ.get("TINYTOUCH_LOCAL_RELEASE_DIR")
+    if local_directory:
+        try:
+            payload = (Path(local_directory).expanduser() / name).read_bytes()
+        except OSError as exc:
+            raise SupportError(f"Local release asset is missing: {name}") from exc
+    else:
+        payload = download_bytes(
+            f"{release_base_url(manifest)}/{name}?sha256={expected}", timeout=30.0
+        )
     if len(payload) != metadata.get("size") or hashlib.sha256(payload).hexdigest() != expected:
         raise SupportError(f"{name} failed its integrity check. Nothing was installed.")
     return payload
@@ -1809,6 +1824,8 @@ def command_update(args: argparse.Namespace) -> None:
     require_unified_firmware(status)
     require_fingerprint_sensor(status)
     if (
+        not getattr(args, "force", False)
+        and
         firmware_protocol(status) >= 3
         and status.get("ota") == "ready"
         and status.get("firmware_version") == manifest.get("version")
@@ -2058,6 +2075,8 @@ def parser() -> argparse.ArgumentParser:
 
     update = sub.add_parser("update", help="update the CLI and firmware")
     add_verbose_option(update)
+    update.add_argument("--force", action="store_true",
+                        help="rewrite the current release to test OTA slot switching")
     update.add_argument("--port", help="use a specific /dev/cu.* device")
     update.set_defaults(func=command_update)
 

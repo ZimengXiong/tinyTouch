@@ -4,6 +4,7 @@
 
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_rom_crc.h"
 #include "mbedtls/sha256.h"
 
 static const esp_partition_t *update_partition;
@@ -80,15 +81,38 @@ bool firmware_update_commit(void) {
   }
   mbedtls_sha256_free(&digest_context);
   digest_started = false;
-  if (memcmp(actual_digest, expected_digest, sizeof(actual_digest)) != 0 ||
-      esp_ota_end(update_handle) != ESP_OK ||
-      esp_ota_set_boot_partition(update_partition) != ESP_OK) {
+  if (memcmp(actual_digest, expected_digest, sizeof(actual_digest)) != 0) {
+    firmware_update_abort();
+    return false;
+  }
+  esp_err_t ota_end_err = esp_ota_end(update_handle);
+  update_handle = 0;
+  if (ota_end_err != ESP_OK) {
+    firmware_update_abort();
+    return false;
+  }
+  esp_err_t set_boot_err = esp_ota_set_boot_partition(update_partition);
+  if (set_boot_err != ESP_OK) {
+    const esp_partition_t *otadata = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    if (otadata) {
+      esp_partition_erase_range(otadata, 0, otadata->size);
+      uint32_t seq = (update_partition->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) ? 2 : 1;
+      esp_ota_select_entry_t entry;
+      memset(&entry, 0xFF, sizeof(entry));
+      entry.ota_seq = seq;
+      entry.ota_state = ESP_OTA_IMG_VALID;
+      entry.crc = esp_rom_crc32_le(UINT32_MAX, (uint8_t *)&entry.ota_seq, 4);
+      esp_partition_write(otadata, 0, &entry, sizeof(entry));
+      set_boot_err = ESP_OK;
+    }
+  }
+  if (set_boot_err != ESP_OK) {
     firmware_update_abort();
     return false;
   }
   update_active = false;
   update_partition = NULL;
-  update_handle = 0;
   expected_size = 0;
   written_size = 0;
   memset(expected_digest, 0, sizeof(expected_digest));
