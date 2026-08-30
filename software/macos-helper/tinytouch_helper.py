@@ -98,10 +98,12 @@ def fingerprint_account(device_id: str, slot: int) -> str:
 def load_passwords(device_id: str) -> dict[int, bytes]:
     passwords = {0: keychain_get(device_id)}
     for slot in range(1, 6):
-        try:
-            passwords[slot] = keychain_get(fingerprint_account(device_id, slot))
-        except KeyError:
-            pass
+        account = fingerprint_account(device_id, slot)
+        if has_password(SERVICE, account):
+            try:
+                passwords[slot] = keychain_get(account)
+            except KeyError:
+                pass
     return passwords
 
 

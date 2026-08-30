@@ -52,9 +52,9 @@ def merge(images: list[dict], directory: Path, output: Path) -> None:
 
 
 def write_ota_slot1(path: Path) -> None:
-    sequence = struct.pack("<I", 2)
-    crc = binascii.crc32(sequence, 0xFFFFFFFF) & 0xFFFFFFFF
-    entry = sequence + (b"\xFF" * 20) + struct.pack("<II", 0, crc)
+    payload = struct.pack("<I", 2) + (b"\xFF" * 20) + struct.pack("<I", 0)
+    crc = binascii.crc32(payload) & 0xFFFFFFFF
+    entry = payload + struct.pack("<I", crc)
     path.write_bytes(entry + (b"\xFF" * (8192 - len(entry))))
 
 

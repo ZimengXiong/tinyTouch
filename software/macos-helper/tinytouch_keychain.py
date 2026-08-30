@@ -32,6 +32,18 @@ _SECURITY.SecKeychainItemFreeContent.restype = ctypes.c_int32
 _CORE_FOUNDATION.CFRelease.argtypes = [ctypes.c_void_p]
 
 
+_SECURITY.SecAccessCreate.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+]
+_SECURITY.SecAccessCreate.restype = ctypes.c_int32
+_SECURITY.SecKeychainItemSetAccess.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_SECURITY.SecKeychainItemSetAccess.restype = ctypes.c_int32
+_CORE_FOUNDATION.CFStringCreateWithCString.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
+]
+_CORE_FOUNDATION.CFStringCreateWithCString.restype = ctypes.c_void_p
+
+
 class KeychainError(RuntimeError):
     def __init__(self, operation: str, status: int):
         super().__init__(f"Keychain {operation} failed ({status})")
@@ -41,6 +53,21 @@ class KeychainError(RuntimeError):
 def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
     raw = value.encode("utf-8")
     return raw, ctypes.create_string_buffer(raw, len(raw) + 1)
+
+
+def _set_open_access(item, service: str) -> None:
+    if not item:
+        return
+    service_bytes = service.encode("utf-8")
+    cf_desc = _CORE_FOUNDATION.CFStringCreateWithCString(None, service_bytes, 0x08000100)
+    if not cf_desc:
+        return
+    access = ctypes.c_void_p()
+    status = _SECURITY.SecAccessCreate(cf_desc, None, ctypes.byref(access))
+    _CORE_FOUNDATION.CFRelease(cf_desc)
+    if status == 0 and access:
+        _SECURITY.SecKeychainItemSetAccess(item, access)
+        _CORE_FOUNDATION.CFRelease(access)
 
 
 def _find(service: str, account: str, *, include_secret: bool):
@@ -91,13 +118,18 @@ def set_password(service: str, account: str, value: str) -> None:
             result = _SECURITY.SecKeychainItemModifyAttributesAndData(
                 item, None, len(value_raw), value_buffer
             )
+            _set_open_access(item, service)
         elif status == _NOT_FOUND:
             service_raw, service_buffer = _encoded(service)
             account_raw, account_buffer = _encoded(account)
+            new_item = ctypes.c_void_p()
             result = _SECURITY.SecKeychainAddGenericPassword(
                 None, len(service_raw), service_buffer, len(account_raw), account_buffer,
-                len(value_raw), value_buffer, None,
+                len(value_raw), value_buffer, ctypes.byref(new_item),
             )
+            if result == 0 and new_item:
+                _set_open_access(new_item, service)
+                _CORE_FOUNDATION.CFRelease(new_item)
         else:
             raise KeychainError("find", status)
         if result != 0:
