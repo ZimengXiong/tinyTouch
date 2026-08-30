@@ -1,5 +1,11 @@
-this firmware acts like a smart card to authenticate you
+# tinyTouch unified firmware
 
-it will type the smart card dummy pin (000000) over hid, but this is non sensitive, as the actual unlock is gated by PIV
+This ESP-IDF project provides the PIV, HID keyboard, CDC configuration, fingerprint, and authenticated update runtime for both supported ESP32-S3 boards.
 
-this is the recommended path
+Build with ESP-IDF 5.3.x:
+
+```sh
+./firmware/build-and-flash --build-only
+```
+
+Customers update installed devices with `tinytouch update`. Factory flashing is for blank DIY boards and recovery. See `docs/` for wiring, protocol, release, and security details.

@@ -357,8 +357,11 @@ static void handle_command(void) {
     }
   } else if (strcmp(command, "UPDATE_UNLOCK") == 0) {
     int count = fingerprint_count();
-    if (count <= 0) {
-      send_line("ERR UPDATE_UNLOCK fingerprint_required");
+    if (count < 0) {
+      send_line("ERR UPDATE_UNLOCK sensor");
+    } else if (count == 0) {
+      update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
+      send_line("OK UPDATE_UNLOCK first_setup seconds=30");
     } else {
       send_line("PROMPT TOUCH");
       if (fingerprint_authorize_once()) {

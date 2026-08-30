@@ -187,6 +187,21 @@ def verified_release_asset(metadata: dict, manifest: dict) -> bytes:
     return payload
 
 
+def git_short_sha() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+    except Exception:
+        return "development"
+
+
 def update_installed_cli(manifest: dict, *, announce: bool) -> bool:
     if not FROZEN:
         return False
@@ -1814,9 +1829,25 @@ def command_enroll(args: argparse.Namespace) -> None:
 
 def command_update(args: argparse.Namespace) -> None:
     require_macos()
-    manifest = release_manifest()
-    if update_installed_cli(manifest, announce=True):
-        os.execv(str(CLI_INSTALL_PATH), [str(CLI_INSTALL_PATH), *sys.argv[1:]])
+    if getattr(args, "local", False):
+        bin_path = Path(args.local if isinstance(args.local, str) and args.local != "True" else "firmware/tiny_touch_unified/build/tiny_touch_unified.bin").resolve()
+        if not bin_path.is_file():
+            say("Building local firmware...")
+            run_idf(["build"])
+        if not bin_path.is_file():
+            raise ToolError(f"Firmware binary not found: {bin_path}")
+        image = bin_path.read_bytes()
+        sha = hashlib.sha256(image).hexdigest()
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        manifest = {
+            "version": version,
+            "build": git_short_sha(),
+            "ota": {"sha256": sha, "size": len(image)},
+        }
+    else:
+        manifest = release_manifest()
+        if update_installed_cli(manifest, announce=True):
+            os.execv(str(CLI_INSTALL_PATH), [str(CLI_INSTALL_PATH), *sys.argv[1:]])
     port = choose_port(args.port)
     if port_is_download_mode(port):
         port = migrate_partition_layout(port, manifest)
@@ -1842,8 +1873,11 @@ def command_update(args: argparse.Namespace) -> None:
         metadata = manifest.get("ota")
         if not isinstance(metadata, dict):
             raise ToolError("This release does not include a firmware update.")
-        say("Downloading firmware update...")
-        image = verified_release_asset(metadata, manifest)
+        if getattr(args, "local", False):
+            say(f"Flashing local firmware {bin_path.name} ({len(image)} bytes)...")
+        else:
+            say("Downloading firmware update...")
+            image = verified_release_asset(metadata, manifest)
         protocol = firmware_protocol(status)
         chunk_size = 3072 if protocol >= 4 else 360
         port = install_ota_firmware(port, image, metadata["sha256"], chunk_size=chunk_size)
@@ -1870,6 +1904,25 @@ def command_update(args: argparse.Namespace) -> None:
     if confirmed_status.get("build") != manifest.get("build"):
         raise SupportError("tinyTouch did not remain on the expected firmware build.")
     say("tinyTouch is up to date.")
+
+
+def command_flash_local(args: argparse.Namespace) -> None:
+    require_macos()
+    path = Path(args.binary).resolve()
+    if not path.is_file():
+        raise ToolError(f"Firmware binary not found: {path}")
+    image = path.read_bytes()
+    expected_sha256 = hashlib.sha256(image).hexdigest()
+    port = choose_port(args.port)
+    status = status_fields(port)
+    require_unified_firmware(status)
+    require_fingerprint_sensor(status)
+    protocol = firmware_protocol(status)
+    chunk_size = 3072 if protocol >= 4 else 360
+    say(f"Flashing {path.name} ({len(image)} bytes) to tinyTouch...")
+    port = install_ota_firmware(port, image, expected_sha256, chunk_size=chunk_size)
+    new_status = status_fields(port)
+    say(f"tinyTouch successfully updated to {new_status.get('firmware_version')} (build {new_status.get('build')}, running slot {new_status.get('ota_running')})!")
 
 
 def command_pair(args: argparse.Namespace) -> None:
@@ -2077,6 +2130,8 @@ def parser() -> argparse.ArgumentParser:
     add_verbose_option(update)
     update.add_argument("--force", action="store_true",
                         help="rewrite the current release to test OTA slot switching")
+    update.add_argument("--local", nargs="?", const=True,
+                        help="flash locally built firmware binary without release")
     update.add_argument("--port", help="use a specific /dev/cu.* device")
     update.set_defaults(func=command_update)
 
@@ -2121,6 +2176,12 @@ def parser() -> argparse.ArgumentParser:
     add_verbose_option(logs)
     logs.add_argument("--lines", type=int, default=40)
     logs.set_defaults(func=command_logs)
+
+    flash_local = sub.add_parser("flash-local", help="flash a local firmware binary over OTA (developer command)")
+    add_verbose_option(flash_local)
+    flash_local.add_argument("binary", help="path to tiny_touch_unified.bin")
+    flash_local.add_argument("--port", help="use a specific /dev/cu.* device")
+    flash_local.set_defaults(func=command_flash_local)
     return result
 
 
@@ -2159,7 +2220,7 @@ def main() -> int:
     device_commands = {
         "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
         "factory-reset", "delete", "bootloader", "update", "password", "config",
-        "keyboard-layout",
+        "keyboard-layout", "flash-local",
     }
     helper_was_loaded = os.environ.pop("_TINYTOUCH_RESTART_HELPER", "") == "1"
     try:
