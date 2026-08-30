@@ -103,6 +103,24 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("hid_remote_wakeup_enabled", hid)
         self.assertIn("tud_remote_wakeup()", hid)
 
+    def test_remote_wake_requires_a_fingerprint_match(self):
+        source = (MAIN / "touch_pin_hid.c").read_text()
+        task = source.split("static void touch_hid_task", 1)[1].split(
+            "void touch_pin_hid_start", 1
+        )[0]
+        self.assertEqual(1, task.count("tud_remote_wakeup()"))
+        self.assertLess(
+            task.index("fingerprint_authorize_poll_match()"),
+            task.index("tud_remote_wakeup()"),
+        )
+
+    def test_fingerprint_uart_rejects_corrupt_packets(self):
+        source = (MAIN / "fingerprint.c").read_text()
+        command = source.split("static bool fp_command", 1)[1].split(
+            "static bool fp_take", 1
+        )[0]
+        self.assertIn("fp_response_checksum_valid(response, expected)", command)
+
     def test_suspended_touch_does_not_require_sensor_interrupt(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         availability = source.split(

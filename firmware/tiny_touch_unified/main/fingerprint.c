@@ -34,6 +34,17 @@ static uint16_t fp_checksum(uint8_t packet_id, const uint8_t *payload, size_t pa
   return (uint16_t)total;
 }
 
+static bool fp_response_checksum_valid(const uint8_t *packet, size_t packet_len) {
+  if (packet_len < 11) return false;
+  uint16_t response_len = ((uint16_t)packet[7] << 8) | packet[8];
+  if (response_len < 2 || packet_len != 9 + response_len) return false;
+  size_t payload_len = response_len - 2;
+  uint16_t expected = fp_checksum(packet[6], packet + 9, payload_len);
+  uint16_t received = ((uint16_t)packet[packet_len - 2] << 8) |
+                      packet[packet_len - 1];
+  return received == expected;
+}
+
 static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_len,
                        uint8_t *confirm, uint8_t *data, size_t *data_len,
                        uint32_t timeout_ms) {
@@ -91,10 +102,7 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       if (pos < expected) break;
 
       size_t response_payload_len = resp_len - 2;
-      uint16_t expected_sum = fp_checksum(packet_id, response + 9, response_payload_len);
-      uint16_t received_sum = ((uint16_t)response[9 + response_payload_len] << 8) |
-                              response[10 + response_payload_len];
-      if (expected_sum != received_sum) {
+      if (!fp_response_checksum_valid(response, expected)) {
         ESP_LOGW(TAG, "fingerprint response checksum mismatch");
         return false;
       }

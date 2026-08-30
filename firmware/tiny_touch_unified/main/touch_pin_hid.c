@@ -347,11 +347,6 @@ static void touch_hid_task(void *arg) {
   fingerprint_match_t pending_match = {0};
 
   while (true) {
-    if (hid_suspended && hid_remote_wakeup_enabled &&
-        !hid_remote_wakeup_attempted && fingerprint_present_hint()) {
-      hid_remote_wakeup_attempted = true;
-      tud_remote_wakeup();
-    }
     if (hid_reconnect_pending && !hid_suspended) {
       hid_reconnect_pending = false;
       ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
@@ -403,7 +398,8 @@ static void touch_hid_task(void *arg) {
       pending_since = xTaskGetTickCount();
       if (hid_suspended) {
         // Some supported sensor modules do not provide a usable touch signal.
-        // Polling finds the match; remote wake still requires host permission.
+        // Match before requesting wake so an unrecognized touch cannot wake the
+        // host. Remote wake still requires host permission.
         hid_remote_wakeup_attempted = true;
         if (!tud_remote_wakeup()) {
           ESP_LOGW(TAG, "finger matched, but USB remote wake failed");
