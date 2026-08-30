@@ -334,6 +334,46 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual([item.split()[2] for item in writes[1:-1]], ["0", "360", "720"])
         self.assertEqual(writes[-1], "UPDATE_COMMIT " + "a" * 32)
 
+    def test_ota_transfer_supports_configurable_chunk_size(self):
+        writes = []
+
+        class FakeSerial:
+            def __init__(self, *_args, **_kwargs):
+                self.responses = []
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def reset_input_buffer(self): pass
+            def flush(self): pass
+            def write(self, payload):
+                command = payload.decode("ascii").strip()
+                writes.append(command)
+                if command.startswith("UPDATE_BEGIN "):
+                    self.responses.append(b"OK UPDATE_BEGIN next=0\n")
+                elif command.startswith("UPDATE_CHUNK "):
+                    _, _, offset, encoded = command.split()
+                    next_offset = int(offset) + len(base64.b64decode(encoded))
+                    self.responses.append(f"OK UPDATE_CHUNK next={next_offset}\n".encode())
+                elif command.startswith("UPDATE_COMMIT "):
+                    self.responses.append(b"OK UPDATE_COMMIT\n")
+                else:
+                    self.responses.append(b"OK\n")
+            def readline(self):
+                return self.responses.pop(0) if self.responses else b""
+
+        image = bytes(range(256)) * 20  # 5120 bytes
+        with (
+            mock.patch.object(serial, "Serial", FakeSerial),
+            mock.patch.object(cli, "serial_command", return_value=["OK UPDATE_UNLOCK"]),
+            mock.patch.object(cli, "port_usb_location", return_value="1-2"),
+            mock.patch.object(cli, "wait_for_port_departure"),
+            mock.patch.object(cli, "wait_for_runtime_port", return_value="/dev/cu.runtime"),
+            mock.patch.object(cli.secrets, "token_hex", return_value="a" * 32),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            result = cli.install_ota_firmware("/dev/cu.example", image, "b" * 64, chunk_size=3072)
+        self.assertEqual(result, "/dev/cu.runtime")
+        self.assertEqual([item.split()[2] for item in writes[1:-1]], ["0", "3072"])
+
     def test_update_skips_firmware_that_is_already_current(self):
         args = SimpleNamespace(port="/dev/cu.example")
         manifest = {"version": "0.4.3-preprod", "build": "abc123def456"}

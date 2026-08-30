@@ -32,7 +32,7 @@
 #define TINYTOUCH_BUILD_ID "development"
 #endif
 
-static char command[640];
+static char command[5632];
 static size_t command_len;
 static SemaphoreHandle_t cdc_write_mutex;
 static int64_t config_authorized_until;
@@ -142,7 +142,7 @@ static bool append_firmware_chunk(char *arguments, size_t *next_offset) {
   *encoded++ = '\0';
   char *end = NULL;
   unsigned long offset = strtoul(offset_text, &end, 10);
-  uint8_t decoded[384];
+  static uint8_t decoded[4096];
   size_t decoded_length = 0;
   bool ok = valid_update_token(arguments) && end && *end == '\0' &&
             mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
@@ -508,30 +508,38 @@ static void handle_command(void) {
 
 static void console_task(void *arg) {
   (void)arg;
+  char buffer[128];
   while (true) {
     if (update_token[0] && esp_timer_get_time() - update_last_activity > 30LL * 1000000LL) {
       firmware_update_abort();
       clear_update_session();
     }
+    bool had_activity = false;
     while (tud_cdc_available()) {
-      char c;
-      if (tud_cdc_read(&c, 1) != 1) break;
-      if (c == '\r') continue;
-      if (c == '\n') {
-        command[command_len] = '\0';
-        if (command_len) {
-          if (strncmp(command, "PW ", 3) == 0 || strncmp(command, "PW2 ", 4) == 0) {
-            touch_pin_hid_submit_response(command);
-          } else {
-            handle_command();
+      uint32_t count = tud_cdc_read(buffer, sizeof(buffer));
+      if (count == 0) break;
+      had_activity = true;
+      for (uint32_t i = 0; i < count; i++) {
+        char c = buffer[i];
+        if (c == '\r') continue;
+        if (c == '\n') {
+          command[command_len] = '\0';
+          if (command_len) {
+            if (strncmp(command, "PW ", 3) == 0 || strncmp(command, "PW2 ", 4) == 0) {
+              touch_pin_hid_submit_response(command);
+            } else {
+              handle_command();
+            }
           }
+          command_len = 0;
+        } else if (command_len + 1 < sizeof(command)) {
+          command[command_len++] = c;
         }
-        command_len = 0;
-      } else if (command_len + 1 < sizeof(command)) {
-        command[command_len++] = c;
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(10));
+    if (!had_activity) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
   }
 }
 

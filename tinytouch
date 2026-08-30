@@ -969,7 +969,9 @@ def serial_exchange(device, command: str, *, timeout: float = 5.0) -> list[str]:
     return lines
 
 
-def install_ota_firmware(port: str, image: bytes, expected_sha256: str) -> str:
+def install_ota_firmware(
+    port: str, image: bytes, expected_sha256: str, *, chunk_size: int = 360
+) -> str:
     commit_started = False
     try:
         import serial  # type: ignore
@@ -988,10 +990,10 @@ def install_ota_firmware(port: str, image: bytes, expected_sha256: str) -> str:
             serial_exchange(device, f"UPDATE_BEGIN {token} {len(image)} {expected_sha256}")
             try:
                 total = len(image)
-                for offset in range(0, total, 360):
-                    chunk = base64.b64encode(image[offset:offset + 360]).decode("ascii")
+                for offset in range(0, total, chunk_size):
+                    chunk = base64.b64encode(image[offset:offset + chunk_size]).decode("ascii")
                     lines = serial_exchange(device, f"UPDATE_CHUNK {token} {offset} {chunk}")
-                    expected_next = min(offset + 360, total)
+                    expected_next = min(offset + chunk_size, total)
                     if not any(f"next={expected_next}" in line for line in lines):
                         raise ToolError("tinyTouch acknowledged an unexpected firmware offset.")
                     percent = expected_next * 100 // total
@@ -1810,7 +1812,9 @@ def command_update(args: argparse.Namespace) -> None:
             raise ToolError("This release does not include a firmware update.")
         say("Downloading firmware update...")
         image = verified_release_asset(metadata, manifest)
-        port = install_ota_firmware(port, image, metadata["sha256"])
+        protocol = firmware_protocol(status)
+        chunk_size = 3072 if protocol >= 4 else 360
+        port = install_ota_firmware(port, image, metadata["sha256"], chunk_size=chunk_size)
         status = status_fields(port)
     if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
         raise SupportError("tinyTouch restarted with an unexpected firmware version.")
