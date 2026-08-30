@@ -11,6 +11,7 @@
 #include "touch_pin_hid.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -49,6 +50,55 @@ static provision_buffer_t provision_cert9a;
 static provision_buffer_t provision_key9a;
 static provision_buffer_t provision_cert9d;
 static provision_buffer_t provision_key9d;
+
+static const char *ota_state_name(esp_ota_img_states_t state) {
+  switch (state) {
+    case ESP_OTA_IMG_NEW: return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY: return "pending";
+    case ESP_OTA_IMG_VALID: return "valid";
+    case ESP_OTA_IMG_INVALID: return "invalid";
+    case ESP_OTA_IMG_ABORTED: return "aborted";
+    case ESP_OTA_IMG_UNDEFINED: return "undefined";
+    default: return "unknown";
+  }
+}
+
+static const char *partition_label(const esp_partition_t *partition) {
+  return partition ? partition->label : "none";
+}
+
+static void ota_partition_summary(const esp_partition_t *partition,
+                                  char *output, size_t output_size) {
+  esp_app_desc_t description;
+  esp_ota_img_states_t state;
+  const char *version = "invalid";
+  const char *state_name = "missing";
+  if (partition && esp_ota_get_partition_description(partition, &description) == ESP_OK) {
+    version = description.version;
+  }
+  if (partition && esp_ota_get_state_partition(partition, &state) == ESP_OK) {
+    state_name = ota_state_name(state);
+  }
+  snprintf(output, output_size, "%s:%s:%s", partition_label(partition), version, state_name);
+}
+
+static void ota_diagnostics(char *output, size_t output_size) {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *boot = esp_ota_get_boot_partition();
+  const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t *slot0 = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+  const esp_partition_t *slot1 = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
+  char slot0_summary[96];
+  char slot1_summary[96];
+  ota_partition_summary(slot0, slot0_summary, sizeof(slot0_summary));
+  ota_partition_summary(slot1, slot1_summary, sizeof(slot1_summary));
+  snprintf(output, output_size,
+           "ota_running=%s ota_boot=%s ota_next=%s ota_slot0=%s ota_slot1=%s",
+           partition_label(running), partition_label(boot), partition_label(next),
+           slot0_summary, slot1_summary);
+}
 
 void config_console_send_line(const char *line) {
   if (cdc_write_mutex) xSemaphoreTake(cdc_write_mutex, portMAX_DELAY);
@@ -248,16 +298,18 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[384];
+  char line[640];
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
+    char ota_info[240];
+    ota_diagnostics(ota_info, sizeof(ota_info));
     int count = fingerprint_count();
     if (count < 0) {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
-               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s",
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
@@ -265,13 +317,13 @@ static void handle_command(void) {
                (unsigned)device_config_hid_host_count(),
                (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
                (unsigned)device_config_touch_cooldown_ms(),
-               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID, ota_info);
       send_line(line);
     } else {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
-               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s",
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), count,
                (unsigned)device_config_fingerprint_profile_views(),
@@ -280,7 +332,7 @@ static void handle_command(void) {
                (unsigned)device_config_hid_host_count(),
                (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
                (unsigned)device_config_touch_cooldown_ms(),
-               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID);
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID, ota_info);
       send_line(line);
     }
   } else if (strcmp(command, "VERSION") == 0) {

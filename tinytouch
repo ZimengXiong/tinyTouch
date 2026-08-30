@@ -1817,7 +1817,17 @@ def command_update(args: argparse.Namespace) -> None:
         port = install_ota_firmware(port, image, metadata["sha256"], chunk_size=chunk_size)
         status = status_fields(port)
     if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
-        raise SupportError("tinyTouch restarted with an unexpected firmware version.")
+        diagnostics = " ".join(
+            f"{name}={status[name]}"
+            for name in ("ota_running", "ota_boot", "ota_next", "ota_slot0", "ota_slot1")
+            if name in status
+        )
+        raise SupportError(
+            "tinyTouch restarted with an unexpected firmware version "
+            f"(expected {manifest.get('version')}/{manifest.get('build')}, "
+            f"got {status.get('firmware_version', 'unknown')}/{status.get('build', 'unknown')})."
+            + (f" OTA diagnostics: {diagnostics}" if diagnostics else "")
+        )
     try:
         serial_command(port, f"CONFIRM_FIRMWARE {manifest['build']}", timeout=3)
     except ToolError:

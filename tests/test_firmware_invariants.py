@@ -78,6 +78,13 @@ class FirmwareInvariantTests(unittest.TestCase):
                            ("FP_INT_PIN", "2")):
             self.assertRegex(firmware, rf"{name}\s*=\s*{gpio};")
 
+    def test_ota_status_exposes_boot_and_slot_diagnostics(self):
+        source = (MAIN / "config_console.c").read_text()
+        for field in ("ota_running=%s", "ota_boot=%s", "ota_next=%s", "ota_slot0=%s", "ota_slot1=%s"):
+            self.assertIn(field, source)
+        self.assertIn("esp_ota_get_partition_description", source)
+        self.assertIn("esp_ota_get_state_partition", source)
+
 
 if __name__ == "__main__":
     unittest.main()

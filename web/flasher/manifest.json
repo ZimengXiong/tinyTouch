@@ -1,6 +1,6 @@
 {
-  "version": "0.7.11-preprod",
-  "protocol": 3,
+  "version": "0.7.12-preprod",
+  "protocol": 4,
   "flashSize": "4MB",
   "eraseAll": false,
   "compress": false,

@@ -29,7 +29,7 @@ class PackagingTests(unittest.TestCase):
         for site in ("flasher", "recovery"):
             web_manifest_path = ROOT / "web" / site / "manifest.json"
             manifest = json.loads(web_manifest_path.read_text())
-            self.assertEqual((manifest["version"], manifest["protocol"]), (version, 3))
+            self.assertEqual((manifest["version"], manifest["protocol"]), (version, 4))
             firmware = web_manifest_path.parent / "firmware"
             referenced = {manifest["fullImage"]["file"]}
             for image in manifest["images"]:
