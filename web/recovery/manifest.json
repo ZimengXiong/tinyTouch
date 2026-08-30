@@ -1,5 +1,5 @@
 {
-  "version": "0.7.8-preprod",
+  "version": "0.7.9-preprod",
   "protocol": 3,
   "flashSize": "4MB",
   "eraseAll": true,
