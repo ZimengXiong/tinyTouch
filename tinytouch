@@ -1818,12 +1818,15 @@ def command_update(args: argparse.Namespace) -> None:
         status = status_fields(port)
     if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
         raise SupportError("tinyTouch restarted with an unexpected firmware version.")
-    time.sleep(3)
+    try:
+        serial_command(port, f"CONFIRM_FIRMWARE {manifest['build']}", timeout=3)
+    except ToolError:
+        pass
+    time.sleep(1)
     confirmed_status = status_fields(port)
     require_fingerprint_sensor(confirmed_status)
     if confirmed_status.get("build") != manifest.get("build"):
         raise SupportError("tinyTouch did not remain on the expected firmware build.")
-    serial_command(port, f"CONFIRM_FIRMWARE {manifest['build']}", timeout=3)
     say("tinyTouch is up to date.")
 
 
