@@ -14,10 +14,10 @@ from pathlib import Path
 import serial
 import serial.tools.list_ports
 try:
-    from tinytouch_keychain import get_password, has_password, set_password
+    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from tinytouch_keychain import get_password, has_password, set_password
+    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
 
 
 SERVICE = "tinyTouch"
@@ -486,13 +486,18 @@ def credentials_exist(device_id: str) -> bool:
 
 def run_manager() -> None:
     workers: dict[str, threading.Thread] = {}
+    failed_attempts: dict[str, float] = {}
     while True:
+        now = time.monotonic()
         for port, worker in list(workers.items()):
             if not worker.is_alive():
                 worker.join()
                 del workers[port]
+                failed_attempts[port] = now
         for port in device_ports():
             if port in workers:
+                continue
+            if now - failed_attempts.get(port, 0.0) < 15.0:
                 continue
             device_id = port_identity(port)
             if not credentials_exist(device_id):
@@ -507,7 +512,7 @@ def run_manager() -> None:
 def managed_worker(port: str) -> None:
     try:
         serve_port(port)
-    except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
+    except (OSError, serial.SerialException, subprocess.CalledProcessError, KeychainError) as exc:
         print(f"worker for {port} stopped: {exc}", file=sys.stderr, flush=True)
 
 
