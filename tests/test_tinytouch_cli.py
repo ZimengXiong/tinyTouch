@@ -122,6 +122,40 @@ class PackagingTests(unittest.TestCase):
         payload = plistlib.loads(cli.launch_agent_contents(python))
         self.assertEqual(payload["ProgramArguments"], [str(python), str(cli.HELPER)])
         self.assertTrue(payload["KeepAlive"])
+        self.assertEqual(payload["StandardOutPath"], str(cli.HELPER_LOG_PATH))
+        self.assertNotIn("/tmp/", payload["StandardOutPath"])
+
+    def test_factory_reset_removes_all_local_device_credentials(self):
+        args = SimpleNamespace(port=None, yes=True)
+        deleted = []
+        with (
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.example"),
+            mock.patch.object(
+                cli,
+                "status_fields",
+                return_value={"firmware": "unified", "mode": "hid", "sensor": "ok"},
+            ),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "pairing_account_for_port", return_value="DEVICE"),
+            mock.patch.object(
+                cli, "keychain_delete", side_effect=lambda service, account: deleted.append((service, account))
+            ),
+            mock.patch.object(cli, "keyboard_settings_path") as settings_path,
+            mock.patch.object(cli, "port_usb_location", return_value=None),
+            mock.patch.object(cli, "wait_for_runtime_port"),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            cli.command_factory_reset(args)
+        expected_accounts = {"DEVICE"} | {
+            f"DEVICE:fingerprint:{slot}" for slot in range(1, 6)
+        }
+        self.assertEqual(
+            {account for service, account in deleted if service == cli.PASSWORD_SERVICE},
+            expected_accounts,
+        )
+        self.assertIn((cli.PAIRING_SERVICE, "DEVICE"), deleted)
+        settings_path.return_value.unlink.assert_called_once_with(missing_ok=True)
 
     def test_device_errors_are_translated(self):
         message = cli.human_device_error("ERR STATUS sensor")

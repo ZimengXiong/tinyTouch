@@ -47,6 +47,9 @@ VENV = ROOT / ".venv"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.tinytouch.helper.plist"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 FIRMWARE_LOCK = SUPPORT_DIR / "firmware-update.lock"
+HELPER_LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
+HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
+HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
 INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
@@ -1133,14 +1136,13 @@ def launch_agent_contents(python: Path) -> bytes:
         arguments = [str(executable), "_helper"]
     else:
         arguments = [str(python), str(HELPER)]
-    log_dir = Path.home() / "Library" / "Logs" / "tinyTouch"
     payload = {
         "Label": "com.tinytouch.helper",
         "ProgramArguments": arguments,
         "RunAtLoad": True,
         "KeepAlive": True,
-        "StandardOutPath": str(log_dir / "helper.log"),
-        "StandardErrorPath": str(log_dir / "helper.err"),
+        "StandardOutPath": str(HELPER_LOG_PATH),
+        "StandardErrorPath": str(HELPER_ERROR_LOG_PATH),
     }
     return plistlib.dumps(payload, sort_keys=False)
 
@@ -1225,10 +1227,9 @@ def install_helper(python: Path) -> None:
     if FROZEN:
         install_command_if_needed()
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
-    log_dir = Path.home() / "Library" / "Logs" / "tinyTouch"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    HELPER_LOG_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        log_dir.chmod(0o700)
+        HELPER_LOG_DIR.chmod(0o700)
     except OSError:
         pass
     LAUNCH_AGENT.write_bytes(launch_agent_contents(python))
@@ -2802,7 +2803,7 @@ def command_delete(args: argparse.Namespace) -> None:
 
 def command_logs(args: argparse.Namespace) -> None:
     say("tinyTouch HID background-service logs")
-    paths = [Path("/tmp/tinytouch-helper.log"), Path("/tmp/tinytouch-helper.err")]
+    paths = [HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH]
     for path in paths:
         say(f"==> {path} <==")
         if not path.exists():

@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +70,26 @@ class HelperProtocolTests(unittest.TestCase):
             persist_state=False,
         )
         self.assertIsNone(response)
+
+    def test_nonce_can_be_recorded_after_serial_delivery(self):
+        key = bytes(range(32))
+        nonce = "0c" * 16
+        state = {"seen_nonces": []}
+        event_mac = helper.mac_hex(key, f"EV|{nonce}|1|1|1")
+        response = helper.handle_event(
+            f"EV {nonce} 1 1 1 {event_mac}",
+            b"password",
+            key,
+            state,
+            persist_state=False,
+            record_nonce=False,
+        )
+        self.assertIsNotNone(response)
+        self.assertEqual(state["seen_nonces"], [])
+        with mock.patch.object(helper, "save_state") as save_state:
+            helper.remember_nonce(state, nonce, "DEVICE")
+        self.assertEqual(state["seen_nonces"], [nonce])
+        save_state.assert_called_once_with(state, "DEVICE")
 
     def test_v2_event_selects_this_computers_independent_key(self):
         key = bytes(range(32))

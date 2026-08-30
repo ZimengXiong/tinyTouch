@@ -316,6 +316,13 @@ def save_state(state: dict, device_id: str | None = None) -> None:
     tmp.replace(path)
 
 
+def remember_nonce(state: dict, nonce: str, device_id: str | None = None) -> None:
+    seen_nonces = state.setdefault("seen_nonces", [])
+    seen_nonces.append(nonce)
+    state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
+    save_state(state, device_id)
+
+
 def valid_hex(value: str, byte_len: int) -> bool:
     if len(value) != byte_len * 2:
         return False
@@ -332,6 +339,7 @@ def handle_event(
     pairing_key: bytes,
     state: dict | None = None,
     persist_state: bool = True,
+    record_nonce: bool = True,
     device_id: str | None = None,
     keyboard_map: dict[str, str] | None = None,
 ) -> str | None:
@@ -393,7 +401,7 @@ def handle_event(
         reply_material = f"PW2|{key_id}|{nonce}|{iv_hex}|{ct_hex}"
         reply = f"PW2 {key_id} {nonce} {iv_hex} {ct_hex}"
     reply_mac = mac_hex(pairing_key, reply_material)
-    if state is not None:
+    if state is not None and record_nonce:
         seen_nonces.append(nonce)
         state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
         if persist_state:
@@ -484,10 +492,12 @@ def serve_port(port: str, once: bool = False) -> None:
                     keyboard_map = (current_keyboard_output_map()
                                     if settings["keyboard_layout"] == "auto" else None)
                     reply = handle_event(line, password, pairing_key, state,
-                                         device_id=device_id, keyboard_map=keyboard_map)
+                                         device_id=device_id, keyboard_map=keyboard_map,
+                                         record_nonce=False)
                     if reply:
                         ser.write(reply.encode("ascii"))
                         ser.flush()
+                        remember_nonce(state, line.split()[1], device_id)
                         print(f"sent encrypted password to {device_id}", flush=True)
                         if once:
                             return
