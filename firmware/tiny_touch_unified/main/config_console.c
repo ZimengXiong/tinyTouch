@@ -475,14 +475,8 @@ static void handle_command(void) {
       esp_restart();
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_ota_img_states_t state;
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
-    bool ok = build_matches &&
-              (esp_ota_get_state_partition(running, &state) != ESP_OK ||
-               state != ESP_OTA_IMG_PENDING_VERIFY ||
-               esp_ota_mark_app_valid_cancel_rollback() == ESP_OK);
-    send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
+    send_line(build_matches ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
     send_line(factory_reset() ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
