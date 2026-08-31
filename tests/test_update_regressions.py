@@ -522,7 +522,7 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("helper is parked until it is restarted", top)
 
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
-        for relative in ("web/flasher/app.js", "web/recovery/app.js"):
+        for relative in ("web/flash/app.js", "web/recovery/app.js"):
             source = (ROOT / relative).read_text()
             self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)
             self.assertIn("FLASH_BYTES", source)

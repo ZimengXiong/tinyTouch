@@ -133,7 +133,7 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertFalse((output / "ota_slot1.bin").exists())
             with tarfile.open(output / "tinytouch-web-flashers.tar.gz", "r:gz") as archive:
                 names = {member.name for member in archive.getmembers()}
-            self.assertTrue(any(name.startswith("flasher/") for name in names))
+            self.assertTrue(any(name.startswith("flash/") for name in names))
             self.assertTrue(any(name.startswith("recovery/") for name in names))
             self.assertFalse(any(name.startswith("docs/") for name in names))
             (output / "unexpected.bin").write_bytes(b"unexpected")
@@ -198,7 +198,6 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("base=https://tinytouch.alpacaengineer.ing", workflow)
         self.assertNotIn("base=https://alpacaengineer.ing/tinytouch", workflow)
         self.assertIn("find dist/expected-web -type f -print0", workflow)
-        self.assertIn('public_relative="flash/${public_relative#flasher/}"', workflow)
         self.assertIn('public_relative="${public_relative%index.html}"', workflow)
         self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn("--json tagName,isDraft", workflow)
@@ -217,7 +216,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("paths-ignore:", candidate)
         self.assertIn("channels/**", candidate)
         self.assertIn("web/release.json", candidate)
-        self.assertIn("web/flasher/firmware/**", candidate)
+        self.assertIn("web/flash/firmware/**", candidate)
         self.assertNotIn("workflow_dispatch:", candidate)
         self.assertIn("group: release-candidate-main", candidate)
         self.assertIn("cancel-in-progress: true", candidate)
@@ -243,7 +242,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("tag-release", release_script)
 
     def test_browser_requires_protocol_five_and_prefetches_before_usb(self):
-        for site in ("flasher", "recovery"):
+        for site in ("flash", "recovery"):
             source = (ROOT / "web" / site / "app.js").read_text()
             self.assertIn("const UPDATE_PROTOCOL = 5", source)
             self.assertIn("manifest.eraseAll !== false", source)

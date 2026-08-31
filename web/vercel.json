@@ -2,9 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "outputDirectory": ".",
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/flash", "destination": "/flasher" },
-    { "source": "/flash/:path*", "destination": "/flasher/:path*" }
-  ]
+  "cleanUrls": true
 }

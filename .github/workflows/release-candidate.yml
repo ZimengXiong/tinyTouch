@@ -6,8 +6,8 @@ on:
     paths-ignore:
       - channels/**
       - web/cli/**
-      - web/flasher/firmware/**
-      - web/flasher/manifest.json
+      - web/flash/firmware/**
+      - web/flash/manifest.json
       - web/recovery/firmware/**
       - web/recovery/manifest.json
       - web/release.json
@@ -111,7 +111,7 @@ jobs:
             -r software/macos-helper/requirements-release.txt
           python -m unittest discover -s tests -v
           python -m py_compile tinytouch software/macos-helper/*.py packaging/*.py
-          node --check web/flasher/app.js
+          node --check web/flash/app.js
           node --check web/recovery/app.js
       - name: Build CLI candidate
         env:

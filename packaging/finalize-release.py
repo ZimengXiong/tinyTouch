@@ -54,7 +54,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="tinytouch-release-") as temporary:
         staging = Path(temporary)
         site = staging / "site"
-        for kind, site_name in (("factory", "flasher"), ("recovery", "recovery")):
+        for kind, site_name in (("factory", "flash"), ("recovery", "recovery")):
             destination = site / site_name
             firmware = destination / "firmware"
             firmware.mkdir(parents=True)
@@ -67,7 +67,7 @@ def main() -> None:
                 copy_once(release / kind / metadata["file"], firmware / metadata["file"])
         shutil.copy2(release / "release-manifest.json", site / "release.json")
         with tarfile.open(output / "tinytouch-web-flashers.tar.gz", "w:gz") as archive:
-            for name in ("flasher", "recovery", "release.json"):
+            for name in ("flash", "recovery", "release.json"):
                 add_tree(archive, site / name, name)
         with tarfile.open(output / "tinytouch-firmware.tar.gz", "w:gz") as archive:
             for name in ("factory", "recovery", "release-manifest.json"):

@@ -82,7 +82,7 @@ jobs:
           python -m unittest discover -s tests -v
           python -m py_compile tinytouch software/macos-helper/tinytouch_helper.py packaging/*.py
           zsh -n packaging/build-standalone-macos.sh firmware/build-and-flash firmware/build-recovery
-          node --check web/flasher/app.js
+          node --check web/flash/app.js
           node --check web/recovery/app.js
       - name: Build macOS executable
         env:
@@ -119,6 +119,6 @@ jobs:
         run: |
           test -s VERSION
           python3 -m py_compile tinytouch packaging/*.py
-          node --check web/flasher/app.js
+          node --check web/flash/app.js
           node --check web/recovery/app.js
-          ! grep -q "compress:true" web/flasher/app.js web/recovery/app.js
+          ! grep -q "compress:true" web/flash/app.js web/recovery/app.js

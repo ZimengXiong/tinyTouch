@@ -186,7 +186,7 @@ def main() -> None:
     )
 
     if args.web_root:
-        for kind, site_name in (("factory", "flasher"), ("recovery", "recovery")):
+        for kind, site_name in (("factory", "flash"), ("recovery", "recovery")):
             site = args.web_root / site_name
             firmware = site / "firmware"
             if firmware.exists():

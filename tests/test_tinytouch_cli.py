@@ -26,7 +26,7 @@ class PackagingTests(unittest.TestCase):
         import json
 
         release = json.loads((ROOT / "web" / "release.json").read_text())
-        for kind, site in (("factory", "flasher"), ("recovery", "recovery")):
+        for kind, site in (("factory", "flash"), ("recovery", "recovery")):
             web_manifest_path = ROOT / "web" / site / "manifest.json"
             firmware = web_manifest_path.parent / "firmware"
             manifest = json.loads(web_manifest_path.read_text())
@@ -37,7 +37,7 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), metadata["sha256"])
 
     def test_web_flasher_progress_tracks_manifest_length(self):
-        for path in (ROOT / "web" / "flasher" / "app.js",):
+        for path in (ROOT / "web" / "flash" / "app.js",):
             source = path.read_text()
             self.assertIn("fileArray.map(() => 0)", source)
             self.assertNotIn("[0, 0, 0]", source)
