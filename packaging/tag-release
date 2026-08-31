@@ -95,8 +95,8 @@ done
 
 while (( SECONDS < deadline )); do
   promotion="$(gh api "repos/$repository/actions/runs/$promotion_id")"
-  status="$(jq -r .status <<<"$promotion")"
-  if [[ "$status" = completed ]]; then
+  run_status="$(jq -r .status <<<"$promotion")"
+  if [[ "$run_status" = completed ]]; then
     conclusion="$(jq -r .conclusion <<<"$promotion")"
     [[ "$conclusion" = success ]] || {
       print -u2 "Release promotion ended with: $conclusion"

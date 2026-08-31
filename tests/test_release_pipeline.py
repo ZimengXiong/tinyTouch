@@ -219,6 +219,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertLess(tag_script.index("release-candidate.yml"), tag_script.index("git tag -a"))
         self.assertIn("release.yml/runs", tag_script)
         self.assertIn("Release promotion ended with", tag_script)
+        self.assertNotIn("\n  status=", tag_script)
         release_script = (ROOT / "packaging" / "release").read_text()
         self.assertIn("git push origin main", release_script)
         self.assertIn('exec "$project_dir/packaging/tag-release"', release_script)
