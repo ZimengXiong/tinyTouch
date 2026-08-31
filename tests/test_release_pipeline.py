@@ -183,6 +183,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("group: release-promotion", workflow)
         self.assertIn("Verify production flasher and CLI", workflow)
         self.assertIn("find dist/expected-web -type f -print0", workflow)
+        self.assertIn('public_relative="flash/${public_relative#flasher/}"', workflow)
+        self.assertIn('public_relative="${public_relative%index.html}"', workflow)
         self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn("client_payload[release_commit]", workflow)
         self.assertIn("--json tagName,isDraft", workflow)
