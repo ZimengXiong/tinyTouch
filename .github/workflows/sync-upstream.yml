@@ -1,0 +1,21 @@
+name: Sync upstream mirror
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.repository == 'alpaca-engineering/tinyTouch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fast-forward main from the personal repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" \
+            -f branch=main
