@@ -224,8 +224,8 @@ when macos asks for the pin, touch the sensor.
 
 | part | used here | notes |
 | -- | -- | -- |
-| microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended |
-| fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol |
+| microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended. [buy (us)](https://www.amazon.com/dp/B0BYSB66S5) |
+| fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol. [buy (us)](https://www.amazon.com/dp/B0CWTR6MND) |
 | computer | macos | hid mode needs the helper. piv/pam mode needs macos smart card support |
 | case | printed top/bottom stl | `hardware/case/case_top.stl` and `hardware/case/case_bottom.stl` |
 | wiring/solder/etc | misc | whatever your build needs |
