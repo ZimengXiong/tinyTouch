@@ -25,11 +25,4 @@ Check the device:
 tinytouch status
 ```
 
-Change modes without reflashing:
-
-```sh
-tinytouch mode piv
-tinytouch mode hid
-```
-
 If setup reports an existing fingerprint, use [Recovery](./recovery).
