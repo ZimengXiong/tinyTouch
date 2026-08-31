@@ -518,12 +518,16 @@ body:has(.VPHome) {
 
 .VPHero .image-container {
   height: auto;
+  display: flex;
+  justify-content: center;
   transform: none;
   width: 100%;
 }
 
 .VPHero .image {
+  display: flex;
   flex: 0 1 380px;
+  justify-content: center;
   width: min(38vw, 380px);
 }
 
