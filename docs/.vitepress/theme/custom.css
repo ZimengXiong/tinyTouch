@@ -670,6 +670,7 @@ body:has(.VPHome) {
 @media (orientation: portrait) {
   .VPHome .VPHero .container {
     flex-direction: column;
+    gap: clamp(48px, 8vh, 96px);
     justify-content: center;
     transform: translateY(clamp(40px, 12vh, 140px));
   }
