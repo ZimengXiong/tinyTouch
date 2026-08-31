@@ -457,6 +457,7 @@ body:has(.VPHome) {
   align-items: center;
   gap: clamp(44px, 8vw, 112px);
   height: 100%;
+  justify-content: center;
   max-width: 1040px;
 }
 
@@ -542,12 +543,12 @@ body:has(.VPHome) {
   aspect-ratio: auto;
   display: block;
   height: auto;
-  max-height: 100%;
+  max-height: none;
   max-width: 100%;
   object-fit: contain;
   position: static;
   transform: none;
-  width: auto;
+  width: 100%;
 }
 
 .VPHome .vp-doc.container {

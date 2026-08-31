@@ -1,7 +1,0 @@
-<!doctype html>
-<html lang="en">
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#090909"><title>Recover tinyTouch</title>
-<link rel="stylesheet" href="styles.css">
-<main class="page"><a class="back" href="/reference/recovery">← Recovery guide</a><h1>Recover tinyTouch</h1><p>Use Chrome or Edge on a computer with a USB data cable.</p><p class="firmware-version">Recovery firmware: <strong id="firmware-version">loading…</strong></p><section class="flash"><ol><li>Hold BOOT, tap RESET, then release BOOT.</li><li>Click Erase and recover.</li><li>Select the ESP32-S3 board, then wait for recovery to finish.</li></ol><div id="message" class="message" role="status">Choose a board to start.</div><div id="progress-wrap" class="progress-wrap" hidden><div><span id="stage">Recovering</span><strong id="percent">0%</strong></div><progress id="progress" max="100" value="0">0%</progress></div><button id="flash" type="button" disabled>Erase and recover</button><p id="browser-note" class="note"></p></section><details><summary>Need help?</summary><p>This permanently erases every fingerprint, device key, and setting.</p><p>After recovery finishes, unplug and reconnect the device, wait 20 seconds, then run <code>tinytouch setup</code>.</p><p><a href="firmware/tiny_touch_recovery_full.bin" download>Download the complete recovery firmware file</a></p></details><pre id="log" hidden>No device activity yet.</pre></main>
-<script type="module" src="app.js"></script>
-</html>
