@@ -2,17 +2,26 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 
 type ToolName = 'factory' | 'recovery'
+type FlashPhase = 'select' | 'connected' | 'writing' | 'reset' | 'done'
 type ManifestImage = { name: string; file: string; address: number; size: number; sha256: string }
 type Manifest = {
   version: string
+  protocol: number
+  secureVersion: number
   flashSize: string
   eraseAll: boolean
   compress: boolean
   images: ManifestImage[]
 }
+type FirmwareFile = { data: Uint8Array; address: number }
+
+const FLASH_BYTES = 4 * 1024 * 1024
+const UPDATE_PROTOCOL = 5
+const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
 
 const selected = ref<ToolName>('factory')
 const manifest = ref<Manifest | null>(null)
+const firmwareFiles = ref<FirmwareFile[]>([])
 const serialSupported = ref(false)
 const busy = ref(false)
 const progress = ref(0)
@@ -41,13 +50,27 @@ function writeLog(value: string) {
   })
 }
 
-function friendlyError(error: unknown) {
+function friendlyError(error: unknown, phase: FlashPhase = 'select', mode = selected.value) {
   const text = error instanceof Error ? error.message : String(error)
-  if (/notfound|no port selected|chooser/i.test(text)) return 'No board was selected. Nothing was flashed.'
-  if (/securityerror|permission denied|access denied/i.test(text)) return 'Chrome does not have permission to use this serial port. Reload the page and select the board again.'
-  if (/already open|busy|networkerror/i.test(text)) return 'The serial port is busy or disconnected. Close serial monitors and other flashing tabs, then reconnect the board.'
-  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return 'The ESP32-S3 did not enter download mode. Hold BOOT, tap RESET, release BOOT, and try again.'
-  return text || 'Flashing stopped. Nothing else was changed.'
+  const recovery = mode === 'recovery'
+  if (/notfound|no port selected|chooser/i.test(text) && phase === 'select') {
+    return recovery ? 'No board was selected. Nothing was erased.' : 'No board was selected. Nothing was flashed.'
+  }
+  if (phase === 'writing' || phase === 'reset') {
+    return recovery
+      ? `Recovery stopped after write operations began. ${text || 'Keep the board connected and retry recovery.'}`
+      : `Flashing stopped after write operations began. ${text || 'Reconnect the board and use recovery before retrying.'}`
+  }
+  if (/securityerror|permission denied|access denied/i.test(text)) return 'Chrome does not have permission to use this serial port. Reload the page, select the board again, and approve access.'
+  if (/already open|busy|networkerror/i.test(text)) return recovery
+    ? 'The serial port is busy. Close tinyTouch helpers, serial monitors, and other flashing tabs, then try again.'
+    : 'The serial port is busy or was disconnected. Close serial monitors and other flashing tabs, reconnect the board, then try again.'
+  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return recovery
+    ? 'The board is not in download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
+    : 'The ESP32-S3 did not enter download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
+  if (/could not be downloaded/i.test(text)) return `${text} Check your internet connection, reload the page, and try again.`
+  if (/integrity check/i.test(text)) return `${text} Reload the page before trying again; do not flash a file that failed verification.`
+  return text || (recovery ? 'Recovery stopped before completion.' : 'Flashing stopped. Nothing else was changed.')
 }
 
 async function sha256(data: ArrayBuffer) {
@@ -55,23 +78,51 @@ async function sha256(data: ArrayBuffer) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function loadManifest() {
-  const response = await fetch(`${tool.value.base}/manifest.json`, { cache: 'no-store' })
-  if (!response.ok) throw new Error('Firmware manifest could not be downloaded.')
+async function loadManifest(mode: ToolName) {
+  const base = mode === 'factory' ? '/flash/factory' : '/flash/recovery'
+  const label = mode === 'factory' ? 'Firmware' : 'Recovery'
+  const response = await fetch(`${base}/manifest.json`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
   const nextManifest = await response.json() as Manifest
-  if (!nextManifest.version || !Array.isArray(nextManifest.images)) throw new Error('Firmware manifest is incomplete.')
-  manifest.value = nextManifest
+  if (!nextManifest || typeof nextManifest !== 'object' || typeof nextManifest.version !== 'string' ||
+      nextManifest.protocol !== UPDATE_PROTOCOL || nextManifest.secureVersion !== 0 ||
+      nextManifest.flashSize !== '4MB' || nextManifest.eraseAll !== false ||
+      nextManifest.compress !== false || !Array.isArray(nextManifest.images) ||
+      nextManifest.images.length !== REQUIRED_ADDRESSES.length) {
+    throw new Error(`${label} manifest is incomplete.`)
+  }
+  const ranges: [number, number][] = []
+  for (const image of nextManifest.images) {
+    if (!image || typeof image.name !== 'string' || typeof image.file !== 'string' ||
+        !/^[A-Za-z0-9._-]+$/.test(image.file) || !Number.isInteger(image.address) ||
+        !REQUIRED_ADDRESSES.includes(image.address) || !Number.isInteger(image.size) ||
+        image.size <= 0 || image.size > FLASH_BYTES || typeof image.sha256 !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(image.sha256) || image.address + image.size > FLASH_BYTES) {
+      throw new Error(`${label} manifest contains an invalid flash image.`)
+    }
+    ranges.push([image.address, image.address + image.size])
+  }
+  if (new Set(nextManifest.images.map((image) => image.address)).size !== REQUIRED_ADDRESSES.length) {
+    throw new Error(`${label} manifest contains duplicate flash regions.`)
+  }
+  ranges.sort((a, b) => a[0] - b[0])
+  for (let index = 1; index < ranges.length; index += 1) {
+    if (ranges[index][0] < ranges[index - 1][1]) throw new Error(`${label} flash regions overlap.`)
+  }
+  if (nextManifest.images.reduce((sum, image) => sum + image.size, 0) > FLASH_BYTES) {
+    throw new Error(`${label} manifest is unexpectedly large.`)
+  }
+  return { base, manifest: nextManifest }
 }
 
-async function loadFirmware(currentManifest: Manifest) {
-  const files = []
+async function loadFirmware(base: string, currentManifest: Manifest) {
+  const files: FirmwareFile[] = []
   for (const image of currentManifest.images) {
-    const response = await fetch(`${tool.value.base}/firmware/${image.file}`, { cache: 'no-store' })
+    const response = await fetch(`${base}/firmware/${image.file}`, { cache: 'no-store' })
     if (!response.ok) throw new Error(`${image.name} could not be downloaded.`)
     const buffer = await response.arrayBuffer()
-    if (buffer.byteLength !== image.size || await sha256(buffer) !== image.sha256) {
-      throw new Error(`${image.name} failed its integrity check.`)
-    }
+    if (buffer.byteLength !== image.size) throw new Error(`${image.name} has the wrong file size.`)
+    if (await sha256(buffer) !== image.sha256) throw new Error(`${image.name} failed its integrity check.`)
     files.push({ data: new Uint8Array(buffer), address: image.address })
   }
   return files
@@ -80,6 +131,11 @@ async function loadFirmware(currentManifest: Manifest) {
 async function flash() {
   if (!serialSupported.value || busy.value) return
   let transport: { disconnect: () => Promise<void> } | undefined
+  let phase: FlashPhase = 'select'
+  const mode = selected.value
+  const currentManifest = manifest.value
+  const fileArray = firmwareFiles.value
+  if (!currentManifest || fileArray.length !== currentManifest.images.length) return
   busy.value = true
   progress.value = 0
   stage.value = 'Connecting'
@@ -87,21 +143,22 @@ async function flash() {
   show('Choose the ESP32-S3 serial port in the browser window.')
   try {
     const { ESPLoader, Transport } = await import(`${tool.value.base}/vendor/esptool-js.js`)
-    const port = await navigator.serial.requestPort()
+    stage.value = mode === 'recovery' ? 'Checking recovery firmware' : 'Checking firmware'
+    const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] })
     const info = port.getInfo()
     const nativeDownloadMode = info.usbVendorId === 0x303a && [0x0009, 0x1001].includes(info.usbProductId ?? 0)
     transport = new Transport(port, false)
     const terminal = { clean: () => { log.value = '' }, write: writeLog, writeLine: writeLog }
     const loader = new ESPLoader({ transport, baudrate: 460800, terminal, debugLogging: false })
+    phase = 'connected'
+    show('Connecting to ESP32-S3…')
     const chip = await loader.main(nativeDownloadMode ? 'no_reset' : 'default_reset')
     if (!/ESP32-S3/i.test(chip)) throw new Error(`This is ${chip}, not an ESP32-S3.`)
 
-    stage.value = 'Checking firmware'
-    const currentManifest = manifest.value ?? await loadManifest().then(() => manifest.value as Manifest)
-    const fileArray = await loadFirmware(currentManifest)
     const totalBytes = currentManifest.images.reduce((sum, image) => sum + image.size, 0)
     const written = fileArray.map(() => 0)
-    stage.value = currentManifest.eraseAll ? 'Erasing and recovering' : 'Writing firmware'
+    stage.value = mode === 'recovery' ? 'Writing recovery firmware' : 'Writing firmware'
+    phase = 'writing'
     await loader.writeFlash({
       fileArray,
       flashMode: 'dio',
@@ -115,27 +172,38 @@ async function flash() {
       },
     })
     progress.value = 100
-    await loader.after('hard_reset')
-    await transport.disconnect()
+    if (mode === 'recovery') stage.value = 'Starting one-time erase'
+    phase = 'reset'
+    try { await loader.after('hard_reset') } catch (error) { writeLog(`Reset notice: ${error}`) }
+    try { await transport.disconnect() } catch {}
     transport = undefined
-    show(currentManifest.eraseAll ? 'Recovery complete. Reconnect the board, wait 20 seconds, then run tinytouch setup.' : 'Flash complete. Unplug the board and reconnect it once.', 'success')
+    phase = 'done'
+    show(mode === 'recovery'
+      ? 'Recovery firmware installed. Unplug and reconnect the device, wait 20 seconds, then run tinytouch setup.'
+      : 'Flash complete. Unplug the board and reconnect it once.', 'success')
   } catch (error) {
-    show(friendlyError(error), 'error')
+    show(friendlyError(error, phase, mode), 'error')
     try { await transport?.disconnect() } catch {}
   } finally {
     busy.value = false
-    stage.value = manifest.value?.eraseAll ? 'Recovery' : 'Flashing'
+    stage.value = mode === 'recovery' ? 'Recovery' : 'Flashing'
   }
 }
 
 async function selectTool() {
+  const mode = selected.value
   manifest.value = null
+  firmwareFiles.value = []
   show('Loading firmware…')
   try {
-    await loadManifest()
+    const loaded = await loadManifest(mode)
+    const files = await loadFirmware(loaded.base, loaded.manifest)
+    if (selected.value !== mode) return
+    manifest.value = loaded.manifest
+    firmwareFiles.value = files
     show('')
   } catch (error) {
-    show(friendlyError(error), 'error')
+    if (selected.value === mode) show(friendlyError(error, 'select', mode), 'error')
   }
 }
 
@@ -164,7 +232,7 @@ onMounted(async () => {
         <div><span>{{ stage }}</span><strong>{{ progress }}%</strong></div>
         <progress max="100" :value="progress">{{ progress }}%</progress>
       </div>
-      <button type="button" :disabled="!serialSupported || busy || !manifest" @click="flash">
+      <button type="button" :disabled="!serialSupported || busy || !manifest || firmwareFiles.length !== manifest.images.length" @click="flash">
         {{ selected === 'recovery' ? 'Erase and recover' : 'Connect and flash' }}
       </button>
       <div v-if="status" class="flash-status" :class="statusKind" role="status">{{ status }}</div>

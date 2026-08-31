@@ -273,6 +273,12 @@ jobs:
           mv dist/site/flash web/flash
           mv dist/site/recovery web/recovery
           mv dist/site/release.json web/release.json
+          rm -rf docs/public/flash/factory docs/public/flash/recovery
+          mkdir -p docs/public/flash/factory docs/public/flash/recovery
+          cp web/flash/manifest.json docs/public/flash/factory/
+          cp -R web/flash/firmware web/flash/vendor docs/public/flash/factory/
+          cp web/recovery/manifest.json docs/public/flash/recovery/
+          cp -R web/recovery/firmware web/recovery/vendor docs/public/flash/recovery/
           cp dist/candidate/publish/tinytouch-macos-arm64.tar.gz web/cli/
           cp dist/candidate/publish/tinytouch-macos-x86_64.tar.gz web/cli/
           test "$(jq -r .version web/release.json)" = "${RELEASE_TAG#v}"
@@ -286,9 +292,10 @@ jobs:
           done
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add web/cli web/flash web/recovery web/release.json
+          git add docs/public/flash/factory docs/public/flash/recovery \
+            web/cli web/flash web/recovery web/release.json
           unexpected="$(git diff --cached --name-only | grep -Ev \
-            '^web/(cli|flash|recovery)(/|$)|^web/release\.json$' || true)"
+            '^docs/public/flash/(factory|recovery)(/|$)|^web/(cli|flash|recovery)(/|$)|^web/release\.json$' || true)"
           test -z "$unexpected"
           if git diff --cached --quiet; then
             echo "Production site already contains $RELEASE_TAG."

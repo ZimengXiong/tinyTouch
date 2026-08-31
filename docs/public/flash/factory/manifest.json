@@ -1,6 +1,7 @@
 {
-  "version": "0.5.1-preprod",
-  "protocol": 3,
+  "version": "0.7.19-preprod",
+  "protocol": 5,
+  "secureVersion": 0,
   "flashSize": "4MB",
   "eraseAll": false,
   "compress": false,
@@ -9,8 +10,8 @@
       "name": "Bootloader",
       "file": "bootloader.bin",
       "address": 0,
-      "size": 21600,
-      "sha256": "91c5f9bf1cb8868f61dee964a0d196336409fee91e66041fd7049c8816989ae0"
+      "size": 21488,
+      "sha256": "bf77197a65bb5f4d2cf1a1d09651bb52d3236f03ec47047fce07c20a31c3125d"
     },
     {
       "name": "Partition table",
@@ -24,7 +25,7 @@
       "file": "tiny_touch_unified.bin",
       "address": 65536,
       "size": 462848,
-      "sha256": "a5dd03e9d06a38f2c6780b919a57a1ce7c5b4ccb284c7c824a3a20f653786038"
+      "sha256": "768b0a04b049b889d065d9ff5c199a9d09d748a4cdabd7e8b84b25b7e657b90b"
     },
     {
       "name": "OTA state",
@@ -37,6 +38,6 @@
   "fullImage": {
     "file": "tiny_touch_factory_full.bin",
     "size": 2170880,
-    "sha256": "78e24ab112281cf166b4a6a906354bf268c712aa7c8de95fc169318c6cf3664e"
+    "sha256": "09bdbe3146abf038bba28118eb8554c59f4f2f066fe0e9177ec8b80180b7bd67"
   }
 }

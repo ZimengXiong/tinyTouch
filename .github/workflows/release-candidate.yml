@@ -10,6 +10,8 @@ on:
       - web/flash/manifest.json
       - web/recovery/firmware/**
       - web/recovery/manifest.json
+      - docs/public/flash/factory/**
+      - docs/public/flash/recovery/**
       - web/release.json
 
 concurrency:
