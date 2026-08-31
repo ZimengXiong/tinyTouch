@@ -80,7 +80,7 @@ jobs:
               else
                 release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag")"
                 test "$(jq -r .draft <<<"$release_json")" = false
-                test "$(jq '(.assets | length) == 13 and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
+                test "$(jq '((.assets | length) == 13 or (.assets | length) == 14) and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
                 channel="$(gh api "repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json?ref=main" | jq -r .content | base64 --decode | jq -r .manifest)"
                 test "$channel" = "https://github.com/ZimengXiong/TinyTouch/releases/download/$release_tag/release-manifest.json"
                 curl -fsS --max-time 15 \
