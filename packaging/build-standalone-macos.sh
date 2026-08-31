@@ -13,6 +13,10 @@ if [[ ! -x "$venv_python" ]]; then
   python3 -m venv "$project_dir/.venv"
 fi
 
+# PEP 517 backends installed in the build environment are executables. Add the
+# environment's bin directory so source distributions can invoke them.
+export PATH="$project_dir/.venv/bin:$PATH"
+
 "$venv_python" -m pip install -q --require-hashes \
   -r "$project_dir/software/macos-helper/requirements-bootstrap.txt"
 "$venv_python" -m pip install -q --no-build-isolation --require-hashes \
