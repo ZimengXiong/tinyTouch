@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitepress'
 
+const siteOrigin = process.env.TINYTOUCH_SITE_ORIGIN ?? 'https://tinytouch.alpacaengineer.ing'
+
 export default defineConfig({
   title: 'tinyTouch',
   description: 'Documentation for tinyTouch hardware, software, and firmware.',
@@ -8,7 +10,7 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   metaChunk: true,
-  sitemap: { hostname: 'https://docs.tinytouch.dev' },
+  sitemap: { hostname: siteOrigin },
   head: [
     ['meta', { name: 'theme-color', content: '#ffffff' }],
     ['meta', { name: 'color-scheme', content: 'light dark' }],

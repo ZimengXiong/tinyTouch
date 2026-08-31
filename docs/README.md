@@ -22,4 +22,4 @@ npm run build
 
 You can find the generated site in `.vitepress/dist`.
 
-The local documentation bundle contains copies of the factory and recovery web flashers for testing purposes. Release automation remains responsible for production assets.
+Release automation writes verified factory firmware, recovery firmware, CLI packages, and release metadata into `public/`. The native Flash page loads those assets directly.

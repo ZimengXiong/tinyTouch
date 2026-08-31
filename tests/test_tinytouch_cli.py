@@ -25,11 +25,12 @@ class PackagingTests(unittest.TestCase):
     def test_browser_firmware_is_release_generated(self):
         import json
 
-        release = json.loads((ROOT / "web" / "release.json").read_text())
-        for kind, site in (("factory", "flash"), ("recovery", "recovery")):
-            web_manifest_path = ROOT / "web" / site / "manifest.json"
-            firmware = web_manifest_path.parent / "firmware"
-            manifest = json.loads(web_manifest_path.read_text())
+        public = ROOT / "docs" / "public"
+        release = json.loads((public / "release.json").read_text())
+        for kind in ("factory", "recovery"):
+            manifest_path = public / "flash" / kind / "manifest.json"
+            firmware = manifest_path.parent / "firmware"
+            manifest = json.loads(manifest_path.read_text())
             self.assertEqual(manifest["version"], release["version"])
             for metadata in [*manifest["images"], manifest["fullImage"]]:
                 image = firmware / metadata["file"]
@@ -37,10 +38,9 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), metadata["sha256"])
 
     def test_web_flasher_progress_tracks_manifest_length(self):
-        for path in (ROOT / "web" / "flash" / "app.js",):
-            source = path.read_text()
-            self.assertIn("fileArray.map(() => 0)", source)
-            self.assertNotIn("[0, 0, 0]", source)
+        source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
+        self.assertIn("fileArray.map(() => 0)", source)
+        self.assertNotIn("[0, 0, 0]", source)
 
     def test_idf_version_guard_accepts_only_5_3(self):
         checker = ROOT / "firmware" / "check-idf-version"

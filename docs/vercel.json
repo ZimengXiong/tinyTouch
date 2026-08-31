@@ -1,0 +1,38 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".vitepress/dist",
+  "cleanUrls": true,
+  "redirects": [
+    {
+      "source": "/recovery",
+      "destination": "/flash?firmware=recovery",
+      "permanent": false
+    },
+    {
+      "source": "/setup",
+      "destination": "/customer/setup",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/release.json",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/flash/(.*)/manifest.json",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/flash/(.*)/firmware/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/cli/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    }
+  ]
+}

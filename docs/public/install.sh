@@ -2,7 +2,11 @@
 # tinyTouch Batch 0 installer for macOS.
 set -eu
 
-site_root='https://tinytouch.alpacaengineer.ing'
+site_root="${TINYTOUCH_SITE_ORIGIN:-https://tinytouch.alpacaengineer.ing}"
+case "$site_root" in
+  https://tinytouch.alpacaengineer.ing|https://docs.tinytouch.dev) ;;
+  *) echo 'TINYTOUCH_SITE_ORIGIN is not a trusted tinyTouch site.' >&2; exit 1 ;;
+esac
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 firmware_dir="${0:A:h}/tiny_touch_unified"
 build_dir="$firmware_dir/build-recovery"
-output_dir="${0:A:h:h}/web/recovery/firmware"
+output_dir="${0:A:h:h}/docs/public/flash/recovery/firmware"
 
 idf_export=""
 if [[ -n "${IDF_PATH:-}" && -f "$IDF_PATH/export.sh" ]]; then
@@ -27,14 +27,14 @@ idf.py -C "$firmware_dir" -B "$build_dir" \
   -D TINYTOUCH_RECOVERY_BUILD=ON build
 
 mkdir -p "$output_dir"
-cp "$build_dir/bootloader/bootloader.bin" "$output_dir/bootloader.bin"
+cp "$build_dir/bootloader/bootloader.bin" "$output_dir/recovery_bootloader.bin"
 cp "$build_dir/partition_table/partition-table.bin" "$output_dir/partition-table.bin"
 cp "$build_dir/tiny_touch_unified.bin" "$output_dir/tiny_touch_recovery.bin"
 
 esptool.py --chip esp32s3 merge_bin \
   --output "$output_dir/tiny_touch_recovery_full.bin" \
   --flash_mode dio --flash_freq 80m --flash_size 4MB \
-  0x0 "$output_dir/bootloader.bin" \
+  0x0 "$output_dir/recovery_bootloader.bin" \
   0x8000 "$output_dir/partition-table.bin" \
   0x10000 "$output_dir/tiny_touch_recovery.bin"
 

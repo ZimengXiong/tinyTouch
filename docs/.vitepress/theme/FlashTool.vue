@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 
 type ToolName = 'factory' | 'recovery'
 type FlashPhase = 'select' | 'connected' | 'writing' | 'reset' | 'done'
@@ -18,6 +18,7 @@ type FirmwareFile = { data: Uint8Array; address: number }
 const FLASH_BYTES = 4 * 1024 * 1024
 const UPDATE_PROTOCOL = 5
 const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
+const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
 
 const selected = ref<ToolName>('factory')
 const manifest = ref<Manifest | null>(null)
@@ -30,11 +31,6 @@ const status = ref('')
 const statusKind = ref('')
 const log = ref('No device activity yet.')
 const logRef = ref<HTMLElement | null>(null)
-
-const tool = computed(() => ({
-  factory: { label: 'Factory firmware', base: '/flash/factory' },
-  recovery: { label: 'Recovery firmware', base: '/flash/recovery' },
-}[selected.value]))
 
 function show(message: string, kind = '') {
   status.value = message
@@ -142,7 +138,7 @@ async function flash() {
   log.value = 'No device activity yet.'
   show('Choose the ESP32-S3 serial port in the browser window.')
   try {
-    const { ESPLoader, Transport } = await import(`${tool.value.base}/vendor/esptool-js.js`)
+    const { ESPLoader, Transport } = await import(ESPTOOL_MODULE)
     stage.value = mode === 'recovery' ? 'Checking recovery firmware' : 'Checking firmware'
     const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] })
     const info = port.getInfo()
@@ -208,6 +204,9 @@ async function selectTool() {
 }
 
 onMounted(async () => {
+  if (new URLSearchParams(window.location.search).get('firmware') === 'recovery') {
+    selected.value = 'recovery'
+  }
   serialSupported.value = 'serial' in navigator
   if (!serialSupported.value) show('Open this page in Google Chrome or Microsoft Edge.', 'error')
   await selectTool()

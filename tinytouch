@@ -56,7 +56,12 @@ CLI_INSTALL_DIR = Path.home() / ".local" / "bin"
 CLI_INSTALL_PATH = CLI_INSTALL_DIR / "tinytouch"
 VERBOSE = False
 HELPER_SUSPENDED = False
-FACTORY_FLASH_URL = "https://tinytouch.alpacaengineer.ing/flash/"
+DEFAULT_SITE_ORIGIN = "https://tinytouch.alpacaengineer.ing"
+TRUSTED_SITE_ORIGINS = {DEFAULT_SITE_ORIGIN, "https://docs.tinytouch.dev"}
+SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", DEFAULT_SITE_ORIGIN).rstrip("/")
+if SITE_ORIGIN not in TRUSTED_SITE_ORIGINS:
+    SITE_ORIGIN = DEFAULT_SITE_ORIGIN
+FACTORY_FLASH_URL = f"{SITE_ORIGIN}/flash/"
 SUPPORT_EMAIL = "tinytouch@alpacaengineer.ing"
 CURRENT_UPDATE_PROTOCOL = 5
 RELEASE_CHANNEL_URL = (

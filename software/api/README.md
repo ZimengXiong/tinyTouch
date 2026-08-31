@@ -1,7 +1,7 @@
 # TinyTouch API on Endeavour
 
 The TinyTouch repository is the product authority for firmware, hardware,
-desktop helper software, the static web flasher, and this waitlist API. The API
+desktop helper software, the documentation flasher, and this waitlist API. The API
 is owned by `software/api`; it is not part of the separate Alpaca Engineer
 Vercel application.
 

@@ -522,11 +522,12 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("helper is parked until it is restarted", top)
 
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
-        for relative in ("web/flash/app.js", "web/recovery/app.js"):
-            source = (ROOT / relative).read_text()
-            self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)
-            self.assertIn("FLASH_BYTES", source)
-            self.assertIn("flash regions overlap", source.lower())
+        source = (
+            ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue"
+        ).read_text()
+        self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)
+        self.assertIn("FLASH_BYTES", source)
+        self.assertIn("flash regions overlap", source.lower())
 
     def test_recovery_does_not_host_erase_before_sensor_check(self):
         packaging = (ROOT / "packaging" / "assemble-release.py").read_text()
