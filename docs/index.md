@@ -10,8 +10,8 @@ hero:
   actions:
     - theme: brand
       text: I bought one
-      link: /customer/setup
+      link: /customer/
     - theme: alt
       text: I’m building one
-      link: /builder/
+      link: /customer/#build-a-device
 ---

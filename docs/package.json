@@ -1,0 +1,14 @@
+{
+  "name": "tinytouch-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress --host 127.0.0.1",
+    "build": "vitepress build",
+    "preview": "vitepress preview --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4",
+    "vue": "3.5.41"
+  }
+}

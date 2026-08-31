@@ -61,14 +61,18 @@ button {
 }
 
 .VPNavBarTitle .title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  align-items: center;
+  display: flex;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  white-space: pre;
 }
 
 .VPNavBarTitle .logo {
-  height: 24px;
-  width: 24px;
+  height: 28px;
+  margin-right: 9px;
+  width: 28px;
 }
 
 .dark .VPNavBarTitle .logo {
@@ -320,6 +324,108 @@ button {
   width: 100%;
 }
 
+.flash-tool {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.flash-tool-controls {
+  align-items: center;
+  background: var(--vp-c-bg-alt);
+  border-bottom: 1px solid var(--vp-c-divider);
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+}
+
+.flash-tool-controls button {
+  background: var(--vp-c-bg);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 5px;
+  color: var(--vp-c-text-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
+.flash-tool-controls button.active {
+  background: var(--vp-c-text-1);
+  border-color: var(--vp-c-text-1);
+  color: var(--vp-c-bg);
+}
+
+.flash-tool-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.flash-tool-body {
+  background: var(--vp-c-bg);
+  padding: 24px;
+}
+
+.flash-tool-body > p,
+.flash-tool-body > ol {
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.flash-version {
+  margin: 0 0 18px;
+}
+
+.flash-tool-body > ol {
+  margin: 0 0 24px;
+  padding-left: 20px;
+}
+
+.flash-status {
+  min-height: 24px;
+}
+
+.flash-status.error {
+  color: #e06c5f;
+}
+
+.flash-status.success {
+  color: #5caa78;
+}
+
+.flash-progress {
+  margin: 18px 0;
+}
+
+.flash-progress > div {
+  color: var(--vp-c-text-2);
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.flash-progress progress {
+  height: 8px;
+  width: 100%;
+}
+
+.flash-tool-body > button {
+  background: var(--vp-c-text-1);
+  border: 1px solid var(--vp-c-text-1);
+  border-radius: 6px;
+  color: var(--vp-c-bg);
+  cursor: pointer;
+  font: inherit;
+  padding: 10px 14px;
+}
+
+.flash-tool-body > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .VPHome {
   height: 100%;
   min-height: 0;
@@ -345,12 +451,14 @@ body:has(.VPHome) {
 }
 
 .VPHero .container {
-  gap: 48px;
-  max-width: 960px;
+  align-items: center;
+  gap: clamp(44px, 8vw, 112px);
+  max-width: 1040px;
 }
 
 .VPHero .main {
-  max-width: 480px;
+  flex: 1 1 0;
+  max-width: 500px;
 }
 
 .VPHero .heading,
@@ -360,29 +468,29 @@ body:has(.VPHome) {
 
 .VPHero .name {
   color: var(--vp-c-text-1);
-  font-size: clamp(2.3rem, 6vw, 3.8rem);
+  font-size: clamp(3rem, 7vw, 5.6rem);
   font-weight: 600;
-  line-height: 1;
+  line-height: 0.98;
 }
 
 .VPHero .text {
-  font-size: clamp(1.35rem, 3vw, 2rem);
+  font-size: clamp(1.7rem, 3.6vw, 2.8rem);
   font-weight: 500;
-  line-height: 1.15;
-  margin-top: 8px;
+  line-height: 1.06;
+  margin-top: 14px;
 }
 
 .VPHero .tagline {
   color: var(--vp-c-text-2);
-  font-size: 15px;
-  line-height: 1.55;
-  margin-top: 18px;
-  max-width: 430px;
+  font-size: 16px;
+  line-height: 1.5;
+  margin-top: 22px;
+  max-width: 420px;
 }
 
 .VPHero .actions {
   gap: 10px;
-  padding-top: 24px;
+  padding-top: 30px;
 }
 
 .VPHero .VPButton {
@@ -408,7 +516,12 @@ body:has(.VPHome) {
 .VPHero .image-container {
   height: auto;
   transform: none;
-  width: min(34vw, 340px);
+  width: 100%;
+}
+
+.VPHero .image {
+  flex: 0 1 380px;
+  width: min(38vw, 380px);
 }
 
 .VPHero .image-bg {
@@ -416,10 +529,13 @@ body:has(.VPHome) {
 }
 
 .VPHero .image-src {
-  max-height: 300px;
-  max-width: 340px;
+  display: block;
+  height: auto;
+  max-height: 380px;
+  max-width: 380px;
   position: static;
   transform: none;
+  width: 100%;
 }
 
 .VPHome .vp-doc.container {
@@ -494,6 +610,19 @@ body:has(.VPHome) {
 
   .flasher-shell iframe {
     height: 600px;
+  }
+
+  .flash-tool-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .flash-tool-controls select {
+    width: 100%;
+  }
+
+  .flash-tool iframe {
+    height: 650px;
   }
 
   .VPDoc table {
