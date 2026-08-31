@@ -180,6 +180,15 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("--signer-workflow", workflow)
         self.assertIn("--source-digest", workflow)
         self.assertIn("Activate verified CLI update channel", workflow)
+        self.assertIn("group: release-promotion", workflow)
+        self.assertIn("Verify production flasher and CLI", workflow)
+        self.assertIn("client_payload[release_commit]", workflow)
+        self.assertIn("--json tagName,isDraft", workflow)
+        self.assertNotIn("releases/tags/$GITHUB_REF_NAME", workflow)
+        self.assertLess(
+            workflow.index("Verify production flasher and CLI"),
+            workflow.index("Activate verified CLI update channel"),
+        )
         self.assertIn("release immutability is a configured server-side prerequisite", workflow)
         self.assertNotIn("TINYTOUCH_RELEASE_ADMIN_TOKEN", workflow)
         self.assertIn("CANDIDATE_WAIT_SECONDS", workflow)
@@ -206,6 +215,11 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("git status --porcelain", tag_script)
         self.assertIn("Timed out after 600s", tag_script)
         self.assertLess(tag_script.index("release-candidate.yml"), tag_script.index("git tag -a"))
+        self.assertIn("release.yml/runs", tag_script)
+        self.assertIn("Release promotion ended with", tag_script)
+        release_script = (ROOT / "packaging" / "release").read_text()
+        self.assertIn("git push origin main", release_script)
+        self.assertIn('exec "$project_dir/packaging/tag-release"', release_script)
 
     def test_browser_requires_protocol_five_and_prefetches_before_usb(self):
         for site in ("flasher", "recovery"):

@@ -1,0 +1,24 @@
+#!/bin/zsh
+set -euo pipefail
+
+project_dir="${0:A:h:h}"
+cd "$project_dir"
+
+if (( $# > 0 )); then
+  print "Usage: packaging/release"
+  print "Push main, build one immutable candidate, publish it, and verify production."
+  [[ "$1" = --help || "$1" = -h ]] && exit 0
+  exit 2
+fi
+
+git diff --quiet -- && git diff --cached --quiet -- || {
+  print -u2 "Tracked and staged files must be clean before releasing."
+  exit 1
+}
+[[ "$(git branch --show-current)" = main ]] || {
+  print -u2 "Releases must be created from main."
+  exit 1
+}
+
+git push origin main
+exec "$project_dir/packaging/tag-release"

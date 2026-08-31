@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-promotion
   cancel-in-progress: false
 
 permissions:
@@ -94,15 +94,15 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
-          if release_json="$(gh api "$release_api" 2>/dev/null)"; then
-            test "$(jq -r .tag_name <<<"$release_json")" = "$GITHUB_REF_NAME"
+          if release_json="$(gh release view "$GITHUB_REF_NAME" \
+            --json tagName,isDraft 2>/dev/null)"; then
+            test "$(jq -r .tagName <<<"$release_json")" = "$GITHUB_REF_NAME"
           else
             gh release create "$GITHUB_REF_NAME" \
               --target "$RELEASE_COMMIT" "${release_flags[@]}"
-            release_json="$(gh api "$release_api")"
+            release_json="$(gh release view "$GITHUB_REF_NAME" --json tagName,isDraft)"
           fi
-          release_state="$(jq -r 'if .draft then "draft" else "published" end' <<<"$release_json")"
+          release_state="$(jq -r 'if .isDraft then "draft" else "published" end' <<<"$release_json")"
           gh release view "$GITHUB_REF_NAME" --json assets > dist/release-assets.json
           python - <<'PY'
           import hashlib, json
@@ -150,6 +150,55 @@ jobs:
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+      - name: Dispatch flasher-only site deployment
+        env:
+          GH_TOKEN: ${{ secrets.TINYTOUCH_SITE_DISPATCH_TOKEN }}
+        run: |
+          test -n "${GH_TOKEN:-}"
+          web_sha="$(awk '$2 == "tinytouch-web-flashers.tar.gz" {print $1}' \
+            dist/candidate/publish/checksums.txt)"
+          test -n "$web_sha"
+          # The receiver must verify web_sha256 before extraction and deduplicate
+          # repository_dispatch events by this deterministic idempotency key.
+          dispatch_key="${GITHUB_REF_NAME}:${web_sha}"
+          gh api repos/ZimengXiong/alpacaengineer/dispatches \
+            --method POST \
+            -f event_type=tinytouch-release \
+            -f "client_payload[tag]=$GITHUB_REF_NAME" \
+            -f "client_payload[release_commit]=$RELEASE_COMMIT" \
+            -f "client_payload[web_sha256]=$web_sha" \
+            -f "client_payload[idempotency_key]=$dispatch_key"
+      - name: Verify production flasher and CLI
+        run: |
+          base=https://alpacaengineer.ing/tinytouch/batch-0
+          deadline=$((SECONDS + 300))
+          while (( SECONDS < deadline )); do
+            if curl -fsS --max-time 15 \
+              "$base/release.json?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SECONDS" \
+              -o dist/live-release.json && \
+              test "$(jq -r .version dist/live-release.json)" = "${GITHUB_REF_NAME#v}" && \
+              test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"; then
+              break
+            fi
+            sleep 5
+          done
+          test -s dist/live-release.json
+          test "$(jq -r .version dist/live-release.json)" = "${GITHUB_REF_NAME#v}"
+          test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
+          for area in flash recovery; do
+            curl -fsS --max-time 15 \
+              "$base/$area/manifest.json?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              -o "dist/live-$area.json"
+            test "$(jq -r .version "dist/live-$area.json")" = "${GITHUB_REF_NAME#v}"
+          done
+          for platform in macos-arm64 macos-x86_64; do
+            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' dist/live-release.json)"
+            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' dist/live-release.json)"
+            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' dist/live-release.json)"
+            curl -fsS --max-time 60 "$base/cli/$file" -o "dist/$file"
+            test "$(stat -c %s "dist/$file")" = "$size"
+            echo "$sha256  dist/$file" | sha256sum --check --strict
+          done
       - name: Activate verified CLI update channel
         env:
           GH_TOKEN: ${{ github.token }}
@@ -184,23 +233,9 @@ jobs:
               -f sha="$channel_sha" \
               -f branch=main >/dev/null
           fi
-      - name: Dispatch flasher-only site deployment
-        env:
-          GH_TOKEN: ${{ secrets.TINYTOUCH_SITE_DISPATCH_TOKEN }}
-        run: |
-          test -n "${GH_TOKEN:-}"
-          web_sha="$(awk '$2 == "tinytouch-web-flashers.tar.gz" {print $1}' \
-            dist/candidate/publish/checksums.txt)"
-          test -n "$web_sha"
-          # The receiver must verify web_sha256 before extraction and deduplicate
-          # repository_dispatch events by this deterministic idempotency key.
-          dispatch_key="${GITHUB_REF_NAME}:${web_sha}"
-          gh api repos/ZimengXiong/alpacaengineer/dispatches \
-            --method POST \
-            -f event_type=tinytouch-release \
-            -f "client_payload[tag]=$GITHUB_REF_NAME" \
-            -f "client_payload[web_sha256]=$web_sha" \
-            -f "client_payload[idempotency_key]=$dispatch_key"
+          active="$(gh api "$channel_api?ref=main")"
+          jq -r .content <<<"$active" | base64 --decode > dist/active-channel.json
+          cmp dist/next-channel.json dist/active-channel.json
       - name: Record promotion benchmark
         if: always()
         run: |

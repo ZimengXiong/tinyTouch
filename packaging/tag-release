@@ -4,6 +4,13 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 cd "$project_dir"
 
+if (( $# > 0 )); then
+  print "Usage: packaging/tag-release"
+  print "Wait for the exact candidate, create its tag, and wait for promotion."
+  [[ "$1" = --help || "$1" = -h ]] && exit 0
+  exit 2
+fi
+
 version="$(tr -d '[:space:]' < VERSION)"
 tag="v$version"
 commit="$(git rev-parse HEAD)"
@@ -69,3 +76,38 @@ count="$(gh api "repos/$repository/actions/runs/$run_id/artifacts" | jq \
 
 git tag -a "$tag" -m "tinyTouch $version"
 git push origin "refs/tags/$tag"
+
+deadline=$((SECONDS + 600))
+promotion_id=""
+while (( SECONDS < deadline )); do
+  runs="$(gh api \
+    "repos/$repository/actions/workflows/release.yml/runs?event=push&per_page=100")"
+  promotion_id="$(jq -r --arg sha "$commit" --arg tag "$tag" \
+    '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == $tag)] | first | .id // empty' \
+    <<<"$runs")"
+  [[ -n "$promotion_id" ]] && break
+  sleep 2
+done
+[[ -n "$promotion_id" ]] || {
+  print -u2 "Timed out waiting for the promotion workflow to start."
+  exit 1
+}
+
+while (( SECONDS < deadline )); do
+  promotion="$(gh api "repos/$repository/actions/runs/$promotion_id")"
+  status="$(jq -r .status <<<"$promotion")"
+  if [[ "$status" = completed ]]; then
+    conclusion="$(jq -r .conclusion <<<"$promotion")"
+    [[ "$conclusion" = success ]] || {
+      print -u2 "Release promotion ended with: $conclusion"
+      print -u2 "$(jq -r .html_url <<<"$promotion")"
+      exit 1
+    }
+    print "Released $tag: $(jq -r .html_url <<<"$promotion")"
+    exit 0
+  fi
+  print "Waiting for $tag promotion..."
+  sleep 5
+done
+print -u2 "Timed out waiting for $tag promotion."
+exit 1
