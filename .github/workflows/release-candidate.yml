@@ -5,14 +5,10 @@ on:
     branches: [main]
     paths-ignore:
       - channels/**
-      - web/cli/**
-      - web/flash/firmware/**
-      - web/flash/manifest.json
-      - web/recovery/firmware/**
-      - web/recovery/manifest.json
+      - docs/public/cli/**
       - docs/public/flash/factory/**
       - docs/public/flash/recovery/**
-      - web/release.json
+      - docs/public/release.json
 
 concurrency:
   group: release-candidate-main
@@ -113,8 +109,6 @@ jobs:
             -r software/macos-helper/requirements-release.txt
           python -m unittest discover -s tests -v
           python -m py_compile tinytouch software/macos-helper/*.py packaging/*.py
-          node --check web/flash/app.js
-          node --check web/recovery/app.js
       - name: Build CLI candidate
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
@@ -136,8 +130,25 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
   candidate:
-    needs: [firmware, cli]
+    needs: [firmware, cli, docs]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -163,7 +174,7 @@ jobs:
             --x86-64 dist/cli-x86_64/tinytouch.tar.gz
           python packaging/release_integrity.py assembled dist/release --commit "$GITHUB_SHA"
           python packaging/finalize-release.py dist/release \
-            --web-source web --output dist/publish --commit "$GITHUB_SHA"
+            --output dist/publish --commit "$GITHUB_SHA"
           tar -C dist -czf "dist/release-candidate-${GITHUB_SHA}.tar.gz" publish
           printf 'Candidate finalization: %ss\n' "$((SECONDS - finalize_started))" >> "$GITHUB_STEP_SUMMARY"
       - name: Attest candidate bundle

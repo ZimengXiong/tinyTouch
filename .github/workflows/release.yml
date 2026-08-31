@@ -22,6 +22,9 @@ permissions:
   contents: write
   attestations: read
 
+env:
+  PUBLIC_SITE_ORIGIN: ${{ vars.TINYTOUCH_SITE_ORIGIN || 'https://tinytouch.alpacaengineer.ing' }}
+
 jobs:
   promote:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
@@ -77,11 +80,11 @@ jobs:
               else
                 release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag")"
                 test "$(jq -r .draft <<<"$release_json")" = false
-                test "$(jq '(.assets | length) == 14 and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-web-flashers.tar.gz") != null)' <<<"$release_json")" = true
+                test "$(jq '(.assets | length) == 13 and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
                 channel="$(gh api "repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json?ref=main" | jq -r .content | base64 --decode | jq -r .manifest)"
                 test "$channel" = "https://github.com/ZimengXiong/TinyTouch/releases/download/$release_tag/release-manifest.json"
                 curl -fsS --max-time 15 \
-                  "https://tinytouch.alpacaengineer.ing/release.json?release=$GITHUB_RUN_ID" \
+                  "$PUBLIC_SITE_ORIGIN/release.json?release=$GITHUB_RUN_ID" \
                   -o /tmp/live-release.json
                 test "$(jq -r .version /tmp/live-release.json)" = "${release_tag#v}"
                 test "$(jq -r .build /tmp/live-release.json)" = "${tag_sha:0:12}"
@@ -247,58 +250,31 @@ jobs:
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Commit verified production site
+      - name: Commit verified docs release assets
         if: steps.freshness.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          rm -rf dist/site web/cli web/flash web/recovery
-          mkdir -p dist/site web/cli
-          python - <<'PY'
-          import tarfile
-          from pathlib import Path, PurePosixPath
-
-          archive_path = Path("dist/candidate/publish/tinytouch-web-flashers.tar.gz")
-          destination = Path("dist/site")
-          allowed_roots = {"flash", "recovery", "release.json"}
-          with tarfile.open(archive_path, "r:gz") as archive:
-              members = archive.getmembers()
-              for member in members:
-                  path = PurePosixPath(member.name)
-                  if (path.is_absolute() or ".." in path.parts or not path.parts or
-                          path.parts[0] not in allowed_roots or member.issym() or member.islnk()):
-                      raise SystemExit(f"unsafe web bundle member: {member.name}")
-              archive.extractall(destination, members=members, filter="data")
-          PY
-          mv dist/site/flash web/flash
-          mv dist/site/recovery web/recovery
-          mv dist/site/release.json web/release.json
-          rm -rf docs/public/flash/factory docs/public/flash/recovery
-          mkdir -p docs/public/flash/factory docs/public/flash/recovery
-          cp web/flash/manifest.json docs/public/flash/factory/
-          cp -R web/flash/firmware web/flash/vendor docs/public/flash/factory/
-          cp web/recovery/manifest.json docs/public/flash/recovery/
-          cp -R web/recovery/firmware web/recovery/vendor docs/public/flash/recovery/
-          cp dist/candidate/publish/tinytouch-macos-arm64.tar.gz web/cli/
-          cp dist/candidate/publish/tinytouch-macos-x86_64.tar.gz web/cli/
-          test "$(jq -r .version web/release.json)" = "${RELEASE_TAG#v}"
-          test "$(jq -r .build web/release.json)" = "${RELEASE_COMMIT:0:12}"
+          python packaging/sync-docs-release.py dist/candidate/publish docs/public \
+            --commit "$RELEASE_COMMIT"
+          test "$(jq -r .version docs/public/release.json)" = "${RELEASE_TAG#v}"
+          test "$(jq -r .build docs/public/release.json)" = "${RELEASE_COMMIT:0:12}"
           for platform in macos-arm64 macos-x86_64; do
-            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' web/release.json)"
-            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' web/release.json)"
-            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' web/release.json)"
-            test "$(stat -c %s "web/cli/$file")" = "$size"
-            echo "$sha256  web/cli/$file" | sha256sum --check --strict
+            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' docs/public/release.json)"
+            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' docs/public/release.json)"
+            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' docs/public/release.json)"
+            test "$(stat -c %s "docs/public/cli/$file")" = "$size"
+            echo "$sha256  docs/public/cli/$file" | sha256sum --check --strict
           done
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add docs/public/flash/factory docs/public/flash/recovery \
-            web/cli web/flash web/recovery web/release.json
+          git add docs/public/cli docs/public/flash/factory \
+            docs/public/flash/recovery docs/public/release.json
           unexpected="$(git diff --cached --name-only | grep -Ev \
-            '^docs/public/flash/(factory|recovery)(/|$)|^web/(cli|flash|recovery)(/|$)|^web/release\.json$' || true)"
+            '^docs/public/(cli|flash/(factory|recovery))(/|$)|^docs/public/release\.json$' || true)"
           test -z "$unexpected"
           if git diff --cached --quiet; then
-            echo "Production site already contains $RELEASE_TAG."
+            echo "The docs site already contains $RELEASE_TAG."
           else
             git commit -m "Publish tinyTouch ${RELEASE_TAG#v}"
             git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
@@ -307,7 +283,7 @@ jobs:
       - name: Verify production flasher and CLI
         if: steps.freshness.outputs.promote == 'true'
         run: |
-          base=https://tinytouch.alpacaengineer.ing
+          base="$PUBLIC_SITE_ORIGIN"
           deadline=$((SECONDS + 300))
           while (( SECONDS < deadline )); do
             if curl -fsS --max-time 15 \
@@ -322,18 +298,17 @@ jobs:
           test -s dist/live-release.json
           test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
-          mkdir -p dist/expected-web
-          tar -C dist/expected-web -xzf dist/candidate/publish/tinytouch-web-flashers.tar.gz
-          find dist/expected-web -type f -print0 | while IFS= read -r -d '' expected; do
-            relative="${expected#dist/expected-web/}"
-            public_relative="$relative"
-            [[ "$public_relative" != */index.html ]] || public_relative="${public_relative%index.html}"
+          find docs/public/flash/factory docs/public/flash/recovery docs/public/cli \
+            -type f -print0 | while IFS= read -r -d '' expected; do
+            public_relative="${expected#docs/public/}"
             curl -fsSL --max-time 60 \
               "$base/$public_relative?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
               -o dist/live-web-asset
             expected_sha="$(sha256sum "$expected" | awk '{print $1}')"
             echo "$expected_sha  dist/live-web-asset" | sha256sum --check --strict
           done
+          curl -fsSL --max-time 30 "$base/flash?release=$GITHUB_RUN_ID" \
+            | grep -q '<title>Flash tinyTouch'
           for platform in macos-arm64 macos-x86_64; do
             file="$(jq -r --arg platform "$platform" '.cli[$platform].file' dist/live-release.json)"
             size="$(jq -r --arg platform "$platform" '.cli[$platform].size' dist/live-release.json)"

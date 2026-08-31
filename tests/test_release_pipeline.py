@@ -210,12 +210,13 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("Activate verified CLI update channel", workflow)
         self.assertIn("group: release-promotion", workflow)
         self.assertIn("Verify production flasher and CLI", workflow)
-        self.assertIn("Commit verified production site", workflow)
+        self.assertIn("Commit verified docs release assets", workflow)
         self.assertNotIn("alpacaengineer/dispatches", workflow)
-        self.assertIn("base=https://tinytouch.alpacaengineer.ing", workflow)
+        self.assertIn("PUBLIC_SITE_ORIGIN", workflow)
+        self.assertIn("vars.TINYTOUCH_SITE_ORIGIN", workflow)
         self.assertNotIn("base=https://alpacaengineer.ing/tinytouch", workflow)
-        self.assertIn("find dist/expected-web -type f -print0", workflow)
-        self.assertIn('public_relative="${public_relative%index.html}"', workflow)
+        self.assertIn("find docs/public/flash/factory", workflow)
+        self.assertIn("packaging/sync-docs-release.py", workflow)
         self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn("--json tagName,isDraft", workflow)
         self.assertNotIn("releases/tags/$GITHUB_REF_NAME", workflow)
@@ -232,13 +233,14 @@ class ReleasePipelineTests(unittest.TestCase):
         candidate = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
         self.assertIn("paths-ignore:", candidate)
         self.assertIn("channels/**", candidate)
-        self.assertIn("web/release.json", candidate)
-        self.assertIn("web/flash/firmware/**", candidate)
+        self.assertIn("docs/public/release.json", candidate)
+        self.assertIn("docs/public/flash/factory/**", candidate)
         self.assertNotIn("workflow_dispatch:", candidate)
         self.assertIn("group: release-candidate-main", candidate)
         self.assertIn("cancel-in-progress: true", candidate)
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', candidate)
-        self.assertNotIn("docs", workflow.lower())
+        self.assertNotIn("tinytouch-web-flashers.tar.gz", workflow)
+        self.assertNotIn("web/flash", workflow)
 
         build_script = (ROOT / "packaging" / "build-standalone-macos.sh").read_text()
         self.assertIn("--require-hashes", build_script)
@@ -259,16 +261,18 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("tag-release", release_script)
 
     def test_browser_requires_protocol_five_and_prefetches_before_usb(self):
-        for site in ("flash", "recovery"):
-            source = (ROOT / "web" / site / "app.js").read_text()
-            self.assertIn("const UPDATE_PROTOCOL = 5", source)
-            self.assertIn("manifest.eraseAll !== false", source)
-            self.assertIn("manifest.compress !== false", source)
-            click = source.split('button.addEventListener("click"', 1)[1]
-            self.assertLess(
-                click.index("await firmwarePromise"),
-                click.index("navigator.serial.requestPort"),
-            )
+        source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
+        self.assertIn("const UPDATE_PROTOCOL = 5", source)
+        self.assertIn("nextManifest.eraseAll !== false", source)
+        self.assertIn("nextManifest.compress !== false", source)
+        self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)
+        flash = source.split("async function flash()", 1)[1].split(
+            "async function selectTool()", 1
+        )[0]
+        self.assertLess(
+            flash.index("const fileArray = firmwareFiles.value"),
+            flash.index("navigator.serial.requestPort"),
+        )
 
 
 if __name__ == "__main__":
