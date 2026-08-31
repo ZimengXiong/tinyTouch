@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_run:
+    workflows: ["Release candidate"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to resume
+        required: true
+        type: string
 
 concurrency:
   group: release-promotion
@@ -15,6 +24,7 @@ permissions:
 
 jobs:
   promote:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     # Repository release immutability is a configured server-side prerequisite.
     runs-on: ubuntu-latest
     steps:
@@ -22,53 +32,112 @@ jobs:
         run: echo "PROMOTION_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.tag || github.sha }}
           persist-credentials: false
-      - name: Validate tag and wait for exact candidate
+      - name: Resolve release and exact candidate
         id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
+          AUTOMATIC_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          AUTOMATIC_RUN_ID: ${{ github.event.workflow_run.id }}
+          AUTOMATIC_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          AUTOMATIC_EVENT: ${{ github.event.workflow_run.event }}
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
-          tag_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
-          event_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
-          test "$tag_commit" = "$event_commit" || {
-            echo "Tag $GITHUB_REF_NAME does not peel to the event commit." >&2
-            exit 1
-          }
-          echo "RELEASE_COMMIT=$tag_commit" >> "$GITHUB_ENV"
-          api="repos/$GITHUB_REPOSITORY/actions/workflows/release-candidate.yml/runs"
           wait_started=$SECONDS
-          deadline=$((SECONDS + 600))
-          run_id=""
-          while (( SECONDS < deadline )); do
-            runs="$(gh api "$api?branch=main&event=push&per_page=100")"
-            run_id="$(jq -r --arg sha "$tag_commit" \
-              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | first | .id // empty' \
-              <<<"$runs")"
-            [[ -n "$run_id" ]] && break
-            terminal="$(jq -r --arg sha "$tag_commit" \
-              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed") | .conclusion] | first // empty' \
-              <<<"$runs")"
-            if [[ -n "$terminal" && "$terminal" != success ]]; then
-              echo "Exact-SHA release candidate ended with: $terminal" >&2
-              exit 1
+          if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
+            test "$AUTOMATIC_BRANCH" = main
+            test "$AUTOMATIC_EVENT" = push
+            release_commit="$AUTOMATIC_COMMIT"
+            release_tag="v$(tr -d '[:space:]' < VERSION)"
+            run_id="$AUTOMATIC_RUN_ID"
+            current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+            if [[ "$current_main" != "$release_commit" ]]; then
+              echo "Candidate $release_commit was superseded by main $current_main."
+              echo "promote=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            sleep 10
-          done
-          if [[ -z "$run_id" ]]; then
-            echo "Timed out after 600s waiting for the exact-SHA main-branch candidate." >&2
-            exit 1
+            if tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$release_tag" 2>/dev/null)"; then
+              tag_type="$(jq -r .object.type <<<"$tag_ref")"
+              tag_sha="$(jq -r .object.sha <<<"$tag_ref")"
+              test "$tag_type" = tag || {
+                echo "Existing $release_tag is not an annotated release tag." >&2
+                exit 1
+              }
+              for _ in 1 2 3 4; do
+                [[ "$tag_type" != tag ]] && break
+                tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
+                tag_type="$(jq -r .object.type <<<"$tag_object")"
+                tag_sha="$(jq -r .object.sha <<<"$tag_object")"
+              done
+              test "$tag_type" = commit
+              if [[ "$tag_sha" = "$release_commit" ]]; then
+                echo "Resuming $release_tag for its exact candidate."
+                echo "create_tag=false" >> "$GITHUB_OUTPUT"
+              else
+                release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag")"
+                test "$(jq -r .draft <<<"$release_json")" = false
+                test "$(jq '(.assets | length) == 14 and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-web-flashers.tar.gz") != null)' <<<"$release_json")" = true
+                channel="$(gh api "repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json?ref=main" | jq -r .content | base64 --decode | jq -r .manifest)"
+                test "$channel" = "https://github.com/ZimengXiong/TinyTouch/releases/download/$release_tag/release-manifest.json"
+                curl -fsS --max-time 15 \
+                  "https://alpacaengineer.ing/tinytouch/batch-0/release.json?release=$GITHUB_RUN_ID" \
+                  -o /tmp/live-release.json
+                test "$(jq -r .version /tmp/live-release.json)" = "${release_tag#v}"
+                test "$(jq -r .build /tmp/live-release.json)" = "${tag_sha:0:12}"
+                echo "Version $release_tag is already published and active; no promotion is needed."
+                echo "promote=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            else
+              echo "create_tag=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            release_tag="${REQUESTED_TAG:-$GITHUB_REF_NAME}"
+            test "${release_tag#v}" = "$(tr -d '[:space:]' < VERSION)"
+            release_commit="$(git rev-parse "$release_tag^{commit}")"
+            event_commit="$(git rev-parse HEAD^{commit})"
+            test "$release_commit" = "$event_commit" || {
+              echo "Tag $release_tag does not peel to the checked-out commit." >&2
+              exit 1
+            }
+            api="repos/$GITHUB_REPOSITORY/actions/workflows/release-candidate.yml/runs"
+            deadline=$((SECONDS + 600))
+            run_id=""
+            while (( SECONDS < deadline )); do
+              runs="$(gh api "$api?branch=main&event=push&per_page=100")"
+              run_id="$(jq -r --arg sha "$release_commit" \
+                '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | first | .id // empty' \
+                <<<"$runs")"
+              [[ -n "$run_id" ]] && break
+              terminal="$(jq -r --arg sha "$release_commit" \
+                '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed") | .conclusion] | first // empty' \
+                <<<"$runs")"
+              [[ -z "$terminal" || "$terminal" = success ]] || {
+                echo "Exact-SHA release candidate ended with: $terminal" >&2
+                exit 1
+              }
+              sleep 10
+            done
+            [[ -n "$run_id" ]] || {
+              echo "Timed out after 600s waiting for the exact-SHA main-branch candidate." >&2
+              exit 1
+            }
           fi
           candidate_wait=$((SECONDS - wait_started))
+          echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
           echo "CANDIDATE_WAIT_SECONDS=$candidate_wait" >> "$GITHUB_ENV"
-          artifact_name="release-candidate-${tag_commit}"
+          artifact_name="release-candidate-${release_commit}"
           artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts")"
           artifact_count="$(jq --arg name "$artifact_name" \
             '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$artifacts")"
           test "$artifact_count" = 1
+          echo "promote=true" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
       - name: Download and verify candidate provenance
+        if: steps.candidate.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -85,25 +154,53 @@ jobs:
             --deny-self-hosted-runners
           python packaging/release_integrity.py extract "$candidate" dist/candidate
           python packaging/release_integrity.py publish dist/candidate/publish --commit "$RELEASE_COMMIT"
+      - name: Confirm automatic candidate is still current
+        id: freshness
+        if: steps.candidate.outputs.promote == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
+            current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+            if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
+              echo "Candidate $RELEASE_COMMIT was superseded by main $current_main after verification."
+              echo "promote=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "promote=true" >> "$GITHUB_OUTPUT"
+      - name: Create automatic release tag
+        if: steps.freshness.outputs.promote == 'true' && github.event_name == 'workflow_run' && steps.candidate.outputs.create_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" --method POST \
+            -f tag="$RELEASE_TAG" \
+            -f message="tinyTouch ${RELEASE_TAG#v}" \
+            -f object="$RELEASE_COMMIT" \
+            -f type=commit --jq .sha)"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" --method POST \
+            -f ref="refs/tags/$RELEASE_TAG" -f sha="$tag_object" >/dev/null
       - name: Create or resume verified release
+        if: steps.freshness.outputs.promote == 'true'
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_flags=(--verify-tag --generate-notes --draft)
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          if [[ "$RELEASE_TAG" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          if release_json="$(gh release view "$GITHUB_REF_NAME" \
+          if release_json="$(gh release view "$RELEASE_TAG" \
             --json tagName,isDraft 2>/dev/null)"; then
-            test "$(jq -r .tagName <<<"$release_json")" = "$GITHUB_REF_NAME"
+            test "$(jq -r .tagName <<<"$release_json")" = "$RELEASE_TAG"
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" \
               --target "$RELEASE_COMMIT" "${release_flags[@]}"
-            release_json="$(gh release view "$GITHUB_REF_NAME" --json tagName,isDraft)"
+            release_json="$(gh release view "$RELEASE_TAG" --json tagName,isDraft)"
           fi
           release_state="$(jq -r 'if .isDraft then "draft" else "published" end' <<<"$release_json")"
-          gh release view "$GITHUB_REF_NAME" --json assets > dist/release-assets.json
+          gh release view "$RELEASE_TAG" --json assets > dist/release-assets.json
           python - <<'PY'
           import hashlib, json
           from pathlib import Path
@@ -132,9 +229,9 @@ jobs:
           fi
           if [[ "$release_state" = draft ]]; then
             while IFS= read -r name; do
-              [[ -z "$name" ]] || gh release upload "$GITHUB_REF_NAME" "dist/candidate/publish/$name"
+              [[ -z "$name" ]] || gh release upload "$RELEASE_TAG" "dist/candidate/publish/$name"
             done < dist/missing-assets.txt
-            gh release view "$GITHUB_REF_NAME" --json assets > dist/release-assets.json
+            gh release view "$RELEASE_TAG" --json assets > dist/release-assets.json
             python - <<'PY'
           import hashlib, json
           from pathlib import Path
@@ -146,11 +243,12 @@ jobs:
           if remote != expected:
               raise SystemExit(f"draft asset verification failed: expected={expected}, remote={remote}")
           PY
-            gh release edit "$GITHUB_REF_NAME" --draft=false
+            gh release edit "$RELEASE_TAG" --draft=false
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
       - name: Dispatch flasher-only site deployment
+        if: steps.freshness.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ secrets.TINYTOUCH_SITE_DISPATCH_TOKEN }}
         run: |
@@ -160,15 +258,16 @@ jobs:
           test -n "$web_sha"
           # The receiver must verify web_sha256 before extraction and deduplicate
           # repository_dispatch events by this deterministic idempotency key.
-          dispatch_key="${GITHUB_REF_NAME}:${web_sha}"
+          dispatch_key="${RELEASE_TAG}:${web_sha}"
           gh api repos/ZimengXiong/alpacaengineer/dispatches \
             --method POST \
             -f event_type=tinytouch-release \
-            -f "client_payload[tag]=$GITHUB_REF_NAME" \
+            -f "client_payload[tag]=$RELEASE_TAG" \
             -f "client_payload[release_commit]=$RELEASE_COMMIT" \
             -f "client_payload[web_sha256]=$web_sha" \
             -f "client_payload[idempotency_key]=$dispatch_key"
       - name: Verify production flasher and CLI
+        if: steps.freshness.outputs.promote == 'true'
         run: |
           base=https://alpacaengineer.ing/tinytouch/batch-0
           deadline=$((SECONDS + 300))
@@ -176,14 +275,14 @@ jobs:
             if curl -fsS --max-time 15 \
               "$base/release.json?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SECONDS" \
               -o dist/live-release.json && \
-              test "$(jq -r .version dist/live-release.json)" = "${GITHUB_REF_NAME#v}" && \
+              test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}" && \
               test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"; then
               break
             fi
             sleep 5
           done
           test -s dist/live-release.json
-          test "$(jq -r .version dist/live-release.json)" = "${GITHUB_REF_NAME#v}"
+          test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
           mkdir -p dist/expected-web
           tar -C dist/expected-web -xzf dist/candidate/publish/tinytouch-web-flashers.tar.gz
@@ -207,6 +306,7 @@ jobs:
             echo "$sha256  dist/$file" | sha256sum --check --strict
           done
       - name: Activate verified CLI update channel
+        if: steps.freshness.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -225,17 +325,17 @@ jobs:
           desired = {
               "manifest": (
                   "https://github.com/ZimengXiong/TinyTouch/releases/download/"
-                  f"{os.environ['GITHUB_REF_NAME']}/release-manifest.json"
+                  f"{os.environ['RELEASE_TAG']}/release-manifest.json"
               )
           }
           Path("dist/next-channel.json").write_text(json.dumps(desired, indent=2) + "\n")
           PY
           if cmp -s dist/current-channel.json dist/next-channel.json; then
-            echo "Update channel already points to $GITHUB_REF_NAME."
+            echo "Update channel already points to $RELEASE_TAG."
           else
             content="$(base64 < dist/next-channel.json | tr -d '\n')"
             gh api "$channel_api" --method PUT \
-              -f message="Activate tinyTouch ${GITHUB_REF_NAME#v}" \
+              -f message="Activate tinyTouch ${RELEASE_TAG#v}" \
               -f content="$content" \
               -f sha="$channel_sha" \
               -f branch=main >/dev/null

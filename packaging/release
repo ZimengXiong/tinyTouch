@@ -6,7 +6,7 @@ cd "$project_dir"
 
 if (( $# > 0 )); then
   print "Usage: packaging/release"
-  print "Push main, build one immutable candidate, publish it, and verify production."
+  print "Push main. GitHub Actions builds, publishes, deploys, and verifies the release."
   [[ "$1" = --help || "$1" = -h ]] && exit 0
   exit 2
 fi
@@ -21,4 +21,5 @@ git diff --quiet -- && git diff --cached --quiet -- || {
 }
 
 git push origin main
-exec "$project_dir/packaging/tag-release"
+print "GitHub Actions is handling the release from this main-branch push."
+print "No local build tools or signing keys are used."

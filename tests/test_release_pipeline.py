@@ -176,7 +176,18 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("idf.py", workflow)
         self.assertNotIn("build-standalone-macos", workflow)
         self.assertNotIn("--clobber", workflow)
-        self.assertIn("release-candidate-${tag_commit}", workflow)
+        self.assertIn('workflows: ["Release candidate"]', workflow)
+        self.assertIn("AUTOMATIC_COMMIT", workflow)
+        self.assertIn("AUTOMATIC_RUN_ID", workflow)
+        self.assertIn("Create automatic release tag", workflow)
+        self.assertIn("Version $release_tag is already published and active", workflow)
+        self.assertGreaterEqual(
+            workflow.count('git/ref/heads/main" --jq .object.sha'), 2
+        )
+        self.assertIn('test "$tag_type" = tag', workflow)
+        self.assertIn('if [[ "$tag_sha" = "$release_commit" ]]', workflow)
+        self.assertIn("already published and active", workflow)
+        self.assertIn("Confirm automatic candidate is still current", workflow)
         self.assertIn("--signer-workflow", workflow)
         self.assertIn("--source-digest", workflow)
         self.assertIn("Activate verified CLI update channel", workflow)
@@ -198,7 +209,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("CANDIDATE_WAIT_SECONDS", workflow)
         self.assertIn("release_state=published", workflow)
         self.assertIn("idempotency_key", workflow)
-        self.assertIn('git rev-parse "$GITHUB_REF_NAME^{commit}"', workflow)
+        self.assertIn('git rev-parse "$release_tag^{commit}"', workflow)
         self.assertNotIn("release_target", workflow)
         candidate = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
         self.assertIn("paths-ignore:", candidate)
@@ -224,7 +235,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn("\n  status=", tag_script)
         release_script = (ROOT / "packaging" / "release").read_text()
         self.assertIn("git push origin main", release_script)
-        self.assertIn('exec "$project_dir/packaging/tag-release"', release_script)
+        self.assertIn("GitHub Actions is handling the release", release_script)
+        self.assertNotIn("tag-release", release_script)
 
     def test_browser_requires_protocol_five_and_prefetches_before_usb(self):
         for site in ("flasher", "recovery"):
