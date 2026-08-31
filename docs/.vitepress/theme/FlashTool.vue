@@ -149,8 +149,11 @@ onMounted(async () => {
 <template>
   <section class="flash-tool" :class="{ 'is-recovery': selected === 'recovery' }">
     <div class="flash-tool-controls">
-      <button type="button" :class="{ active: selected === 'factory' }" :disabled="busy" @click="selected = 'factory'; selectTool()">Set up a new board</button>
-      <button type="button" :class="{ active: selected === 'recovery' }" :disabled="busy" @click="selected = 'recovery'; selectTool()">Recover a device</button>
+      <label for="flash-version">Firmware</label>
+      <select id="flash-version" v-model="selected" :disabled="busy" @change="selectTool">
+        <option value="factory">Factory firmware</option>
+        <option value="recovery">Recovery firmware</option>
+      </select>
     </div>
     <div class="flash-tool-body">
       <p class="flash-version">Firmware {{ manifest?.version ?? 'loading…' }}</p>
