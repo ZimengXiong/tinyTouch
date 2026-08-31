@@ -17,7 +17,7 @@ const serialSupported = ref(false)
 const busy = ref(false)
 const progress = ref(0)
 const stage = ref('Ready')
-const status = ref('Choose a board to start.')
+const status = ref('')
 const statusKind = ref('')
 const log = ref('No device activity yet.')
 const logRef = ref<HTMLElement | null>(null)
@@ -130,10 +130,10 @@ async function flash() {
 
 async function selectTool() {
   manifest.value = null
-  show('Loading firmware manifest…')
+  show('Loading firmware…')
   try {
     await loadManifest()
-    show('Choose a board to start.')
+    show('')
   } catch (error) {
     show(friendlyError(error), 'error')
   }
@@ -156,13 +156,10 @@ onMounted(async () => {
       </select>
     </div>
     <div class="flash-tool-body">
-      <p class="flash-version">Firmware {{ manifest?.version ?? 'loading…' }}</p>
-      <ol>
-        <li v-if="selected === 'recovery'">Hold BOOT, tap RESET, and release BOOT.</li>
-        <li v-else>Connect the board by USB.</li>
-        <li>Click the button and select the board.</li>
-      </ol>
-      <div class="flash-status" :class="statusKind" role="status">{{ status }}</div>
+      <p class="flash-description">
+        {{ selected === 'recovery' ? 'Erase the device and reinstall tinyTouch.' : 'Install tinyTouch on a new ESP32-S3 board.' }}
+      </p>
+      <p class="flash-version">Version {{ manifest?.version ?? '…' }}</p>
       <div v-if="busy || progress > 0" class="flash-progress">
         <div><span>{{ stage }}</span><strong>{{ progress }}%</strong></div>
         <progress max="100" :value="progress">{{ progress }}%</progress>
@@ -170,6 +167,7 @@ onMounted(async () => {
       <button type="button" :disabled="!serialSupported || busy || !manifest" @click="flash">
         {{ selected === 'recovery' ? 'Erase and recover' : 'Connect and flash' }}
       </button>
+      <div v-if="status" class="flash-status" :class="statusKind" role="status">{{ status }}</div>
       <pre ref="logRef" hidden>{{ log }}</pre>
     </div>
   </section>

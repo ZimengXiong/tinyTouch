@@ -325,30 +325,33 @@ button {
 }
 
 .flash-tool {
-  margin: 24px 0 0;
+  margin: 32px 0 0;
+  max-width: 520px;
 }
 
 .flash-tool-controls {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  margin-bottom: 26px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 22px;
 }
 
 .flash-tool-controls label {
-  color: var(--vp-c-text-2);
-  font-size: 13px;
+  color: var(--vp-c-text-1);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .flash-tool-controls select {
-  background: transparent;
+  appearance: auto;
+  background: var(--vp-c-bg-soft);
   border: 1px solid var(--vp-c-divider);
   border-radius: 5px;
   color: var(--vp-c-text-1);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  padding: 8px 12px;
+  font-size: 14px;
+  padding: 10px 12px;
+  width: 100%;
 }
 
 .flash-tool-controls select:disabled {
@@ -360,24 +363,25 @@ button {
   padding: 0;
 }
 
-.flash-tool-body > p,
-.flash-tool-body > ol {
+.flash-tool-body > p {
   color: var(--vp-c-text-2);
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.5;
+}
+
+.flash-description {
+  margin: 0 0 4px;
 }
 
 .flash-version {
-  margin: 0 0 18px;
-}
-
-.flash-tool-body > ol {
+  color: var(--vp-c-text-3) !important;
+  font-size: 12px !important;
   margin: 0 0 24px;
-  padding-left: 20px;
 }
 
 .flash-status {
-  min-height: 24px;
+  font-size: 13px;
+  margin-top: 14px;
 }
 
 .flash-status.error {
@@ -406,18 +410,18 @@ button {
 }
 
 .flash-tool-body > button {
-  background: transparent;
-  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-text-1);
+  border: 1px solid var(--vp-c-text-1);
   border-radius: 6px;
-  color: var(--vp-c-text-1);
+  color: var(--vp-c-bg);
   cursor: pointer;
   font: inherit;
-  padding: 10px 14px;
+  font-weight: 600;
+  padding: 11px 16px;
 }
 
 .flash-tool-body > button:hover:not(:disabled) {
-  background: var(--vp-c-bg-soft);
-  border-color: var(--vp-c-text-2);
+  opacity: 0.86;
 }
 
 .flash-tool-body > button:disabled {
