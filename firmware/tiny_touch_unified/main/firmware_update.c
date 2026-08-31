@@ -5,6 +5,9 @@
 
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "mbedtls/sha256.h"
 
 static const esp_partition_t *update_partition;
@@ -15,7 +18,15 @@ static uint8_t expected_digest[32];
 static mbedtls_sha256_context digest_context;
 static bool digest_started;
 static bool update_active;
+static size_t commit_stack_free;
 static char last_error[48] = "none";
+
+typedef struct {
+  esp_ota_handle_t handle;
+  const esp_partition_t *partition;
+  SemaphoreHandle_t completed;
+  bool result;
+} firmware_commit_context_t;
 
 static void set_error(const char *phase, esp_err_t error) {
   if (error == ESP_OK) {
@@ -163,6 +174,33 @@ const char *firmware_update_last_error(void) {
   return last_error;
 }
 
+size_t firmware_update_commit_stack_free(void) {
+  return commit_stack_free;
+}
+
+static void firmware_update_commit_task(void *argument) {
+  firmware_commit_context_t *context = argument;
+  set_error("ota_end_running", ESP_OK);
+  esp_err_t end_result = esp_ota_end(context->handle);
+  esp_err_t boot_result = ESP_OK;
+  if (end_result == ESP_OK) {
+    set_error("set_boot_running", ESP_OK);
+    boot_result = esp_ota_set_boot_partition(context->partition);
+  }
+
+  if (end_result != ESP_OK) {
+    set_error("ota_end", end_result);
+  } else if (boot_result != ESP_OK) {
+    set_error("set_boot", boot_result);
+  } else {
+    set_error("none", ESP_OK);
+    context->result = true;
+  }
+  commit_stack_free = uxTaskGetStackHighWaterMark(NULL);
+  xSemaphoreGive(context->completed);
+  vTaskDelete(NULL);
+}
+
 bool firmware_update_commit(void) {
   if (!update_active || written_size != expected_size) {
     set_error("commit_size", ESP_OK);
@@ -183,28 +221,43 @@ bool firmware_update_commit(void) {
     return false;
   }
   memset(actual_digest, 0, sizeof(actual_digest));
-  esp_err_t ota_end_err = esp_ota_end(update_handle);
+
+  StaticSemaphore_t completed_storage;
+  SemaphoreHandle_t completed = xSemaphoreCreateBinaryStatic(&completed_storage);
+  if (!completed) {
+    set_error("commit_sync", ESP_OK);
+    firmware_update_abort();
+    return false;
+  }
+  firmware_commit_context_t context = {
+    .handle = update_handle,
+    .partition = update_partition,
+    .completed = completed,
+    .result = false,
+  };
+
+  // esp_ota_end performs full image and signature verification. Keep that deep
+  // call chain off the CDC console task, whose stack also holds command and
+  // diagnostic buffers. The worker owns the OTA handle after task creation.
+  esp_ota_handle_t commit_handle = update_handle;
   update_handle = 0;
-  // esp_ota_end() consumes the handle even when image validation fails. Mark
-  // the session inactive before any cleanup path so we never call
-  // esp_ota_abort() with a stale/zero handle.
   update_active = false;
-  if (ota_end_err != ESP_OK) {
-    set_error("ota_end", ota_end_err);
+  BaseType_t created = xTaskCreate(
+      firmware_update_commit_task, "ota_commit", FIRMWARE_UPDATE_COMMIT_STACK_SIZE,
+      &context, 4, NULL);
+  if (created != pdPASS) {
+    update_handle = commit_handle;
+    update_active = true;
+    set_error("commit_task_create", ESP_OK);
     firmware_update_abort();
     return false;
   }
-  esp_err_t set_boot_err = esp_ota_set_boot_partition(update_partition);
-  if (set_boot_err != ESP_OK) {
-    // Never repair otadata by erasing/writing it ourselves. The IDF OTA API is
-    // the authority for slot selection and rollback metadata. If it cannot
-    // select the candidate, leave the currently bootable image untouched and
-    // report failure to the host.
-    set_error("set_boot", set_boot_err);
+  xSemaphoreTake(completed, portMAX_DELAY);
+  if (!context.result) {
     firmware_update_abort();
     return false;
   }
-  update_active = false;
+
   update_partition = NULL;
   expected_size = 0;
   written_size = 0;

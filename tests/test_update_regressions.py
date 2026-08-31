@@ -44,11 +44,54 @@ class UpdateRegressionTests(unittest.TestCase):
 
     def test_commit_never_rewrites_otadata_by_hand(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
-        body = source.split("bool firmware_update_commit", 1)[1]
-        self.assertIn("esp_ota_set_boot_partition", body)
-        self.assertNotIn("esp_partition_erase_range", body)
-        self.assertNotIn("esp_ota_select_entry_t", body)
-        self.assertNotIn("esp_rom_crc32", body)
+        worker = source.split("static void firmware_update_commit_task", 1)[1].split(
+            "bool firmware_update_commit", 1
+        )[0]
+        self.assertIn("esp_ota_set_boot_partition", worker)
+        self.assertNotIn("esp_partition_erase_range", source)
+        self.assertNotIn("esp_ota_select_entry_t", source)
+        self.assertNotIn("esp_rom_crc32", source)
+
+    def test_commit_validation_runs_on_a_dedicated_stack(self):
+        update = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
+        header = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.h").read_text()
+        console = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "config_console.c").read_text()
+        worker = update.split("static void firmware_update_commit_task", 1)[1].split(
+            "bool firmware_update_commit", 1
+        )[0]
+        commit = update.split("bool firmware_update_commit", 1)[1]
+        stack_size = int(
+            header.split("#define FIRMWARE_UPDATE_COMMIT_STACK_SIZE", 1)[1].splitlines()[0]
+        )
+        self.assertGreaterEqual(stack_size, 8192)
+        self.assertIn("esp_ota_end", worker)
+        self.assertIn("esp_ota_set_boot_partition", worker)
+        self.assertIn("uxTaskGetStackHighWaterMark", worker)
+        self.assertIn("xTaskCreate", commit)
+        self.assertIn("xSemaphoreTake(completed, portMAX_DELAY)", commit)
+        self.assertIn("update_commit_stack_free=%u", console)
+        self.assertIn('"OK UPDATE_COMMIT stack_free=%u"', console)
+
+    def test_commit_worker_reports_end_and_boot_selection_phases(self):
+        source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
+        worker = source.split("static void firmware_update_commit_task", 1)[1].split(
+            "bool firmware_update_commit", 1
+        )[0]
+        self.assertLess(worker.index('set_error("ota_end_running"'), worker.index("esp_ota_end"))
+        self.assertLess(worker.index('set_error("set_boot_running"'), worker.index("esp_ota_set_boot_partition"))
+        self.assertIn('set_error("ota_end", end_result)', worker)
+        self.assertIn('set_error("set_boot", boot_result)', worker)
+        console = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "config_console.c").read_text()
+        commit_response = console.split('strncmp(command, "UPDATE_COMMIT ', 1)[1].split(
+            'strncmp(command, "CONFIRM_FIRMWARE ', 1
+        )[0]
+        self.assertIn('"ERR UPDATE_COMMIT active=0 error=%s"', commit_response)
+
+        for response in (
+            "ERR UPDATE_COMMIT active=0 error=commit_sync",
+            "ERR UPDATE_COMMIT active=0 error=commit_task_create",
+        ):
+            self.assertIn("current firmware", cli.human_device_error(response))
 
     def test_confirm_command_marks_pending_image_valid(self):
         update = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
@@ -190,6 +233,21 @@ class UpdateRegressionTests(unittest.TestCase):
                 self.assertIn(expected, message)
                 self.assertIn("current firmware", message)
 
+    def test_commit_panic_before_boot_selection_is_identified(self):
+        status = {
+            "reset_reason": "4",
+            "ota_running": "ota_0",
+            "ota_boot": "ota_0",
+            "ota_next": "ota_1",
+            "ota_slot1": "ota_1:0.7.18-preprod:missing",
+        }
+        detail = cli.ota_commit_failure_detail(status, "0.7.18-preprod")
+        self.assertIn("panicked", detail)
+        self.assertIn("before it selected", detail)
+
+        status["reset_reason"] = "3"
+        self.assertEqual(cli.ota_commit_failure_detail(status, "0.7.18-preprod"), "")
+
     def test_local_flash_uses_same_pending_confirmation_contract(self):
         source = (ROOT / "tinytouch").read_text()
         body = source.split("def command_flash_local", 1)[1].split("def command_pair", 1)[0]
@@ -212,7 +270,12 @@ class UpdateRegressionTests(unittest.TestCase):
     def test_ota_end_cleanup_never_aborts_consumed_handle(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
         body = source.split("bool firmware_update_commit", 1)[1]
-        self.assertLess(body.index("update_active = false"), body.index("if (ota_end_err != ESP_OK)"))
+        worker = source.split("static void firmware_update_commit_task", 1)[1].split(
+            "bool firmware_update_commit", 1
+        )[0]
+        self.assertNotIn("firmware_update_abort", worker)
+        self.assertLess(body.index("update_active = false"), body.index("xTaskCreate"))
+        self.assertIn("update_handle = commit_handle", body)
         write = source.split("bool firmware_update_write", 1)[1].split("size_t firmware_update_written", 1)[0]
         self.assertIn("length > expected_size - written_size", write)
 

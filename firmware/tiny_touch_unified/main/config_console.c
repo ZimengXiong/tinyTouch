@@ -109,11 +109,12 @@ static void ota_diagnostics(char *output, size_t output_size) {
            "ota_running=%s ota_boot=%s ota_next=%s ota_state=%s "
            "ota_slot0=%s ota_slot1=%s rollback=enabled reset_reason=%d "
            "update_session=%s update_next=%u update_expected=%u update_chunk=%u "
-           "update_last_reason=%s update_error=%s",
+           "update_commit_stack_free=%u update_last_reason=%s update_error=%s",
            partition_label(running), partition_label(boot), partition_label(next),
            running_state_name, slot0_summary, slot1_summary, (int)esp_reset_reason(),
            session_state, (unsigned)firmware_update_written(),
            (unsigned)firmware_update_expected(), (unsigned)FIRMWARE_UPDATE_CHUNK_MAX,
+           (unsigned)firmware_update_commit_stack_free(),
            update_last_reason, firmware_update_last_error());
 }
 
@@ -577,7 +578,15 @@ static void handle_command(void) {
     if (!ok) firmware_update_abort();
     update_last_reason = ok ? "none" : "commit_failed";
     clear_update_session();
-    send_line(ok ? "OK UPDATE_COMMIT" : "ERR UPDATE_COMMIT");
+    if (ok) {
+      snprintf(line, sizeof(line), "OK UPDATE_COMMIT stack_free=%u",
+               (unsigned)firmware_update_commit_stack_free());
+      send_line(line);
+    } else {
+      snprintf(line, sizeof(line), "ERR UPDATE_COMMIT active=0 error=%s",
+               firmware_update_last_error());
+      send_line(line);
+    }
     if (ok) {
       vTaskDelay(pdMS_TO_TICKS(150));
       esp_restart();

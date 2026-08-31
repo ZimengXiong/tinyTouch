@@ -612,6 +612,8 @@ def human_device_error(line: str) -> str:
             "commit_size": "The device received an incomplete firmware image and refused to boot it.",
             "sha_finish": "The device could not finish firmware integrity verification.",
             "digest_mismatch": "The received firmware did not match its expected SHA-256 digest.",
+            "commit_sync": "The device could not allocate the firmware commit synchronizer.",
+            "commit_task_create": "The device could not start its isolated firmware validator.",
             "ota_end": "ESP-IDF rejected the completed firmware image during final validation.",
             "set_boot": "ESP-IDF could not select the verified image as the next boot partition.",
         }
@@ -2464,6 +2466,25 @@ def running_ota_state(status: dict[str, str]) -> str | None:
     return None
 
 
+def ota_commit_failure_detail(status: dict[str, str], expected_version: object) -> str:
+    """Explain the proven pre-selection panic signature after an ambiguous commit."""
+    target = status.get("ota_next")
+    slot_key = {"ota_0": "ota_slot0", "ota_1": "ota_slot1"}.get(target, "")
+    target_summary = status.get(slot_key, "") if slot_key else ""
+    expected_prefix = f"{target}:{expected_version}:"
+    if (
+        status.get("reset_reason") == "4"
+        and status.get("ota_boot") == status.get("ota_running")
+        and target_summary.startswith(expected_prefix)
+        and target_summary.endswith(":missing")
+    ):
+        return (
+            " The running updater panicked while validating the completed image, before "
+            "it selected the new boot slot. ESP-IDF kept the previous firmware active."
+        )
+    return ""
+
+
 def _confirm_running_firmware(
     port: str,
     status: dict[str, str],
@@ -2603,6 +2624,7 @@ def command_update(args: argparse.Namespace) -> None:
             f"(expected {manifest.get('version')}/{manifest.get('build')}, "
             f"got {status.get('firmware_version', 'unknown')}/{status.get('build', 'unknown')})."
             + (f" OTA diagnostics: {diagnostics}" if diagnostics else "")
+            + ota_commit_failure_detail(status, manifest.get("version"))
         )
     # Leave the candidate pending for a short stability window. A crash/reset in
     # this interval must trigger IDF rollback rather than being hidden by eager

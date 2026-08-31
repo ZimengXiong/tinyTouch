@@ -94,7 +94,8 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("firmware_update_expected", update)
         self.assertIn("running_pending", update)
         self.assertIn("length > FIRMWARE_UPDATE_CHUNK_MAX", update)
-        for field in ("update_expected=%u", "update_last_reason=%s", "update_error=%s"):
+        for field in ("update_expected=%u", "update_commit_stack_free=%u",
+                      "update_last_reason=%s", "update_error=%s"):
             self.assertIn(field, console)
         self.assertIn('"OK UPDATE_STATUS next=%u"', console)
         self.assertIn('"ERR UPDATE_STATUS active=0 error=%s"', console)
