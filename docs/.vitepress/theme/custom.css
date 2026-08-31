@@ -564,12 +564,35 @@ body:has(.VPHome) {
   display: none;
 }
 
+/* Override VitePress hero defaults for the compact homepage layout. */
+.VPHome .VPHero .image-container {
+  align-items: center;
+  height: auto;
+  margin: 0;
+  position: relative;
+  transform: none;
+  width: 100%;
+}
+
+.VPHome .VPHero .image-src {
+  aspect-ratio: auto;
+  height: auto;
+  left: auto;
+  max-height: none;
+  max-width: 100%;
+  object-fit: contain;
+  position: static;
+  top: auto;
+  transform: none;
+  width: 100%;
+}
+
 @media (max-width: 960px) {
   .VPHero .container {
     gap: 28px;
   }
 
-  .VPHero .image-container {
+  .VPHome .VPHero .image-container {
     width: min(36vw, 300px);
   }
 
@@ -593,7 +616,7 @@ body:has(.VPHome) {
     order: -1;
   }
 
-  .VPHero .image-container {
+  .VPHome .VPHero .image-container {
     height: 190px;
     margin: 0 auto;
     width: 240px;
