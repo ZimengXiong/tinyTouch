@@ -81,7 +81,7 @@ jobs:
                 channel="$(gh api "repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json?ref=main" | jq -r .content | base64 --decode | jq -r .manifest)"
                 test "$channel" = "https://github.com/ZimengXiong/TinyTouch/releases/download/$release_tag/release-manifest.json"
                 curl -fsS --max-time 15 \
-                  "https://alpacaengineer.ing/tinytouch/batch-0/release.json?release=$GITHUB_RUN_ID" \
+                  "https://tinytouch.alpacaengineer.ing/release.json?release=$GITHUB_RUN_ID" \
                   -o /tmp/live-release.json
                 test "$(jq -r .version /tmp/live-release.json)" = "${release_tag#v}"
                 test "$(jq -r .build /tmp/live-release.json)" = "${tag_sha:0:12}"
@@ -247,29 +247,60 @@ jobs:
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Dispatch flasher-only site deployment
+      - name: Commit verified production site
         if: steps.freshness.outputs.promote == 'true'
         env:
-          GH_TOKEN: ${{ secrets.TINYTOUCH_SITE_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "${GH_TOKEN:-}"
-          web_sha="$(awk '$2 == "tinytouch-web-flashers.tar.gz" {print $1}' \
-            dist/candidate/publish/checksums.txt)"
-          test -n "$web_sha"
-          # The receiver must verify web_sha256 before extraction and deduplicate
-          # repository_dispatch events by this deterministic idempotency key.
-          dispatch_key="${RELEASE_TAG}:${web_sha}"
-          gh api repos/ZimengXiong/alpacaengineer/dispatches \
-            --method POST \
-            -f event_type=tinytouch-release \
-            -f "client_payload[tag]=$RELEASE_TAG" \
-            -f "client_payload[release_commit]=$RELEASE_COMMIT" \
-            -f "client_payload[web_sha256]=$web_sha" \
-            -f "client_payload[idempotency_key]=$dispatch_key"
+          rm -rf dist/site web/cli web/flasher web/recovery
+          mkdir -p dist/site web/cli
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+          archive_path = Path("dist/candidate/publish/tinytouch-web-flashers.tar.gz")
+          destination = Path("dist/site")
+          allowed_roots = {"flasher", "recovery", "release.json"}
+          with tarfile.open(archive_path, "r:gz") as archive:
+              members = archive.getmembers()
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if (path.is_absolute() or ".." in path.parts or not path.parts or
+                          path.parts[0] not in allowed_roots or member.issym() or member.islnk()):
+                      raise SystemExit(f"unsafe web bundle member: {member.name}")
+              archive.extractall(destination, members=members, filter="data")
+          PY
+          mv dist/site/flasher web/flasher
+          mv dist/site/recovery web/recovery
+          mv dist/site/release.json web/release.json
+          cp dist/candidate/publish/tinytouch-macos-arm64.tar.gz web/cli/
+          cp dist/candidate/publish/tinytouch-macos-x86_64.tar.gz web/cli/
+          test "$(jq -r .version web/release.json)" = "${RELEASE_TAG#v}"
+          test "$(jq -r .build web/release.json)" = "${RELEASE_COMMIT:0:12}"
+          for platform in macos-arm64 macos-x86_64; do
+            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' web/release.json)"
+            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' web/release.json)"
+            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' web/release.json)"
+            test "$(stat -c %s "web/cli/$file")" = "$size"
+            echo "$sha256  web/cli/$file" | sha256sum --check --strict
+          done
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add web/cli web/flasher web/recovery web/release.json
+          unexpected="$(git diff --cached --name-only | grep -Ev \
+            '^web/(cli|flasher|recovery)(/|$)|^web/release\.json$' || true)"
+          test -z "$unexpected"
+          if git diff --cached --quiet; then
+            echo "Production site already contains $RELEASE_TAG."
+          else
+            git commit -m "Publish tinyTouch ${RELEASE_TAG#v}"
+            git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+              push "https://github.com/$GITHUB_REPOSITORY.git" HEAD:main
+          fi
       - name: Verify production flasher and CLI
         if: steps.freshness.outputs.promote == 'true'
         run: |
-          base=https://alpacaengineer.ing/tinytouch/batch-0
+          base=https://tinytouch.alpacaengineer.ing
           deadline=$((SECONDS + 300))
           while (( SECONDS < deadline )); do
             if curl -fsS --max-time 15 \

@@ -23,11 +23,18 @@ loader.exec_module(cli)
 
 class PackagingTests(unittest.TestCase):
     def test_browser_firmware_is_release_generated(self):
-        for site in ("flasher", "recovery"):
+        import json
+
+        release = json.loads((ROOT / "web" / "release.json").read_text())
+        for kind, site in (("factory", "flasher"), ("recovery", "recovery")):
             web_manifest_path = ROOT / "web" / site / "manifest.json"
             firmware = web_manifest_path.parent / "firmware"
-            self.assertFalse(web_manifest_path.exists())
-            self.assertFalse(firmware.exists())
+            manifest = json.loads(web_manifest_path.read_text())
+            self.assertEqual(manifest["version"], release["version"])
+            for metadata in [*manifest["images"], manifest["fullImage"]]:
+                image = firmware / metadata["file"]
+                self.assertEqual(image.stat().st_size, metadata["size"])
+                self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), metadata["sha256"])
 
     def test_web_flasher_progress_tracks_manifest_length(self):
         for path in (ROOT / "web" / "flasher" / "app.js",):

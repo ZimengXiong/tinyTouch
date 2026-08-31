@@ -1,0 +1,124 @@
+{
+  "version": "0.7.19-preprod",
+  "build": "c512ba9cd952",
+  "protocol": 5,
+  "secureVersion": 0,
+  "boards": [
+    "esp32s3-super-mini",
+    "seeed-xiao-esp32s3"
+  ],
+  "firmware": {
+    "factory": {
+      "version": "0.7.19-preprod",
+      "protocol": 5,
+      "secureVersion": 0,
+      "flashSize": "4MB",
+      "eraseAll": false,
+      "compress": false,
+      "images": [
+        {
+          "name": "Bootloader",
+          "file": "bootloader.bin",
+          "address": 0,
+          "size": 21488,
+          "sha256": "bf77197a65bb5f4d2cf1a1d09651bb52d3236f03ec47047fce07c20a31c3125d"
+        },
+        {
+          "name": "Partition table",
+          "file": "partition-table.bin",
+          "address": 32768,
+          "size": 3072,
+          "sha256": "45491292748acc843fdb9a90e7b9d30578ef821d2f7a8ab59a17e9a4cbe6f985"
+        },
+        {
+          "name": "Unified firmware",
+          "file": "tiny_touch_unified.bin",
+          "address": 65536,
+          "size": 462848,
+          "sha256": "768b0a04b049b889d065d9ff5c199a9d09d748a4cdabd7e8b84b25b7e657b90b"
+        },
+        {
+          "name": "OTA state",
+          "file": "ota_data_initial.bin",
+          "address": 2162688,
+          "size": 8192,
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+        }
+      ],
+      "fullImage": {
+        "file": "tiny_touch_factory_full.bin",
+        "size": 2170880,
+        "sha256": "09bdbe3146abf038bba28118eb8554c59f4f2f066fe0e9177ec8b80180b7bd67"
+      }
+    },
+    "recovery": {
+      "version": "0.7.19-preprod",
+      "protocol": 5,
+      "secureVersion": 0,
+      "flashSize": "4MB",
+      "eraseAll": false,
+      "compress": false,
+      "images": [
+        {
+          "name": "Bootloader",
+          "file": "recovery_bootloader.bin",
+          "address": 0,
+          "size": 21488,
+          "sha256": "a3945645c1aab9dc7ec0b8585624c776d286f3a814820271b9b00ef6f6814045"
+        },
+        {
+          "name": "Partition table",
+          "file": "partition-table.bin",
+          "address": 32768,
+          "size": 3072,
+          "sha256": "45491292748acc843fdb9a90e7b9d30578ef821d2f7a8ab59a17e9a4cbe6f985"
+        },
+        {
+          "name": "Recovery firmware",
+          "file": "tiny_touch_recovery.bin",
+          "address": 65536,
+          "size": 462848,
+          "sha256": "308bca15fc2cc21b5054772102b42d519e3ad09f75b7aeabecd86f4c4a18217c"
+        },
+        {
+          "name": "OTA state",
+          "file": "ota_data_initial.bin",
+          "address": 2162688,
+          "size": 8192,
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+        }
+      ],
+      "fullImage": {
+        "file": "tiny_touch_recovery_full.bin",
+        "size": 2170880,
+        "sha256": "cba1ecb0df8949dd43aea9c6307b45d0641124908bf8bf599f9f9f47d9244153"
+      }
+    }
+  },
+  "ota": {
+    "file": "tiny_touch_unified.bin",
+    "size": 462848,
+    "sha256": "768b0a04b049b889d065d9ff5c199a9d09d748a4cdabd7e8b84b25b7e657b90b"
+  },
+  "migration": {
+    "otaState": {
+      "file": "ota_data_initial.bin",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    }
+  },
+  "cli": {
+    "macos-arm64": {
+      "file": "tinytouch-macos-arm64.tar.gz",
+      "size": 12283591,
+      "sha256": "2c6bfdb64ff94c43b369e028e62571b1a13554dc7bdb7721a32a9e0c75f3b7db",
+      "format": "tar.gz"
+    },
+    "macos-x86_64": {
+      "file": "tinytouch-macos-x86_64.tar.gz",
+      "size": 13130985,
+      "sha256": "837a4f8b58c106fc300b037a47a135153344d4fb26076d98c72d1d0dc7332643",
+      "format": "tar.gz"
+    }
+  }
+}
