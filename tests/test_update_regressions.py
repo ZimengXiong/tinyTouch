@@ -501,6 +501,16 @@ class UpdateRegressionTests(unittest.TestCase):
                         with cli.firmware_transaction():
                             self.fail("second writer acquired the firmware lock")
 
+    def test_firmware_transaction_does_not_mask_update_io_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "firmware.lock"
+            with mock.patch.object(cli, "FIRMWARE_LOCK", lock_path), mock.patch.object(
+                cli, "SUPPORT_DIR", Path(directory)
+            ):
+                with self.assertRaisesRegex(OSError, "actual update failure"):
+                    with cli.firmware_transaction():
+                        raise OSError("actual update failure")
+
     def test_helper_keychain_denial_is_quarantined(self):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         manager = helper.split("def run_manager", 1)[1].split("def run(port", 1)[0]

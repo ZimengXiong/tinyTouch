@@ -84,22 +84,29 @@ class SerialResponseTimeout(ToolError):
 @contextlib.contextmanager
 def firmware_transaction():
     """Prevent two host processes from updating the same USB device at once."""
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    handle = None
     try:
-        with FIRMWARE_LOCK.open("a+b") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise ToolError(
-                    "Another tinyTouch firmware operation is already running. "
-                    "Wait for it to finish, then try again."
-                ) from exc
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+        handle = FIRMWARE_LOCK.open("a+b")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        if handle is not None:
+            handle.close()
+        raise ToolError(
+            "Another tinyTouch firmware operation is already running. "
+            "Wait for it to finish, then try again."
+        ) from exc
     except OSError as exc:
+        if handle is not None:
+            handle.close()
         raise ToolError("Could not create the tinyTouch firmware update lock.") from exc
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _keychain_backend():
