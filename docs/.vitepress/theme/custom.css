@@ -671,6 +671,7 @@ body:has(.VPHome) {
   .VPHome .VPHero .container {
     flex-direction: column;
     justify-content: center;
+    transform: translateY(clamp(40px, 12vh, 140px));
   }
 
   .VPHome .VPHero .image {
