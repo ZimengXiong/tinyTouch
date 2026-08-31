@@ -7,12 +7,7 @@ curl -fsSL https://alpacaengineer.ing/tinytouch/batch-0/install.sh | sh
 tinytouch setup
 ```
 
-Choose PIV or HID when prompted, or pass the mode:
-
-```sh
-tinytouch setup --mode piv
-tinytouch setup --mode hid
-```
+Choose PIV or HID when prompted.
 
 Use one finger for all four scans. Scan the center, left edge, right edge, and fingertip. Lift between scans.
 
