@@ -456,6 +456,7 @@ body:has(.VPHome) {
 .VPHero .container {
   align-items: center;
   gap: clamp(44px, 8vw, 112px);
+  height: 100%;
   max-width: 1040px;
 }
 
@@ -584,6 +585,7 @@ body:has(.VPHome) {
 
   .VPHero .container {
     gap: 28px;
+    justify-content: center;
   }
 
   .VPHero .image {

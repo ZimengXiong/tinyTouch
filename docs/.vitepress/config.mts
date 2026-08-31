@@ -23,7 +23,6 @@ export default defineConfig({
       dark: 'https://alpacaengineer.ing/assets/alpaca.svg',
       alt: 'Alpaca Engineer',
     },
-    search: { provider: 'local' },
     nav: [
       { text: 'Guide', link: '/customer/' },
       { text: 'Flash', link: '/flash' },
