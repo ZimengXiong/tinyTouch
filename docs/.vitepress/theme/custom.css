@@ -666,3 +666,26 @@ body:has(.VPHome) {
     display: block;
   }
 }
+
+@media (orientation: portrait) {
+  .VPHome .VPHero .container {
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .VPHome .VPHero .image {
+    flex: 0 0 auto;
+    order: 1;
+    width: min(72vw, 420px);
+  }
+
+  .VPHome .VPHero .main {
+    flex: 0 0 auto;
+    order: 2;
+    width: auto;
+  }
+
+  .VPHome .VPHero .actions {
+    justify-content: center;
+  }
+}
