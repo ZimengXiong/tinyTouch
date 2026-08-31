@@ -185,11 +185,15 @@ jobs:
           test -s dist/live-release.json
           test "$(jq -r .version dist/live-release.json)" = "${GITHUB_REF_NAME#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
-          for area in flash recovery; do
-            curl -fsS --max-time 15 \
-              "$base/$area/manifest.json?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-              -o "dist/live-$area.json"
-            test "$(jq -r .version "dist/live-$area.json")" = "${GITHUB_REF_NAME#v}"
+          mkdir -p dist/expected-web
+          tar -C dist/expected-web -xzf dist/candidate/publish/tinytouch-web-flashers.tar.gz
+          find dist/expected-web -type f -print0 | while IFS= read -r -d '' expected; do
+            relative="${expected#dist/expected-web/}"
+            curl -fsS --max-time 60 \
+              "$base/$relative?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              -o dist/live-web-asset
+            expected_sha="$(sha256sum "$expected" | awk '{print $1}')"
+            echo "$expected_sha  dist/live-web-asset" | sha256sum --check --strict
           done
           for platform in macos-arm64 macos-x86_64; do
             file="$(jq -r --arg platform "$platform" '.cli[$platform].file' dist/live-release.json)"

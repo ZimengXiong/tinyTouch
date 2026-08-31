@@ -182,6 +182,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("Activate verified CLI update channel", workflow)
         self.assertIn("group: release-promotion", workflow)
         self.assertIn("Verify production flasher and CLI", workflow)
+        self.assertIn("find dist/expected-web -type f -print0", workflow)
+        self.assertIn("sha256sum --check --strict", workflow)
         self.assertIn("client_payload[release_commit]", workflow)
         self.assertIn("--json tagName,isDraft", workflow)
         self.assertNotIn("releases/tags/$GITHUB_REF_NAME", workflow)
