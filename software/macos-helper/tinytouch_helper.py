@@ -45,26 +45,35 @@ _MAC_KEYCODES = {
 _US_SHIFTED = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()_+{}|:\"<>?~",
                        "abcdefghijklmnopqrstuvwxyz1234567890-=[]\\;',./`"))
 
-_COMMON_CRYPTO = ctypes.CDLL("/usr/lib/system/libcommonCrypto.dylib")
-_COMMON_CRYPTO.CCCryptorCreateWithMode.argtypes = [
-    ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-    ctypes.c_size_t, ctypes.c_int, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p),
-]
-_COMMON_CRYPTO.CCCryptorCreateWithMode.restype = ctypes.c_int32
-_COMMON_CRYPTO.CCCryptorUpdate.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-    ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
-]
-_COMMON_CRYPTO.CCCryptorUpdate.restype = ctypes.c_int32
-_COMMON_CRYPTO.CCCryptorRelease.argtypes = [ctypes.c_void_p]
-_COMMON_CRYPTO.CCCryptorRelease.restype = ctypes.c_int32
+_COMMON_CRYPTO = None
 
 _CC_ENCRYPT = 0
 _CC_MODE_CTR = 4
 _CC_ALGORITHM_AES = 0
 _CC_NO_PADDING = 0
 _CC_MODE_OPTION_CTR_BE = 0x0002
+
+
+def _common_crypto():
+    global _COMMON_CRYPTO
+    if _COMMON_CRYPTO is not None:
+        return _COMMON_CRYPTO
+    library = ctypes.CDLL("/usr/lib/system/libcommonCrypto.dylib")
+    library.CCCryptorCreateWithMode.argtypes = [
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+        ctypes.c_size_t, ctypes.c_int, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.CCCryptorCreateWithMode.restype = ctypes.c_int32
+    library.CCCryptorUpdate.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+        ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
+    ]
+    library.CCCryptorUpdate.restype = ctypes.c_int32
+    library.CCCryptorRelease.argtypes = [ctypes.c_void_p]
+    library.CCCryptorRelease.restype = ctypes.c_int32
+    _COMMON_CRYPTO = library
+    return library
 
 
 def normalize_serial(value: str) -> str:
@@ -219,10 +228,23 @@ def session_key(pairing_key: bytes, nonce_hex: str) -> bytes:
 def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     if len(key) not in {16, 24, 32} or len(iv) != 16:
         raise ValueError("AES-CTR requires a 16/24/32-byte key and a 16-byte IV")
+    try:
+        common_crypto = _common_crypto()
+    except OSError:
+        # Test/development portability. Production macOS uses CommonCrypto and
+        # does not need an additional crypto dependency.
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        except ImportError as exc:
+            raise RuntimeError("AES-CTR backend is unavailable") from exc
+        cipher = Cipher(algorithms.AES(key), modes.CTR(iv))
+        encryptor = cipher.encryptor()
+        return encryptor.update(data) + encryptor.finalize()
+
     cryptor = ctypes.c_void_p()
     key_buffer = ctypes.create_string_buffer(key, len(key))
     iv_buffer = ctypes.create_string_buffer(iv, len(iv))
-    status = _COMMON_CRYPTO.CCCryptorCreateWithMode(
+    status = common_crypto.CCCryptorCreateWithMode(
         _CC_ENCRYPT,
         _CC_MODE_CTR,
         _CC_ALGORITHM_AES,
@@ -244,7 +266,7 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         input_buffer = ctypes.create_string_buffer(data, len(data))
         output_buffer = ctypes.create_string_buffer(len(data))
         moved = ctypes.c_size_t()
-        status = _COMMON_CRYPTO.CCCryptorUpdate(
+        status = common_crypto.CCCryptorUpdate(
             cryptor,
             input_buffer,
             len(data),
@@ -256,7 +278,7 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
             raise RuntimeError(f"CommonCrypto AES-CTR failed ({status})")
         return output_buffer.raw[:moved.value]
     finally:
-        _COMMON_CRYPTO.CCCryptorRelease(cryptor)
+        common_crypto.CCCryptorRelease(cryptor)
 
 
 def encrypt_password(pairing_key: bytes, nonce_hex: str, password: bytes) -> tuple[str, str]:
@@ -476,8 +498,14 @@ def serve_port(port: str, once: bool = False) -> None:
 
 
 def device_ports() -> list[str]:
-    return sorted(port.device for port in serial.tools.list_ports.comports()
-                  if port.device.startswith("/dev/cu.usbmodem"))
+    return sorted(
+        port.device
+        for port in serial.tools.list_ports.comports()
+        if port.vid == 0x303A
+        and port.pid == 0x4001
+        and isinstance(port.serial_number, str)
+        and port.serial_number.upper().startswith("TT-")
+    )
 
 
 def credentials_exist(device_id: str) -> bool:
@@ -487,6 +515,7 @@ def credentials_exist(device_id: str) -> bool:
 def run_manager() -> None:
     workers: dict[str, threading.Thread] = {}
     failed_attempts: dict[str, float] = {}
+    blocked_devices: set[str] = set()
     while True:
         now = time.monotonic()
         for port, worker in list(workers.items()):
@@ -500,19 +529,44 @@ def run_manager() -> None:
             if now - failed_attempts.get(port, 0.0) < 15.0:
                 continue
             device_id = port_identity(port)
-            if not credentials_exist(device_id):
+            if device_id in blocked_devices:
                 continue
-            worker = threading.Thread(target=managed_worker, args=(port,), daemon=True,
-                                      name=f"tinyTouch-{device_id}")
+            try:
+                if not credentials_exist(device_id):
+                    continue
+            except KeychainError as exc:
+                blocked_devices.add(device_id)
+                print(
+                    f"Keychain access for {device_id} is blocked; automatic retries are "
+                    f"disabled until the helper is restarted: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                continue
+            worker = threading.Thread(
+                target=managed_worker,
+                args=(port, device_id, blocked_devices),
+                daemon=True,
+                name=f"tinyTouch-{device_id}",
+            )
             workers[port] = worker
             worker.start()
         time.sleep(1)
 
 
-def managed_worker(port: str) -> None:
+def managed_worker(
+    port: str, device_id: str | None = None, blocked_devices: set[str] | None = None
+) -> None:
     try:
         serve_port(port)
-    except (OSError, serial.SerialException, subprocess.CalledProcessError, KeychainError) as exc:
+    except KeychainError as exc:
+        if blocked_devices is not None and device_id is not None:
+            blocked_devices.add(device_id)
+        print(
+            f"worker for {port} stopped because Keychain access failed; automatic retries "
+            f"are disabled until the helper is restarted: {exc}",
+            file=sys.stderr, flush=True,
+        )
+    except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
         print(f"worker for {port} stopped: {exc}", file=sys.stderr, flush=True)
 
 
@@ -583,7 +637,17 @@ def main() -> None:
             return
         except KeyboardInterrupt:
             raise
-        except BaseException as exc:
+        except KeychainError as exc:
+            # launchd uses KeepAlive. Exiting here would immediately spawn a new
+            # helper and can turn one denied Keychain request into an endless
+            # authorization-dialog loop. Stay resident but inert instead.
+            print(
+                f"Keychain access failed; helper is parked until it is restarted: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            while True:
+                time.sleep(3600)
+        except Exception as exc:
             print(f"top-level restart after error: {exc!r}", file=sys.stderr, flush=True)
             time.sleep(1)
 

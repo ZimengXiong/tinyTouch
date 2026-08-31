@@ -85,6 +85,55 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("esp_ota_get_partition_description", source)
         self.assertIn("esp_ota_get_state_partition", source)
 
+    def test_ota_session_reports_resumable_and_terminal_state(self):
+        update = (MAIN / "firmware_update.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        cmake = (MAIN / "CMakeLists.txt").read_text()
+        self.assertIn("TINYTOUCH_PROTOCOL_VERSION=5", cmake)
+        self.assertIn("firmware_update_active", update)
+        self.assertIn("firmware_update_expected", update)
+        self.assertIn("running_pending", update)
+        self.assertIn("length > FIRMWARE_UPDATE_CHUNK_MAX", update)
+        for field in ("update_expected=%u", "update_last_reason=%s", "update_error=%s"):
+            self.assertIn(field, console)
+        self.assertIn('"OK UPDATE_STATUS next=%u"', console)
+        self.assertIn('"ERR UPDATE_STATUS active=0 error=%s"', console)
+
+    def test_ccid_rearms_failed_out_and_validates_descriptor_length(self):
+        source = (MAIN / "usb_ccid.c").read_text()
+        failure = source.split("if (result != XFER_RESULT_SUCCESS)", 1)[1].split(
+            "if (ep_addr == CCID_EP_OUT)", 1
+        )[0]
+        self.assertIn("CCID_EP_OUT", failure)
+        self.assertIn("usbd_edpt_xfer", failure)
+        self.assertIn("max_len < required_len", source)
+
+    def test_piv_chaining_and_key_reload_are_serialized(self):
+        source = (MAIN / "piv.c").read_text()
+        self.assertIn("piv_mutex", source)
+        self.assertIn("data_len > sizeof(chained_apdu_data) - chained_apdu_data_len", source)
+        self.assertIn("lc > apdu_len - 7", source)
+
+    def test_piv_provisioning_is_all_or_nothing(self):
+        source = (MAIN / "piv.c").read_text()
+        clear = source.split("static void clear_provisioned_identity", 1)[1].split(
+            "bool piv_uses_provisioned_keys", 1
+        )[0]
+        self.assertIn("reset_key_contexts()", clear)
+        self.assertIn("cert_9a_der_len = 0", clear)
+        self.assertIn("cert_9d_der_len = 0", clear)
+        failure = source.split('"provisioned PIV material is incomplete or unusable"', 1)[1]
+        self.assertIn("clear_provisioned_identity()", failure)
+        self.assertGreaterEqual(source.count("!using_provisioned_keys"), 4)
+
+    def test_fingerprint_drains_buffer_before_another_uart_read(self):
+        source = (MAIN / "fingerprint.c").read_text()
+        receive = source.split("while ((xTaskGetTickCount() - start) < deadline)", 1)[1].split(
+            "return saw_ack", 1
+        )[0]
+        self.assertLess(receive.index("while (true)"), receive.index("uart_read_bytes"))
+        self.assertIn("if (pos < expected) break", receive)
+
 
 if __name__ == "__main__":
     unittest.main()

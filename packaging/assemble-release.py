@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import argparse
-import binascii
 import hashlib
 import json
 import os
 import shutil
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-PROTOCOL = 4
+PROTOCOL = 5
+SECURE_VERSION = 0
 FLASH_SIZE = 4 * 1024 * 1024
 
 
@@ -49,15 +48,6 @@ def merge(images: list[dict], directory: Path, output: Path) -> None:
     for image in images:
         command.extend([hex(image["address"]), str(directory / image["file"])])
     subprocess.run(command, check=True)
-
-
-def write_ota_slot1(path: Path) -> None:
-    # Sequence 1 points to ota_0 (0x10000) where the factory firmware is installed.
-    # In ESP-IDF esp_ota_ops.c, CRC32 covers ONLY the 4-byte ota_seq field:
-    seq_bytes = struct.pack("<I", 1)
-    crc = binascii.crc32(seq_bytes) & 0xFFFFFFFF
-    entry = seq_bytes + (b"\xFF" * 20) + struct.pack("<I", 0) + struct.pack("<I", crc)
-    path.write_bytes(entry + (b"\xFF" * (8192 - len(entry))))
 
 
 def require_consistent_asset_names(value: object, seen: dict[str, str] | None = None) -> None:
@@ -125,8 +115,12 @@ def main() -> None:
         layouts[kind] = {
             "version": VERSION,
             "protocol": PROTOCOL,
+            "secureVersion": SECURE_VERSION,
             "flashSize": "4MB",
-            "eraseAll": kind == "recovery",
+            # Recovery firmware owns erase ordering: first prove the external
+            # fingerprint sensor is empty, then erase NVS on-device. Host-side
+            # eraseAll would destroy settings before that check can run.
+            "eraseAll": False,
             "compress": False,
             "images": images,
             "fullImage": {
@@ -142,8 +136,11 @@ def main() -> None:
     built_app = output / "factory" / "tiny_touch_unified.bin"
     ota_image = output / "tiny_touch_unified.bin"
     shutil.copy2(built_app, ota_image)
-    migration_state = output / "ota_slot1.bin"
-    write_ota_slot1(migration_state)
+    # Migration uses ESP-IDF's own generated initial OTA-data image. Do not
+    # synthesize esp_ota_select_entry_t records in release tooling: their layout
+    # and CRC semantics belong to the pinned IDF version.
+    migration_state = output / "ota_data_initial.bin"
+    shutil.copy2(output / "factory" / "ota_data_initial.bin", migration_state)
     build_id = args.build_id or os.environ.get("GITHUB_SHA", "")[:12]
     if not build_id:
         build_id = subprocess.run(
@@ -156,6 +153,7 @@ def main() -> None:
         "version": VERSION,
         "build": build_id,
         "protocol": PROTOCOL,
+        "secureVersion": SECURE_VERSION,
         "boards": ["esp32s3-super-mini", "seeed-xiao-esp32s3"],
         "firmware": layouts,
         "ota": {
@@ -186,12 +184,6 @@ def main() -> None:
     (output / "release-manifest.json").write_text(
         json.dumps(release, indent=2) + "\n", encoding="utf-8"
     )
-
-    checksum_lines = []
-    for path in sorted(output.rglob("*")):
-        if path.is_file() and path.name != "checksums.txt":
-            checksum_lines.append(f"{digest(path)}  {path.relative_to(output)}")
-    (output / "checksums.txt").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
 
     if args.web_root:
         for kind, site_name in (("factory", "flasher"), ("recovery", "recovery")):

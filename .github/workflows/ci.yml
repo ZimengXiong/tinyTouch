@@ -1,10 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -16,12 +14,14 @@ permissions:
 jobs:
   firmware:
     runs-on: ubuntu-latest
-    container: espressif/idf:release-v5.3
+    container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Create ephemeral firmware signing key
         run: |
           source /opt/esp/idf/export.sh
@@ -35,28 +35,22 @@ jobs:
         run: |
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified -B firmware/tiny_touch_unified/build-recovery -D TINYTOUCH_RECOVERY_BUILD=ON build
-      - name: Assemble and verify browser artifacts
+      - name: Assemble and verify firmware artifacts
         run: |
           source /opt/esp/idf/export.sh
+          for image in \
+            firmware/tiny_touch_unified/build/bootloader/bootloader.bin \
+            firmware/tiny_touch_unified/build/tiny_touch_unified.bin \
+            firmware/tiny_touch_unified/build-recovery/bootloader/bootloader.bin \
+            firmware/tiny_touch_unified/build-recovery/tiny_touch_unified.bin; do
+            espsecure.py verify_signature --version 2 \
+              --keyfile firmware/tiny_touch_unified/secure_boot_signing_key.pem "$image"
+          done
           python packaging/assemble-release.py \
             --firmware-build firmware/tiny_touch_unified/build \
             --recovery-build firmware/tiny_touch_unified/build-recovery \
-            --web-root web
-          python - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          for root in (Path("web/flasher"), Path("web/recovery")):
-              manifest = json.loads((root / "manifest.json").read_text())
-              assert manifest["compress"] is False
-              for image in manifest["images"]:
-                  path = root / "firmware" / image["file"]
-                  assert path.stat().st_size == image["size"]
-                  assert hashlib.sha256(path.read_bytes()).hexdigest() == image["sha256"]
-          PY
-      - uses: actions/upload-artifact@v7
-        with:
-          name: firmware-release
-          path: dist/release
+            --build-id "${GITHUB_SHA:0:12}"
+          python packaging/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
 
   macos-cli:
     strategy:
@@ -70,14 +64,18 @@ jobs:
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.13"
           architecture: ${{ matrix.architecture }}
       - name: Test CLI and HID protocol
         run: |
-          python -m pip install -r software/macos-helper/requirements.txt
+          python -m pip install --require-hashes -r software/macos-helper/requirements-bootstrap.txt
+          python -m pip install --no-build-isolation --require-hashes \
+            -r software/macos-helper/requirements-release.txt
           python -m unittest discover -s tests -v
           python -m py_compile tinytouch software/macos-helper/tinytouch_helper.py packaging/*.py
           zsh -n packaging/build-standalone-macos.sh firmware/build-and-flash firmware/build-recovery
@@ -103,7 +101,7 @@ jobs:
           for _ in range(5): subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
           assert time.monotonic() - started < 5, "CLI startup is unexpectedly slow"
           PY
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: tinytouch-macos-${{ matrix.expected_arch }}
           path: dist/tinytouch.tar.gz
@@ -111,7 +109,9 @@ jobs:
   consistency:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Verify release sources
         run: |
           test -s VERSION

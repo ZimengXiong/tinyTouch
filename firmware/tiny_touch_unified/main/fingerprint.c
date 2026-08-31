@@ -69,51 +69,72 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
   if (data && data_len) *data_len = 0;
 
   while ((xTaskGetTickCount() - start) < deadline) {
-    int n = uart_read_bytes(FP_UART, response + pos, sizeof(response) - pos, pdMS_TO_TICKS(10));
-    if (n <= 0) continue;
-    pos += (size_t)n;
-
-    while (pos >= 2 && !(response[0] == 0xef && response[1] == 0x01)) {
-      memmove(response, response + 1, --pos);
-    }
-    if (pos < 9) continue;
-
-    uint8_t packet_id = response[6];
-    uint16_t resp_len = ((uint16_t)response[7] << 8) | response[8];
-    size_t expected = 9 + resp_len;
-    if (expected > sizeof(response)) return false;
-    if (pos < expected) continue;
-
-    if (packet_id == 0x07) {
-      *confirm = response[9];
-      saw_ack = true;
-      size_t actual_len = resp_len > 3 ? resp_len - 3 : 0;
-      if (data && data_len && actual_len) {
-        size_t copy_len = actual_len;
-        if (copy_len > data_cap - out_len) copy_len = data_cap - out_len;
-        memcpy(data + out_len, response + 10, copy_len);
-        out_len += copy_len;
-        *data_len = out_len;
+    // Drain every complete packet already in memory before waiting for more
+    // UART bytes. Sensors may return an ACK and its following data packet in a
+    // single read; blocking between them can otherwise turn valid buffered
+    // data into a timeout.
+    while (true) {
+      while (pos >= 2 && !(response[0] == 0xef && response[1] == 0x01)) {
+        memmove(response, response + 1, --pos);
       }
-      if (*confirm != 0x00 || !data || !data_len || out_len >= data_cap) return true;
-      post_ack_until = xTaskGetTickCount() + pdMS_TO_TICKS(120);
-    } else if (packet_id == 0x02 && data && data_len) {
-      size_t actual_len = resp_len > 2 ? resp_len - 2 : 0;
-      if (actual_len) {
-        size_t copy_len = actual_len;
-        if (copy_len > data_cap - out_len) copy_len = data_cap - out_len;
-        memcpy(data + out_len, response + 9, copy_len);
-        out_len += copy_len;
-        *data_len = out_len;
-      }
-      if (saw_ack && out_len >= data_cap) return true;
-    }
+      if (pos < 9) break;
 
-    size_t remaining = pos - expected;
-    if (remaining) memmove(response, response + expected, remaining);
-    pos = remaining;
+      uint8_t packet_id = response[6];
+      uint16_t resp_len = ((uint16_t)response[7] << 8) | response[8];
+      size_t expected = 9 + resp_len;
+      if (response[2] != 0xff || response[3] != 0xff ||
+          response[4] != 0xff || response[5] != 0xff || resp_len < 2) {
+        ESP_LOGW(TAG, "fingerprint response has invalid address/length");
+        return false;
+      }
+      if (expected > sizeof(response)) return false;
+      if (pos < expected) break;
+
+      size_t response_payload_len = resp_len - 2;
+      uint16_t expected_sum = fp_checksum(packet_id, response + 9, response_payload_len);
+      uint16_t received_sum = ((uint16_t)response[9 + response_payload_len] << 8) |
+                              response[10 + response_payload_len];
+      if (expected_sum != received_sum) {
+        ESP_LOGW(TAG, "fingerprint response checksum mismatch");
+        return false;
+      }
+
+      if (packet_id == 0x07) {
+        if (response_payload_len < 1) return false;
+        *confirm = response[9];
+        saw_ack = true;
+        size_t actual_len = response_payload_len - 1;
+        if (data && data_len && actual_len) {
+          size_t copy_len = actual_len;
+          if (copy_len > data_cap - out_len) copy_len = data_cap - out_len;
+          memcpy(data + out_len, response + 10, copy_len);
+          out_len += copy_len;
+          *data_len = out_len;
+        }
+        if (*confirm != 0x00 || !data || !data_len || out_len >= data_cap) return true;
+        post_ack_until = xTaskGetTickCount() + pdMS_TO_TICKS(120);
+      } else if (packet_id == 0x02 && data && data_len) {
+        size_t actual_len = response_payload_len;
+        if (actual_len) {
+          size_t copy_len = actual_len;
+          if (copy_len > data_cap - out_len) copy_len = data_cap - out_len;
+          memcpy(data + out_len, response + 9, copy_len);
+          out_len += copy_len;
+          *data_len = out_len;
+        }
+        if (saw_ack && out_len >= data_cap) return true;
+      }
+
+      size_t remaining = pos - expected;
+      if (remaining) memmove(response, response + expected, remaining);
+      pos = remaining;
+    }
 
     if (saw_ack && post_ack_until && xTaskGetTickCount() > post_ack_until) return true;
+
+    int n = uart_read_bytes(FP_UART, response + pos, sizeof(response) - pos,
+                            pdMS_TO_TICKS(10));
+    if (n > 0) pos += (size_t)n;
   }
 
   return saw_ack;

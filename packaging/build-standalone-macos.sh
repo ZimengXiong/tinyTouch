@@ -13,7 +13,10 @@ if [[ ! -x "$venv_python" ]]; then
   python3 -m venv "$project_dir/.venv"
 fi
 
-"$venv_python" -m pip install -q -r "$project_dir/software/macos-helper/requirements.txt" pyinstaller
+"$venv_python" -m pip install -q --require-hashes \
+  -r "$project_dir/software/macos-helper/requirements-bootstrap.txt"
+"$venv_python" -m pip install -q --no-build-isolation --require-hashes \
+  -r "$project_dir/software/macos-helper/requirements-release.txt"
 
 rm -rf "$build_dir"
 mkdir -p "$build_dir" "$dist_dir"
@@ -49,9 +52,20 @@ fi
 bundle="$build_dir/bin/tinytouch"
 executable="$bundle/tinytouch"
 "$executable" _package_test
+network_ok=0
 for attempt in 1 2 3; do
-  "$executable" _network_test && break || sleep 2
+  if "$executable" _network_test; then
+    network_ok=1
+    break
+  fi
+  if [[ "$attempt" -lt 3 ]]; then
+    sleep 2
+  fi
 done
+if [[ "$network_ok" -ne 1 ]]; then
+  echo "tinyTouch release network smoke test failed after 3 attempts" >&2
+  exit 1
+fi
 # A PyInstaller one-file binary extracts its bundled Python dylib at runtime.
 # Hardened runtime library validation rejects that extracted ad-hoc-signed dylib
 # because it does not share the outer Apple Development signature's Team ID.

@@ -22,27 +22,12 @@ loader.exec_module(cli)
 
 
 class PackagingTests(unittest.TestCase):
-    def test_browser_flash_manifests_and_assets_are_synchronized(self):
-        import json
-
-        version = (ROOT / "VERSION").read_text().strip()
+    def test_browser_firmware_is_release_generated(self):
         for site in ("flasher", "recovery"):
             web_manifest_path = ROOT / "web" / site / "manifest.json"
-            manifest = json.loads(web_manifest_path.read_text())
-            self.assertEqual((manifest["version"], manifest["protocol"]), (version, 4))
             firmware = web_manifest_path.parent / "firmware"
-            referenced = {manifest["fullImage"]["file"]}
-            for image in manifest["images"]:
-                referenced.add(image["file"])
-                path = firmware / image["file"]
-                self.assertEqual(path.stat().st_size, image["size"])
-                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), image["sha256"])
-            full = firmware / manifest["fullImage"]["file"]
-            self.assertEqual(full.stat().st_size, manifest["fullImage"]["size"])
-            self.assertEqual(
-                hashlib.sha256(full.read_bytes()).hexdigest(), manifest["fullImage"]["sha256"]
-            )
-            self.assertEqual({path.name for path in firmware.iterdir()}, referenced)
+            self.assertFalse(web_manifest_path.exists())
+            self.assertFalse(firmware.exists())
 
     def test_web_flasher_progress_tracks_manifest_length(self):
         for path in (ROOT / "web" / "flasher" / "app.js",):
@@ -284,14 +269,14 @@ class PackagingTests(unittest.TestCase):
         fake_esptool = SimpleNamespace(main=lambda arguments: calls.append(arguments))
         images = [
             {"file": name, "size": 1, "sha256": "0" * 64}
-            for name in ("bootloader.bin", "partition-table.bin", "tiny_touch_unified.bin")
+            for name in (
+                "bootloader.bin", "partition-table.bin", "tiny_touch_unified.bin",
+                "ota_data_initial.bin",
+            )
         ]
         manifest = {
             "version": "0.4.3-preprod",
             "firmware": {"factory": {"images": images}},
-            "migration": {"otaState": {
-                "file": "ota_slot1.bin", "size": 1, "sha256": "0" * 64,
-            }},
         }
         with (
             mock.patch.dict(sys.modules, {"esptool": fake_esptool}),
@@ -299,16 +284,24 @@ class PackagingTests(unittest.TestCase):
             mock.patch.object(cli, "port_is_download_mode", return_value=True),
             mock.patch.object(cli, "port_usb_location", return_value="1-2"),
             mock.patch.object(cli, "wait_for_runtime_port", return_value="/dev/cu.runtime"),
+            mock.patch.object(cli, "classify_partition_layout", return_value="current-ota"),
+            mock.patch.object(cli, "read_rom_mac", return_value="001122334455"),
+            mock.patch.object(cli, "read_rom_flash", return_value=b"x"),
         ):
-            result = cli.migrate_partition_layout("/dev/cu.download", manifest)
+            result = cli.migrate_partition_layout(
+                "/dev/cu.download", manifest, allow_uncorrelated_download=True
+            )
         self.assertEqual(result, "/dev/cu.runtime")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 5)
         self.assertIn("0x110000", calls[0])
         self.assertNotIn("0x8000", calls[0])
         self.assertEqual(calls[0][9], "no_reset")
-        self.assertEqual(calls[1][9], "hard_reset")
-        for address in ("0x0", "0x8000", "0x210000", "0x10000"):
-            self.assertIn(address, calls[1])
+        self.assertIn("0x8000", calls[1])
+        self.assertIn("0x210000", calls[2])
+        self.assertIn("0x10000", calls[3])
+        self.assertIn("0x0", calls[4])
+        self.assertTrue(all(call[9] == "no_reset" for call in calls[:4]))
+        self.assertEqual(calls[4][9], "hard_reset")
 
     def test_ota_transfer_uses_authenticated_ordered_session(self):
         writes = []
@@ -396,8 +389,9 @@ class PackagingTests(unittest.TestCase):
         args = SimpleNamespace(port="/dev/cu.example", force=False)
         manifest = {"version": "0.4.3-preprod", "build": "abc123def456"}
         status = {
-            "firmware": "unified", "sensor": "ok", "protocol": "3", "ota": "ready",
+            "firmware": "unified", "sensor": "ok", "protocol": "5", "ota": "ready",
             "firmware_version": manifest["version"], "build": manifest["build"],
+            "ota_state": "valid",
         }
         with (
             mock.patch.object(cli, "require_macos"),
@@ -406,6 +400,7 @@ class PackagingTests(unittest.TestCase):
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "port_is_download_mode", return_value=False),
             mock.patch.object(cli, "status_fields", return_value=status),
+            mock.patch.object(cli, "serial_command", return_value=["OK CONFIRM_FIRMWARE"]) as serial_command,
             mock.patch.object(cli, "install_ota_firmware") as install_ota,
             mock.patch.object(cli, "migrate_partition_layout") as migrate,
             mock.patch.object(cli, "say") as say,
@@ -413,6 +408,7 @@ class PackagingTests(unittest.TestCase):
             cli.command_update(args)
         install_ota.assert_not_called()
         migrate.assert_not_called()
+        serial_command.assert_not_called()
         say.assert_called_once_with("tinyTouch is up to date.")
 
     def test_config_set_validates_and_sends_authenticated_setting(self):

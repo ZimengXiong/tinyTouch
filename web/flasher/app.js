@@ -10,6 +10,9 @@ const stage = document.querySelector("#stage");
 const log = document.querySelector("#log");
 const firmwareVersion = document.querySelector("#firmware-version");
 const serialSupported = "serial" in navigator;
+const FLASH_BYTES = 4 * 1024 * 1024;
+const UPDATE_PROTOCOL = 5;
+const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000];
 
 if (!serialSupported) {
   browserNote.textContent = "Open this page in Google Chrome or Microsoft Edge.";
@@ -36,20 +39,40 @@ async function loadManifest() {
   const manifestResponse = await fetch("./manifest.json", { cache: "no-store" });
   if (!manifestResponse.ok) throw new Error("Firmware manifest could not be downloaded.");
   const manifest = await manifestResponse.json();
-  if (!manifest.version || !Array.isArray(manifest.images)) {
+  if (!manifest || typeof manifest !== "object" || typeof manifest.version !== "string" ||
+      manifest.protocol !== UPDATE_PROTOCOL ||
+      manifest.secureVersion !== 0 || manifest.flashSize !== "4MB" ||
+      manifest.eraseAll !== false ||
+      manifest.compress !== false || !Array.isArray(manifest.images) ||
+      manifest.images.length !== REQUIRED_ADDRESSES.length) {
     throw new Error("Firmware manifest is incomplete.");
+  }
+  const ranges = [];
+  for (const image of manifest.images) {
+    if (!image || typeof image.name !== "string" ||
+        typeof image.file !== "string" || !/^[A-Za-z0-9._-]+$/.test(image.file) ||
+        !Number.isInteger(image.address) || !REQUIRED_ADDRESSES.includes(image.address) ||
+        !Number.isInteger(image.size) || image.size <= 0 || image.size > FLASH_BYTES ||
+        typeof image.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(image.sha256) ||
+        image.address + image.size > FLASH_BYTES) {
+      throw new Error("Firmware manifest contains an invalid flash image.");
+    }
+    ranges.push([image.address, image.address + image.size]);
+  }
+  if (new Set(manifest.images.map((image) => image.address)).size !== REQUIRED_ADDRESSES.length) {
+    throw new Error("Firmware manifest contains duplicate flash regions.");
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  for (let i = 1; i < ranges.length; i += 1) {
+    if (ranges[i][0] < ranges[i - 1][1]) throw new Error("Firmware flash regions overlap.");
+  }
+  if (manifest.images.reduce((sum, image) => sum + image.size, 0) > FLASH_BYTES) {
+    throw new Error("Firmware manifest is unexpectedly large.");
   }
   return manifest;
 }
 
 const manifestPromise = loadManifest();
-manifestPromise.then((manifest) => {
-  firmwareVersion.textContent = manifest.version;
-  button.disabled = !serialSupported;
-}).catch((error) => {
-  firmwareVersion.textContent = "unavailable";
-  show(friendlyError(error), "error");
-});
 
 async function loadFirmware() {
   const manifest = await manifestPromise;
@@ -66,9 +89,19 @@ async function loadFirmware() {
   return { files: loaded, manifest };
 }
 
-function friendlyError(error) {
+const firmwarePromise = loadFirmware();
+firmwarePromise.then(({ manifest }) => {
+  firmwareVersion.textContent = manifest.version;
+  button.disabled = !serialSupported;
+}).catch((error) => {
+  firmwareVersion.textContent = "unavailable";
+  show(friendlyError(error), "error");
+});
+
+function friendlyError(error, phase = "select") {
   const text = error instanceof Error ? error.message : String(error);
-  if (/notfound|no port selected|chooser/i.test(text)) return "No board was selected. Nothing was flashed.";
+  if (/notfound|no port selected|chooser/i.test(text) && phase === "select") return "No board was selected. Nothing was flashed.";
+  if (phase === "writing" || phase === "reset") return `Flashing stopped after write operations began. ${text || "Reconnect the board and use recovery before retrying."}`;
   if (/securityerror|permission denied|access denied/i.test(text)) return "Chrome does not have permission to use this serial port. Reload the page, select the board again, and approve access.";
   if (/already open|busy|networkerror/i.test(text)) return "The serial port is busy or was disconnected. Close serial monitors and other flashing tabs, reconnect the board, then try again.";
   if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return "The ESP32-S3 did not enter download mode. Hold BOOT, tap RESET, release BOOT, then try again.";
@@ -79,6 +112,7 @@ function friendlyError(error) {
 
 button.addEventListener("click", async () => {
   let transport;
+  let phase = "select";
   button.disabled = true;
   progressWrap.hidden = false;
   progress.value = 0;
@@ -86,20 +120,22 @@ button.addEventListener("click", async () => {
   log.textContent = "No device activity yet.";
   show("Choose the ESP32-S3 serial port in the browser window.");
   try {
-    const port = await navigator.serial.requestPort();
+    stage.textContent = "Checking firmware";
+    const { files: fileArray, manifest } = await firmwarePromise;
+    const totalBytes = manifest.images.reduce((sum, image) => sum + image.size, 0);
+    const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
     const { usbVendorId, usbProductId } = port.getInfo();
     const nativeDownloadMode = usbVendorId === 0x303a && [0x0009, 0x1001].includes(usbProductId);
     transport = new Transport(port, false);
     const terminal = { clean(){ log.textContent = ""; }, write:writeLog, writeLine:writeLog };
     const loader = new ESPLoader({ transport, baudrate:460800, terminal, debugLogging:false });
+    phase = "connected";
     show("Connecting to ESP32-S3…");
     const chip = await loader.main(nativeDownloadMode ? "no_reset" : "default_reset");
     if (!/ESP32-S3/i.test(chip)) throw new Error(`This is ${chip}, not an ESP32-S3.`);
 
-    stage.textContent = "Checking firmware";
-    const { files: fileArray, manifest } = await loadFirmware();
-    const totalBytes = manifest.images.reduce((sum, image) => sum + image.size, 0);
     stage.textContent = "Writing firmware";
+    phase = "writing";
     const written = fileArray.map(() => 0);
     await loader.writeFlash({
       fileArray, flashMode:"dio", flashFreq:"80m", flashSize:manifest.flashSize,
@@ -113,13 +149,15 @@ button.addEventListener("click", async () => {
     });
     progress.value = 100;
     percent.textContent = "100%";
-    await loader.after("hard_reset");
-    await transport.disconnect();
+    phase = "reset";
+    try { await loader.after("hard_reset"); } catch (error) { writeLog(`Reset notice: ${error}`); }
+    try { await transport.disconnect(); } catch {}
     transport = undefined;
+    phase = "done";
     show("Flash complete. Unplug the board and reconnect it once.", "success");
     button.textContent = "Flash another board";
   } catch (error) {
-    show(friendlyError(error), "error");
+    show(friendlyError(error, phase), "error");
     try { await transport?.disconnect(); } catch {}
   } finally {
     button.disabled = !serialSupported;

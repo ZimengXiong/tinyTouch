@@ -55,18 +55,26 @@ def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
     return raw, ctypes.create_string_buffer(raw, len(raw) + 1)
 
 
-def _set_open_access(item, service: str) -> None:
+def _set_calling_app_access(item, service: str) -> None:
+    """Restrict the item to the calling application and verify the ACL update."""
     if not item:
-        return
+        raise KeychainError("set access", -1)
     service_bytes = service.encode("utf-8")
     cf_desc = _CORE_FOUNDATION.CFStringCreateWithCString(None, service_bytes, 0x08000100)
     if not cf_desc:
-        return
+        raise KeychainError("set access", -1)
     access = ctypes.c_void_p()
-    status = _SECURITY.SecAccessCreate(cf_desc, None, ctypes.byref(access))
-    _CORE_FOUNDATION.CFRelease(cf_desc)
-    if status == 0 and access:
-        _SECURITY.SecKeychainItemSetAccess(item, access)
+    try:
+        status = _SECURITY.SecAccessCreate(cf_desc, None, ctypes.byref(access))
+    finally:
+        _CORE_FOUNDATION.CFRelease(cf_desc)
+    if status != 0 or not access:
+        raise KeychainError("create access", status)
+    try:
+        status = _SECURITY.SecKeychainItemSetAccess(item, access)
+        if status != 0:
+            raise KeychainError("set access", status)
+    finally:
         _CORE_FOUNDATION.CFRelease(access)
 
 
@@ -118,8 +126,11 @@ def set_password(service: str, account: str, value: str) -> None:
             result = _SECURITY.SecKeychainItemModifyAttributesAndData(
                 item, None, len(value_raw), value_buffer
             )
-            _set_open_access(item, service)
-        elif status == _NOT_FOUND:
+            if result != 0:
+                raise KeychainError("write", result)
+            _set_calling_app_access(item, service)
+            return
+        if status == _NOT_FOUND:
             service_raw, service_buffer = _encoded(service)
             account_raw, account_buffer = _encoded(account)
             new_item = ctypes.c_void_p()
@@ -127,13 +138,16 @@ def set_password(service: str, account: str, value: str) -> None:
                 None, len(service_raw), service_buffer, len(account_raw), account_buffer,
                 len(value_raw), value_buffer, ctypes.byref(new_item),
             )
-            if result == 0 and new_item:
-                _set_open_access(new_item, service)
+            if result != 0:
+                raise KeychainError("write", result)
+            if not new_item:
+                raise KeychainError("write", -1)
+            try:
+                _set_calling_app_access(new_item, service)
+            finally:
                 _CORE_FOUNDATION.CFRelease(new_item)
-        else:
-            raise KeychainError("find", status)
-        if result != 0:
-            raise KeychainError("write", result)
+            return
+        raise KeychainError("find", status)
     finally:
         if item:
             _CORE_FOUNDATION.CFRelease(item)

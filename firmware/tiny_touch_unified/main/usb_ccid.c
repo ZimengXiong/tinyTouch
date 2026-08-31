@@ -22,6 +22,7 @@ static uint8_t tx_buf[CCID_BUF_SIZE];
 static uint8_t rhport_active;
 static ccid_apdu_handler_t apdu_handler;
 static bool ep_ready;
+static bool in_busy;
 
 static void usb_event_cb(tinyusb_event_t *event, void *arg) {
   (void)arg;
@@ -41,7 +42,7 @@ static void put_le32(uint8_t *p, uint32_t v) {
 
 static bool send_ccid(uint8_t msg_type, uint8_t slot, uint8_t seq, uint8_t status,
                       uint8_t error, const uint8_t *data, size_t data_len) {
-  if (data_len + 10 > sizeof(tx_buf)) return false;
+  if (data_len > sizeof(tx_buf) - 10 || in_busy) return false;
   tx_buf[0] = msg_type;
   put_le32(tx_buf + 1, data_len);
   tx_buf[5] = slot;
@@ -50,7 +51,9 @@ static bool send_ccid(uint8_t msg_type, uint8_t slot, uint8_t seq, uint8_t statu
   tx_buf[8] = error;
   tx_buf[9] = 0x00;
   if (data_len) memcpy(tx_buf + 10, data, data_len);
-  return usbd_edpt_xfer(rhport_active, CCID_EP_IN, tx_buf, data_len + 10);
+  bool queued = usbd_edpt_xfer(rhport_active, CCID_EP_IN, tx_buf, data_len + 10);
+  if (queued) in_busy = true;
+  return queued;
 }
 
 static bool send_parameters(uint8_t slot, uint8_t seq) {
@@ -65,7 +68,7 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
   uint32_t len = le32(msg + 1);
   uint8_t slot = msg[5];
   uint8_t seq = msg[6];
-  if (len + 10 > msg_len) {
+  if (len > msg_len - 10 || len > sizeof(rx_buf) - 10) {
     send_ccid(0x81, slot, seq, 0x42, 0x01, NULL, 0);
     return;
   }
@@ -110,14 +113,16 @@ static void ccid_init(void) {}
 static void ccid_reset(uint8_t rhport) {
   (void)rhport;
   ep_ready = false;
+  in_busy = false;
   piv_reset_transport_state();
 }
 
 static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
                           uint16_t max_len) {
-  (void)max_len;
   uint8_t const *p_desc = (uint8_t const *)itf_desc;
   uint16_t drv_len = sizeof(tusb_desc_interface_t) + 54;
+  uint16_t required_len = drv_len + 2 * sizeof(tusb_desc_endpoint_t);
+  if (max_len < required_len) return 0;
   p_desc += drv_len;
 
   tusb_desc_endpoint_t const *ep_out = (tusb_desc_endpoint_t const *)p_desc;
@@ -127,8 +132,9 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
 
   rhport_active = rhport;
   ep_ready = true;
+  in_busy = false;
   usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
-  return drv_len + 2 * sizeof(tusb_desc_endpoint_t);
+  return required_len;
 }
 
 static bool ccid_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request) {
@@ -140,9 +146,20 @@ static bool ccid_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_req
 
 static bool ccid_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
                          uint32_t xferred_bytes) {
-  if (result != XFER_RESULT_SUCCESS) return true;
+  if (result != XFER_RESULT_SUCCESS) {
+    if (ep_addr == CCID_EP_IN) in_busy = false;
+    if (ep_addr == CCID_EP_OUT || ep_addr == CCID_EP_IN) {
+      usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+    }
+    return true;
+  }
   if (ep_addr == CCID_EP_OUT) {
     handle_message(rx_buf, xferred_bytes);
+    // Keep tx_buf immutable until the IN transfer completes. Only accept the
+    // next command immediately if no response was queued.
+    if (!in_busy) usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+  } else if (ep_addr == CCID_EP_IN) {
+    in_busy = false;
     usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
   }
   return true;

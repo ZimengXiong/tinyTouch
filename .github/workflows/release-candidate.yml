@@ -1,0 +1,167 @@
+name: Release candidate
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - channels/**
+
+concurrency:
+  group: release-candidate-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  production-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      # Configure release-signing with "Selected branches and tags" and allow only main.
+      # GitHub enforces that policy before the firmware job can read its signing secret.
+      - name: Require an automatic main-branch push
+        run: |
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/main
+
+  firmware:
+    needs: production-preflight
+    runs-on: ubuntu-latest
+    environment: release-signing
+    container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Load production firmware signing key
+        env:
+          SIGNING_KEY_B64: ${{ secrets.TINYTOUCH_FIRMWARE_SIGNING_KEY_B64 }}
+        run: |
+          test -n "$SIGNING_KEY_B64"
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > \
+            firmware/tiny_touch_unified/secure_boot_signing_key.pem
+          test -s firmware/tiny_touch_unified/secure_boot_signing_key.pem
+      - name: Build signed firmware candidate
+        run: |
+          candidate_started=$SECONDS
+          source /opt/esp/idf/export.sh
+          idf.py -C firmware/tiny_touch_unified build
+          idf.py -C firmware/tiny_touch_unified \
+            -B firmware/tiny_touch_unified/build-recovery \
+            -D TINYTOUCH_RECOVERY_BUILD=ON build
+          for image in \
+            firmware/tiny_touch_unified/build/bootloader/bootloader.bin \
+            firmware/tiny_touch_unified/build/tiny_touch_unified.bin \
+            firmware/tiny_touch_unified/build-recovery/bootloader/bootloader.bin \
+            firmware/tiny_touch_unified/build-recovery/tiny_touch_unified.bin; do
+            espsecure.py verify_signature --version 2 \
+              --keyfile firmware/tiny_touch_unified/secure_boot_signing_key.pem "$image"
+          done
+          python packaging/assemble-release.py \
+            --firmware-build firmware/tiny_touch_unified/build \
+            --recovery-build firmware/tiny_touch_unified/build-recovery \
+            --build-id "${GITHUB_SHA:0:12}"
+          python packaging/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
+          printf 'Firmware candidate build: %ss\n' "$((SECONDS - candidate_started))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-firmware-${{ github.sha }}
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 30
+
+  cli:
+    strategy:
+      matrix:
+        include:
+          - architecture: arm64
+            expected_arch: arm64
+            runner: macos-15
+          - architecture: x64
+            expected_arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.architecture }}
+      - name: Test release sources
+        if: matrix.architecture == 'arm64'
+        run: |
+          python -m pip install --require-hashes -r software/macos-helper/requirements-bootstrap.txt
+          python -m pip install --no-build-isolation --require-hashes \
+            -r software/macos-helper/requirements-release.txt
+          python -m unittest discover -s tests -v
+          python -m py_compile tinytouch software/macos-helper/*.py packaging/*.py
+          node --check web/flasher/app.js
+          node --check web/recovery/app.js
+      - name: Build CLI candidate
+        env:
+          TINYTOUCH_SIGNING_IDENTITY: "-"
+        run: |
+          cli_started=$SECONDS
+          packaging/build-standalone-macos.sh
+          mkdir dist/verify
+          tar -C dist/verify -xzf dist/tinytouch.tar.gz
+          cli=dist/verify/tinytouch/tinytouch
+          test "$("$cli" --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
+          "$cli" _package_test | grep -q "package ok (${{ matrix.expected_arch }})"
+          codesign --verify --strict --verbose=2 "$cli"
+          file "$cli" | grep -q "${{ matrix.expected_arch }}"
+          printf 'CLI ${{ matrix.expected_arch }} build: %ss\n' "$((SECONDS - cli_started))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: candidate-cli-${{ matrix.expected_arch }}-${{ github.sha }}
+          path: dist/tinytouch.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate:
+    needs: [firmware, cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-firmware-${{ github.sha }}
+          path: dist/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-cli-arm64-${{ github.sha }}
+          path: dist/cli-arm64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: candidate-cli-x86_64-${{ github.sha }}
+          path: dist/cli-x86_64
+      - name: Finalize immutable candidate
+        run: |
+          finalize_started=$SECONDS
+          python packaging/attach-cli.py dist/release \
+            --arm64 dist/cli-arm64/tinytouch.tar.gz \
+            --x86-64 dist/cli-x86_64/tinytouch.tar.gz
+          python packaging/release_integrity.py assembled dist/release --commit "$GITHUB_SHA"
+          python packaging/finalize-release.py dist/release \
+            --web-source web --output dist/publish --commit "$GITHUB_SHA"
+          tar -C dist -czf "dist/release-candidate-${GITHUB_SHA}.tar.gz" publish
+          printf 'Candidate finalization: %ss\n' "$((SECONDS - finalize_started))" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest candidate bundle
+        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4
+        with:
+          subject-path: dist/release-candidate-${{ github.sha }}.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: dist/release-candidate-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30

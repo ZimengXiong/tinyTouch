@@ -2,152 +2,213 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: write
+  attestations: read
 
 jobs:
-  firmware:
-    runs-on: ubuntu-latest
-    container: espressif/idf:release-v5.3
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-      - name: Load firmware signing key
-        env:
-          SIGNING_KEY_B64: ${{ secrets.TINYTOUCH_FIRMWARE_SIGNING_KEY_B64 }}
-        run: |
-          test -n "$SIGNING_KEY_B64"
-          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > \
-            firmware/tiny_touch_unified/secure_boot_signing_key.pem
-          test -s firmware/tiny_touch_unified/secure_boot_signing_key.pem
-      - name: Match tag to shared version
-        shell: bash
-        run: |
-          test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
-          test "$(python -c 'import json; print(json.load(open("channels/batch-0.json"))["manifest"])')" = \
-            "https://github.com/ZimengXiong/TinyTouch/releases/download/$GITHUB_REF_NAME/release-manifest.json"
-      - run: |
-          source /opt/esp/idf/export.sh
-          idf.py -C firmware/tiny_touch_unified build
-      - run: |
-          source /opt/esp/idf/export.sh
-          idf.py -C firmware/tiny_touch_unified -B firmware/tiny_touch_unified/build-recovery -D TINYTOUCH_RECOVERY_BUILD=ON build
-      - name: Assemble firmware release
-        run: |
-          source /opt/esp/idf/export.sh
-          python packaging/assemble-release.py \
-            --firmware-build firmware/tiny_touch_unified/build \
-            --recovery-build firmware/tiny_touch_unified/build-recovery
-      - uses: actions/upload-artifact@v7
-        with:
-          name: firmware-release
-          path: dist/release
-
-  cli:
-    strategy:
-      matrix:
-        include:
-          - architecture: arm64
-            runner: macos-15
-          - architecture: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Match tag to shared version
-        run: test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-          architecture: ${{ matrix.architecture }}
-      - name: Build and ad-hoc sign executable
-        env:
-          TINYTOUCH_SIGNING_IDENTITY: "-"
-        run: packaging/build-standalone-macos.sh
-      - run: |
-          mkdir dist/verify
-          tar -C dist/verify -xzf dist/tinytouch.tar.gz
-          cli=dist/verify/tinytouch/tinytouch
-          test "$("$cli" --version | tail -n 1)" = "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
-          "$cli" _package_test
-          codesign --verify --strict --verbose=2 "$cli"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cli-release-${{ matrix.architecture }}
-          path: dist/tinytouch.tar.gz
-
-  publish:
-    needs: [firmware, cli]
+  promote:
+    # Repository release immutability is a configured server-side prerequisite.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - name: Start promotion timer
+        run: echo "PROMOTION_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: firmware-release
-          path: dist/release
-      - uses: actions/download-artifact@v8
-        with:
-          name: cli-release-arm64
-          path: dist/cli-arm64
-      - uses: actions/download-artifact@v8
-        with:
-          name: cli-release-x64
-          path: dist/cli-x64
-      - name: Finalize unified release
-        run: |
-          python3 packaging/attach-cli.py dist/release \
-            --arm64 dist/cli-arm64/tinytouch.tar.gz \
-            --x86-64 dist/cli-x64/tinytouch.tar.gz
-          mkdir -p dist/site/flasher/firmware dist/site/recovery/firmware
-          cp -R web/flasher/index.html web/flasher/styles.css web/flasher/app.js web/flasher/vendor dist/site/flasher/
-          cp -R web/recovery/index.html web/recovery/styles.css web/recovery/app.js web/recovery/vendor dist/site/recovery/
-          cp dist/release/factory/manifest.json dist/site/flasher/manifest.json
-          cp dist/release/factory/*.bin dist/site/flasher/firmware/
-          cp dist/release/recovery/manifest.json dist/site/recovery/manifest.json
-          cp dist/release/recovery/*.bin dist/site/recovery/firmware/
-          cp dist/release/release-manifest.json dist/site/release.json
-          tar -C dist/site -czf dist/release/tinytouch-web-flashers.tar.gz .
-          tar -C dist/release -czf dist/release/tinytouch-firmware.tar.gz factory recovery release-manifest.json checksums.txt
-      - name: Publish GitHub release
+          persist-credentials: false
+      - name: Validate tag and wait for exact candidate
+        id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_flags=(--verify-tag --generate-notes)
+          test "${GITHUB_REF_NAME#v}" = "$(tr -d '[:space:]' < VERSION)"
+          tag_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          event_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          test "$tag_commit" = "$event_commit" || {
+            echo "Tag $GITHUB_REF_NAME does not peel to the event commit." >&2
+            exit 1
+          }
+          echo "RELEASE_COMMIT=$tag_commit" >> "$GITHUB_ENV"
+          api="repos/$GITHUB_REPOSITORY/actions/workflows/release-candidate.yml/runs"
+          wait_started=$SECONDS
+          deadline=$((SECONDS + 600))
+          run_id=""
+          while (( SECONDS < deadline )); do
+            runs="$(gh api "$api?branch=main&event=push&per_page=100")"
+            run_id="$(jq -r --arg sha "$tag_commit" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | first | .id // empty' \
+              <<<"$runs")"
+            [[ -n "$run_id" ]] && break
+            terminal="$(jq -r --arg sha "$tag_commit" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed") | .conclusion] | first // empty' \
+              <<<"$runs")"
+            if [[ -n "$terminal" && "$terminal" != success ]]; then
+              echo "Exact-SHA release candidate ended with: $terminal" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "Timed out after 600s waiting for the exact-SHA main-branch candidate." >&2
+            exit 1
+          fi
+          candidate_wait=$((SECONDS - wait_started))
+          echo "CANDIDATE_WAIT_SECONDS=$candidate_wait" >> "$GITHUB_ENV"
+          artifact_name="release-candidate-${tag_commit}"
+          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts")"
+          artifact_count="$(jq --arg name "$artifact_name" \
+            '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$artifacts")"
+          test "$artifact_count" = 1
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Download and verify candidate provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/download
+          gh run download "${{ steps.candidate.outputs.run_id }}" \
+            --name "${{ steps.candidate.outputs.artifact_name }}" \
+            --dir dist/download --repo "$GITHUB_REPOSITORY"
+          candidate="dist/download/release-candidate-${RELEASE_COMMIT}.tar.gz"
+          gh attestation verify "$candidate" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
+            --source-digest "$RELEASE_COMMIT" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+          python packaging/release_integrity.py extract "$candidate" dist/candidate
+          python packaging/release_integrity.py publish dist/candidate/publish --commit "$RELEASE_COMMIT"
+      - name: Create or resume verified release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_flags=(--verify-tag --generate-notes --draft)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" "${release_flags[@]}"
+          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+          if release_json="$(gh api "$release_api" 2>/dev/null)"; then
+            test "$(jq -r .tag_name <<<"$release_json")" = "$GITHUB_REF_NAME"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --target "$RELEASE_COMMIT" "${release_flags[@]}"
+            release_json="$(gh api "$release_api")"
           fi
-          gh release upload "$GITHUB_REF_NAME" --clobber \
-            dist/release/factory/tiny_touch_factory_full.bin \
-            dist/release/factory/bootloader.bin \
-            dist/release/factory/partition-table.bin \
-            dist/release/factory/ota_data_initial.bin \
-            dist/release/tiny_touch_unified.bin \
-            dist/release/ota_slot1.bin \
-            dist/release/recovery/recovery_bootloader.bin \
-            dist/release/recovery/tiny_touch_recovery.bin \
-            dist/release/recovery/tiny_touch_recovery_full.bin \
-            dist/release/tinytouch-macos-arm64.tar.gz \
-            dist/release/tinytouch-macos-x86_64.tar.gz \
-            dist/release/tinytouch-firmware.tar.gz \
-            dist/release/tinytouch-web-flashers.tar.gz
-          gh release upload "$GITHUB_REF_NAME" --clobber \
-            dist/release/checksums.txt \
-            dist/release/release-manifest.json
-
-      - name: Dispatch site deployment
+          release_state="$(jq -r 'if .draft then "draft" else "published" end' <<<"$release_json")"
+          gh release view "$GITHUB_REF_NAME" --json assets > dist/release-assets.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("dist/candidate/publish")
+          remote = {
+              asset["name"]: asset.get("digest")
+              for asset in json.loads(Path("dist/release-assets.json").read_text())["assets"]
+          }
+          expected = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                      for path in root.iterdir() if path.is_file()}
+          unexpected = sorted(remote.keys() - expected.keys())
+          mismatched = sorted(name for name in remote.keys() & expected.keys()
+                              if remote[name] != expected[name])
+          if unexpected or mismatched:
+              raise SystemExit(
+                  f"existing release assets cannot be resumed: unexpected={unexpected}, "
+                  f"digest_mismatches={mismatched}"
+              )
+          Path("dist/missing-assets.txt").write_text(
+              "".join(f"{name}\n" for name in sorted(expected.keys() - remote.keys()))
+          )
+          PY
+          if [[ "$release_state" = published && -s dist/missing-assets.txt ]]; then
+            echo "Published release is missing assets; immutable release cannot be repaired in place." >&2
+            exit 1
+          fi
+          if [[ "$release_state" = draft ]]; then
+            while IFS= read -r name; do
+              [[ -z "$name" ]] || gh release upload "$GITHUB_REF_NAME" "dist/candidate/publish/$name"
+            done < dist/missing-assets.txt
+            gh release view "$GITHUB_REF_NAME" --json assets > dist/release-assets.json
+            python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("dist/candidate/publish")
+          remote = {asset["name"]: asset.get("digest") for asset in
+                    json.loads(Path("dist/release-assets.json").read_text())["assets"]}
+          expected = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                      for path in root.iterdir() if path.is_file()}
+          if remote != expected:
+              raise SystemExit(f"draft asset verification failed: expected={expected}, remote={remote}")
+          PY
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+            release_state=published
+          fi
+          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+      - name: Activate verified CLI update channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          channel_api="repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json"
+          current="$(gh api "$channel_api?ref=main")"
+          channel_sha="$(jq -r .sha <<<"$current")"
+          jq -r .content <<<"$current" | base64 --decode > dist/current-channel.json
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          current = json.loads(Path("dist/current-channel.json").read_text())
+          value = current.get("manifest")
+          pattern = r"https://github\.com/ZimengXiong/TinyTouch/releases/download/v[^/]+/release-manifest\.json"
+          if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+              raise SystemExit("current update channel is malformed; refusing to replace it")
+          desired = {
+              "manifest": (
+                  "https://github.com/ZimengXiong/TinyTouch/releases/download/"
+                  f"{os.environ['GITHUB_REF_NAME']}/release-manifest.json"
+              )
+          }
+          Path("dist/next-channel.json").write_text(json.dumps(desired, indent=2) + "\n")
+          PY
+          if cmp -s dist/current-channel.json dist/next-channel.json; then
+            echo "Update channel already points to $GITHUB_REF_NAME."
+          else
+            content="$(base64 < dist/next-channel.json | tr -d '\n')"
+            gh api "$channel_api" --method PUT \
+              -f message="Activate tinyTouch ${GITHUB_REF_NAME#v}" \
+              -f content="$content" \
+              -f sha="$channel_sha" \
+              -f branch=main >/dev/null
+          fi
+      - name: Dispatch flasher-only site deployment
         env:
           GH_TOKEN: ${{ secrets.TINYTOUCH_SITE_DISPATCH_TOKEN }}
         run: |
           test -n "${GH_TOKEN:-}"
+          web_sha="$(awk '$2 == "tinytouch-web-flashers.tar.gz" {print $1}' \
+            dist/candidate/publish/checksums.txt)"
+          test -n "$web_sha"
+          # The receiver must verify web_sha256 before extraction and deduplicate
+          # repository_dispatch events by this deterministic idempotency key.
+          dispatch_key="${GITHUB_REF_NAME}:${web_sha}"
           gh api repos/ZimengXiong/alpacaengineer/dispatches \
             --method POST \
             -f event_type=tinytouch-release \
-            -f "client_payload[tag]=$GITHUB_REF_NAME"
+            -f "client_payload[tag]=$GITHUB_REF_NAME" \
+            -f "client_payload[web_sha256]=$web_sha" \
+            -f "client_payload[idempotency_key]=$dispatch_key"
+      - name: Record promotion benchmark
+        if: always()
+        run: |
+          elapsed="$(($(date +%s) - PROMOTION_STARTED))"
+          {
+            echo "### Release promotion timing"
+            echo
+            echo "Promotion runner time: ${elapsed}s"
+            echo "Candidate wait time: ${CANDIDATE_WAIT_SECONDS:-not reached}s"
+            echo "Baseline: seven rebuild releases had a 233s median; their publish-only jobs had an 11s median."
+          } >> "$GITHUB_STEP_SUMMARY"

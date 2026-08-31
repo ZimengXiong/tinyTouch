@@ -35,11 +35,13 @@
 
 static char command[5632];
 static size_t command_len;
+static bool command_overflow;
 static SemaphoreHandle_t cdc_write_mutex;
 static int64_t config_authorized_until;
 static int64_t update_authorized_until;
 static int64_t update_last_activity;
 static char update_token[33];
+static const char *update_last_reason = "none";
 
 typedef struct {
   uint8_t data[2400];
@@ -92,12 +94,27 @@ static void ota_diagnostics(char *output, size_t output_size) {
       ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
   char slot0_summary[96];
   char slot1_summary[96];
+  esp_ota_img_states_t running_state;
+  const char *running_state_name = "missing";
+  if (running && esp_ota_get_state_partition(running, &running_state) == ESP_OK) {
+    running_state_name = ota_state_name(running_state);
+  }
   ota_partition_summary(slot0, slot0_summary, sizeof(slot0_summary));
   ota_partition_summary(slot1, slot1_summary, sizeof(slot1_summary));
+  const char *session_state = "idle";
+  if (update_token[0]) {
+    session_state = firmware_update_active() ? "active" : "failed";
+  }
   snprintf(output, output_size,
-           "ota_running=%s ota_boot=%s ota_next=%s ota_slot0=%s ota_slot1=%s",
+           "ota_running=%s ota_boot=%s ota_next=%s ota_state=%s "
+           "ota_slot0=%s ota_slot1=%s rollback=enabled reset_reason=%d "
+           "update_session=%s update_next=%u update_expected=%u update_chunk=%u "
+           "update_last_reason=%s update_error=%s",
            partition_label(running), partition_label(boot), partition_label(next),
-           slot0_summary, slot1_summary);
+           running_state_name, slot0_summary, slot1_summary, (int)esp_reset_reason(),
+           session_state, (unsigned)firmware_update_written(),
+           (unsigned)firmware_update_expected(), (unsigned)FIRMWARE_UPDATE_CHUNK_MAX,
+           update_last_reason, firmware_update_last_error());
 }
 
 void config_console_send_line(const char *line) {
@@ -192,7 +209,7 @@ static bool append_firmware_chunk(char *arguments, size_t *next_offset) {
   *encoded++ = '\0';
   char *end = NULL;
   unsigned long offset = strtoul(offset_text, &end, 10);
-  static uint8_t decoded[4096];
+  static uint8_t decoded[FIRMWARE_UPDATE_CHUNK_MAX];
   size_t decoded_length = 0;
   bool ok = valid_update_token(arguments) && end && *end == '\0' &&
             mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
@@ -298,11 +315,11 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[640];
+  char line[896];
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
-    char ota_info[240];
+    char ota_info[480];
     ota_diagnostics(ota_info, sizeof(ota_info));
     int count = fingerprint_count();
     if (count < 0) {
@@ -497,17 +514,50 @@ static void handle_command(void) {
     if (!require_config_authorization()) return;
     send_line(commit_provisioning() ? "OK PROVISION_COMMIT" : "ERR PROVISION_COMMIT");
   } else if (strncmp(command, "UPDATE_BEGIN ", 13) == 0) {
+    if (update_token[0]) {
+      send_line("ERR UPDATE_SESSION");
+      return;
+    }
     if (esp_timer_get_time() >= update_authorized_until) {
       send_line("ERR UPDATE_LOCKED run=UPDATE_UNLOCK");
       return;
     }
-    update_authorized_until = 0;
-    send_line(begin_firmware_update(command + 13) ? "OK UPDATE_BEGIN next=0" : "ERR UPDATE_BEGIN");
+    bool ok = begin_firmware_update(command + 13);
+    if (ok) {
+      update_authorized_until = 0;
+      update_last_reason = "none";
+    } else {
+      update_last_reason = "begin_failed";
+    }
+    send_line(ok ? "OK UPDATE_BEGIN next=0" : "ERR UPDATE_BEGIN");
   } else if (strncmp(command, "UPDATE_CHUNK ", 13) == 0) {
+    char *arguments = command + 13;
+    if (!update_token[0] || strncmp(arguments, update_token, 32) != 0 || arguments[32] != ' ') {
+      send_line("ERR UPDATE_SESSION");
+      return;
+    }
     size_t next_offset = 0;
-    bool ok = append_firmware_chunk(command + 13, &next_offset);
-    snprintf(line, sizeof(line), ok ? "OK UPDATE_CHUNK next=%u" : "ERR UPDATE_CHUNK next=%u",
-             (unsigned)(ok ? next_offset : firmware_update_written()));
+    bool ok = append_firmware_chunk(arguments, &next_offset);
+    update_last_reason = ok ? "none" :
+                         (firmware_update_active() ? "chunk_rejected" : "write_failed");
+    snprintf(line, sizeof(line),
+             ok ? "OK UPDATE_CHUNK next=%u" : "ERR UPDATE_CHUNK next=%u active=%u error=%s",
+             (unsigned)(ok ? next_offset : firmware_update_written()),
+             firmware_update_active() ? 1U : 0U, firmware_update_last_error());
+    send_line(line);
+  } else if (strncmp(command, "UPDATE_STATUS ", 14) == 0) {
+    if (!valid_update_token(command + 14)) {
+      send_line("ERR UPDATE_SESSION");
+      return;
+    }
+    update_last_activity = esp_timer_get_time();
+    if (firmware_update_active()) {
+      snprintf(line, sizeof(line), "OK UPDATE_STATUS next=%u",
+               (unsigned)firmware_update_written());
+    } else {
+      snprintf(line, sizeof(line), "ERR UPDATE_STATUS active=0 error=%s",
+               firmware_update_last_error());
+    }
     send_line(line);
   } else if (strncmp(command, "UPDATE_ABORT ", 13) == 0) {
     if (!valid_update_token(command + 13)) {
@@ -515,6 +565,7 @@ static void handle_command(void) {
       return;
     }
     firmware_update_abort();
+    update_last_reason = "host_abort";
     clear_update_session();
     send_line("OK UPDATE_ABORT");
   } else if (strncmp(command, "UPDATE_COMMIT ", 14) == 0) {
@@ -523,6 +574,8 @@ static void handle_command(void) {
       return;
     }
     bool ok = firmware_update_commit();
+    if (!ok) firmware_update_abort();
+    update_last_reason = ok ? "none" : "commit_failed";
     clear_update_session();
     send_line(ok ? "OK UPDATE_COMMIT" : "ERR UPDATE_COMMIT");
     if (ok) {
@@ -531,7 +584,9 @@ static void handle_command(void) {
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
-    send_line(build_matches ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
+    bool sensor_ok = fingerprint_count() >= 0;
+    bool ok = build_matches && sensor_ok && firmware_update_confirm_running();
+    send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
     send_line(factory_reset() ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
@@ -560,7 +615,10 @@ static void console_task(void *arg) {
   char buffer[128];
   while (true) {
     if (update_token[0] && esp_timer_get_time() - update_last_activity > 30LL * 1000000LL) {
-      firmware_update_abort();
+      if (firmware_update_active()) {
+        firmware_update_abort();
+        update_last_reason = "timeout";
+      }
       clear_update_session();
     }
     bool had_activity = false;
@@ -572,8 +630,12 @@ static void console_task(void *arg) {
         char c = buffer[i];
         if (c == '\r') continue;
         if (c == '\n') {
-          command[command_len] = '\0';
-          if (command_len) {
+          if (command_overflow) {
+            send_line("ERR LINE_TOO_LONG");
+          } else {
+            command[command_len] = '\0';
+          }
+          if (!command_overflow && command_len) {
             if (strncmp(command, "PW ", 3) == 0 || strncmp(command, "PW2 ", 4) == 0) {
               touch_pin_hid_submit_response(command);
             } else {
@@ -581,8 +643,11 @@ static void console_task(void *arg) {
             }
           }
           command_len = 0;
+          command_overflow = false;
         } else if (command_len + 1 < sizeof(command)) {
           command[command_len++] = c;
+        } else {
+          command_overflow = true;
         }
       }
     }
@@ -594,6 +659,7 @@ static void console_task(void *arg) {
 
 void config_console_start(void) {
   command_len = 0;
+  command_overflow = false;
   config_authorized_until = 0;
   update_authorized_until = 0;
   clear_update_session();

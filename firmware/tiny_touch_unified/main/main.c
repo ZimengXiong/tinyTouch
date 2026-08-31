@@ -68,12 +68,24 @@ static void run_recovery_once(void) {
 
 void app_main(void) {
   esp_err_t nvs_result = nvs_flash_init();
+#ifndef TINYTOUCH_RECOVERY_BUILD
   if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES ||
       nvs_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    nvs_result = nvs_flash_init();
+    // This device stores authentication keys and host credentials in NVS.
+    // Never turn an initialization/schema error into silent credential loss.
+    // A deliberate recovery/factory-reset flow may erase NVS after explicit
+    // authorization; normal boot must fail closed and preserve the bytes.
+    ESP_LOGE("tiny_touch", "NVS requires recovery (0x%x); preserving credentials", nvs_result);
   }
   ESP_ERROR_CHECK(nvs_result);
+#else
+  // Recovery deliberately postpones any NVS erase until after the external
+  // fingerprint sensor has been erased successfully. An unreadable NVS must
+  // not force a host-side erase before that ordering guarantee can run.
+  if (nvs_result != ESP_OK) {
+    ESP_LOGW("tiny_touch", "RECOVERY: NVS unavailable before sensor erase (0x%x)", nvs_result);
+  }
+#endif
   fingerprint_init();
 #ifdef TINYTOUCH_RECOVERY_BUILD
   run_recovery_once();
@@ -83,15 +95,6 @@ void app_main(void) {
   usb_ccid_start(piv_handle_apdu);
   config_console_start();
   touch_pin_hid_start();
-
-  const esp_partition_t *running = esp_ota_get_running_partition();
-  esp_ota_img_states_t ota_state;
-  if (running && esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-    if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-      ESP_LOGI("tiny_touch", "Running partition %s in PENDING_VERIFY; health check OK, confirming valid", running->label);
-      esp_ota_mark_app_valid_cancel_rollback();
-    }
-  }
 
   // tinyusb_driver_install owns the only tud_task() service loop. The
   // configuration console and fingerprint/HID workers run in their own tasks.

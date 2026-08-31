@@ -36,11 +36,6 @@ def main() -> None:
             "format": "tar.gz",
         }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    lines = []
-    for path in sorted(release.rglob("*")):
-        if path.is_file() and path.name != "checksums.txt":
-            lines.append(f"{digest(path)}  {path.relative_to(release)}")
-    (release / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
 #include "esp_mac.h"
 #include "fingerprint.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/pk.h"
@@ -55,6 +56,7 @@ static const uint8_t KEY_HISTORY_OBJECT[] = {
 static mbedtls_pk_context auth_key;
 static mbedtls_pk_context key_mgmt_key;
 static bool piv_keys_initialized;
+static SemaphoreHandle_t piv_mutex;
 static uint8_t cert_9a_der[1536];
 static size_t cert_9a_der_len;
 static uint8_t cert_9d_der[1536];
@@ -114,8 +116,30 @@ static bool load_nvs_string(nvs_handle_t handle, const char *name, char *out, si
   return true;
 }
 
+static void reset_key_contexts(void) {
+  if (piv_keys_initialized) {
+    mbedtls_pk_free(&auth_key);
+    mbedtls_pk_free(&key_mgmt_key);
+  }
+  mbedtls_pk_init(&auth_key);
+  mbedtls_pk_init(&key_mgmt_key);
+  piv_keys_initialized = true;
+}
+
+static void clear_provisioned_identity(void) {
+  reset_key_contexts();
+  memset(cert_9a_der, 0, sizeof(cert_9a_der));
+  memset(cert_9d_der, 0, sizeof(cert_9d_der));
+  cert_9a_der_len = 0;
+  cert_9d_der_len = 0;
+  using_provisioned_keys = false;
+}
+
 bool piv_uses_provisioned_keys(void) {
-  return using_provisioned_keys;
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
+  bool result = using_provisioned_keys;
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
+  return result;
 }
 
 static bool append_sw(uint8_t *response, size_t *response_len, size_t response_cap,
@@ -216,13 +240,13 @@ static bool read_lc_data(const uint8_t *apdu, size_t apdu_len,
   if (apdu[4] == 0x00) {
     if (apdu_len < 7) return false;
     size_t lc = ((size_t)apdu[5] << 8) | apdu[6];
-    if (apdu_len < 7 + lc) return false;
+    if (lc > apdu_len - 7) return false;
     *data = apdu + 7;
     *data_len = lc;
     return true;
   }
   uint8_t lc = apdu[4];
-  if (apdu_len < 5 + lc) return false;
+  if ((size_t)lc > apdu_len - 5) return false;
   *data = apdu + 5;
   *data_len = lc;
   return true;
@@ -236,7 +260,7 @@ static bool tlv_read_len(const uint8_t *buf, size_t buf_len, size_t *off, size_t
     return true;
   }
   size_t n = b & 0x7f;
-  if (n == 0 || n > 2 || *off + n > buf_len) return false;
+  if (n == 0 || n > 2 || *off > buf_len || n > buf_len - *off) return false;
   size_t v = 0;
   for (size_t i = 0; i < n; i++) v = (v << 8) | buf[(*off)++];
   *len = v;
@@ -249,7 +273,7 @@ static bool tlv_find_one(const uint8_t *buf, size_t buf_len, uint8_t tag,
   while (off < buf_len) {
     uint8_t t = buf[off++];
     size_t len = 0;
-    if (!tlv_read_len(buf, buf_len, &off, &len) || off + len > buf_len) return false;
+    if (!tlv_read_len(buf, buf_len, &off, &len) || off > buf_len || len > buf_len - off) return false;
     if (t == tag) {
       *value = buf + off;
       *value_len = len;
@@ -311,7 +335,9 @@ static bool handle_get_data(const uint8_t *apdu, size_t apdu_len, uint8_t *respo
 
   if (data_len == 5 && data[0] == 0x5c && data[1] == 0x03 &&
       data[2] == 0x5f && data[3] == 0xc1 && data[4] == 0x05) {
-    if (cert_9a_der_len == 0) return append_sw(response, response_len, response_cap, 0x6a88);
+    if (!using_provisioned_keys || cert_9a_der_len == 0) {
+      return append_sw(response, response_len, response_cap, 0x6a88);
+    }
     uint8_t object[1700];
     size_t off = 0;
     size_t inner_len = 1 + encoded_len_size(cert_9a_der_len) + cert_9a_der_len + 3 + 2;
@@ -331,7 +357,9 @@ static bool handle_get_data(const uint8_t *apdu, size_t apdu_len, uint8_t *respo
 
   if (data_len == 5 && data[0] == 0x5c && data[1] == 0x03 &&
       data[2] == 0x5f && data[3] == 0xc1 && data[4] == 0x0b) {
-    if (cert_9d_der_len == 0) return append_sw(response, response_len, response_cap, 0x6a88);
+    if (!using_provisioned_keys || cert_9d_der_len == 0) {
+      return append_sw(response, response_len, response_cap, 0x6a88);
+    }
     uint8_t object[1700];
     size_t off = 0;
     size_t inner_len = 1 + encoded_len_size(cert_9d_der_len) + cert_9d_der_len + 3 + 2;
@@ -360,6 +388,10 @@ static bool handle_get_data(const uint8_t *apdu, size_t apdu_len, uint8_t *respo
 
 static bool handle_verify(const uint8_t *apdu, size_t apdu_len,
                           uint8_t *response, size_t *response_len, size_t response_cap) {
+  if (!using_provisioned_keys) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6985);
+  }
   const uint8_t *data = NULL;
   size_t data_len = 0;
   if (apdu[2] != 0x00 || apdu[3] != 0x80 ||
@@ -373,23 +405,16 @@ static bool handle_verify(const uint8_t *apdu, size_t apdu_len,
   return append_sw(response, response_len, response_cap, 0x9000);
 }
 
-void piv_note_user_presence(void) {
-  user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
-}
-
-void piv_set_pairing_mode(bool enabled) {
-  pairing_mode_until = enabled ? xTaskGetTickCount() + PAIRING_MODE_WINDOW_TICKS : 0;
-}
-
-bool piv_pairing_mode_active(void) {
-  return deadline_active(pairing_mode_until, PAIRING_MODE_WINDOW_TICKS);
-}
-
 static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
                                         uint8_t *response, size_t *response_len,
                                         size_t response_cap) {
   if (apdu[2] != 0x07 || !(apdu[3] == 0x9a || apdu[3] == 0x9d)) {
     return append_sw(response, response_len, response_cap, 0x6a86);
+  }
+  if (!using_provisioned_keys) {
+    pin_verified_until = 0;
+    user_presence_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6985);
   }
   if (!deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)) {
     pin_verified_until = 0;
@@ -465,6 +490,8 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
 }
 
 void piv_init(void) {
+  if (!piv_mutex) piv_mutex = xSemaphoreCreateMutex();
+  configASSERT(piv_mutex);
   uint8_t mac[6];
   uint8_t device_hash[32];
   if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
@@ -480,16 +507,17 @@ void piv_init(void) {
   const char *key_9a_pem = NULL;
   const char *cert_9d_pem = NULL;
   const char *key_9d_pem = NULL;
-  using_provisioned_keys = false;
+  clear_provisioned_identity();
+  bool have_provisioned_material = false;
   nvs_handle_t nvs_handle;
   if (nvs_open("piv_keys", NVS_READONLY, &nvs_handle) == ESP_OK) {
-    using_provisioned_keys =
+    have_provisioned_material =
       load_nvs_string(nvs_handle, "cert9a", stored_cert_9a, sizeof(stored_cert_9a)) &&
       load_nvs_string(nvs_handle, "key9a", stored_key_9a, sizeof(stored_key_9a)) &&
       load_nvs_string(nvs_handle, "cert9d", stored_cert_9d, sizeof(stored_cert_9d)) &&
       load_nvs_string(nvs_handle, "key9d", stored_key_9d, sizeof(stored_key_9d));
     nvs_close(nvs_handle);
-    if (using_provisioned_keys) {
+    if (have_provisioned_material) {
       cert_9a_pem = stored_cert_9a;
       key_9a_pem = stored_key_9a;
       cert_9d_pem = stored_cert_9d;
@@ -497,16 +525,7 @@ void piv_init(void) {
     }
   }
 
-  if (piv_keys_initialized) {
-    mbedtls_pk_free(&auth_key);
-    mbedtls_pk_free(&key_mgmt_key);
-  }
-  mbedtls_pk_init(&auth_key);
-  mbedtls_pk_init(&key_mgmt_key);
-  piv_keys_initialized = true;
-  if (!using_provisioned_keys) {
-    cert_9a_der_len = 0;
-    cert_9d_der_len = 0;
+  if (!have_provisioned_material) {
     ESP_LOGI(TAG, "PIV identity is unconfigured");
     return;
   }
@@ -514,7 +533,8 @@ void piv_init(void) {
                                 (const unsigned char *)key_9a_pem,
                                 strlen(key_9a_pem) + 1,
                                 NULL, 0, NULL, NULL);
-  if (rc != 0) {
+  bool auth_ok = rc == 0 && mbedtls_pk_get_type(&auth_key) == MBEDTLS_PK_RSA;
+  if (!auth_ok) {
     ESP_LOGW(TAG, "provisioned auth private key could not be loaded");
   }
 
@@ -522,33 +542,65 @@ void piv_init(void) {
                             (const unsigned char *)key_9d_pem,
                             strlen(key_9d_pem) + 1,
                             NULL, 0, NULL, NULL);
-  if (rc != 0) {
+  bool key_mgmt_ok = rc == 0 && mbedtls_pk_get_type(&key_mgmt_key) == MBEDTLS_PK_RSA;
+  if (!key_mgmt_ok) {
     ESP_LOGW(TAG, "provisioned key-management private key could not be loaded");
   }
 
   decode_pem_cert(cert_9a_pem, cert_9a_der, sizeof(cert_9a_der), &cert_9a_der_len);
   decode_pem_cert(cert_9d_pem, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
+  using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_der_len > 0 && cert_9d_der_len > 0;
+  if (!using_provisioned_keys) {
+    ESP_LOGW(TAG, "provisioned PIV material is incomplete or unusable");
+    // Credential readiness is aggregate. Never retain a usable key or
+    // certificate from one slot when any member of the provisioned identity
+    // failed validation.
+    clear_provisioned_identity();
+  }
 }
 
 void piv_reload_keys(void) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   cert_9a_der_len = 0;
   cert_9d_der_len = 0;
   pending_response_len = 0;
   pending_response_off = 0;
   piv_init();
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 
 void piv_reset_transport_state(void) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   pending_response_len = 0;
   pending_response_off = 0;
   chained_apdu_data_len = 0;
   pin_verified_until = 0;
   user_presence_until = 0;
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 
-bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
-                     uint8_t *response, size_t *response_len,
-                     size_t response_cap) {
+void piv_note_user_presence(void) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
+  user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
+}
+
+void piv_set_pairing_mode(bool enabled) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
+  pairing_mode_until = enabled ? xTaskGetTickCount() + PAIRING_MODE_WINDOW_TICKS : 0;
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
+}
+
+bool piv_pairing_mode_active(void) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
+  bool active = deadline_active(pairing_mode_until, PAIRING_MODE_WINDOW_TICKS);
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
+  return active;
+}
+
+static bool piv_handle_apdu_locked(const uint8_t *apdu, size_t apdu_len,
+                                   uint8_t *response, size_t *response_len,
+                                   size_t response_cap) {
   *response_len = 0;
   if (apdu_len < 4) {
     return append_sw(response, response_len, response_cap, 0x6700);
@@ -560,16 +612,21 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
   if ((cla & 0x10) && ins == 0x87) {
     const uint8_t *data = NULL;
     size_t data_len = 0;
-    if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
-        data_len > sizeof(chained_apdu_data)) {
+    bool same_chain = chained_apdu_data_len == 0 ||
+                      (ins == chained_ins && apdu[2] == chained_p1 && apdu[3] == chained_p2);
+    if (!same_chain || !read_lc_data(apdu, apdu_len, &data, &data_len) ||
+        chained_apdu_data_len > sizeof(chained_apdu_data) ||
+        data_len > sizeof(chained_apdu_data) - chained_apdu_data_len) {
       chained_apdu_data_len = 0;
       return append_sw(response, response_len, response_cap, 0x6700);
     }
-    memcpy(chained_apdu_data, data, data_len);
-    chained_apdu_data_len = data_len;
-    chained_ins = ins;
-    chained_p1 = apdu[2];
-    chained_p2 = apdu[3];
+    if (chained_apdu_data_len == 0) {
+      chained_ins = ins;
+      chained_p1 = apdu[2];
+      chained_p2 = apdu[3];
+    }
+    memcpy(chained_apdu_data + chained_apdu_data_len, data, data_len);
+    chained_apdu_data_len += data_len;
     return append_sw(response, response_len, response_cap, 0x9000);
   }
 
@@ -578,7 +635,8 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
     const uint8_t *data = NULL;
     size_t data_len = 0;
     if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
-        chained_apdu_data_len + data_len > sizeof(chained_apdu_data)) {
+        chained_apdu_data_len > sizeof(chained_apdu_data) ||
+        data_len > sizeof(chained_apdu_data) - chained_apdu_data_len) {
       chained_apdu_data_len = 0;
       return append_sw(response, response_len, response_cap, 0x6700);
     }
@@ -614,4 +672,13 @@ bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
     default:
       return append_sw(response, response_len, response_cap, 0x6d00);
   }
+}
+
+bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
+                     uint8_t *response, size_t *response_len,
+                     size_t response_cap) {
+  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
+  bool ok = piv_handle_apdu_locked(apdu, apdu_len, response, response_len, response_cap);
+  if (piv_mutex) xSemaphoreGive(piv_mutex);
+  return ok;
 }
