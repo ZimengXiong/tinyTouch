@@ -17,11 +17,6 @@ Check the device:
 tinytouch status
 ```
 
-| Mode | Use |
-|---|---|
-| PIV | macOS login and `sudo` |
-| HID | Password fields that do not accept PIV |
-
 PIV presents a USB smart card. HID presents a USB keyboard and types a Keychain password after a fingerprint match.
 
 Change modes without reflashing:
