@@ -17,9 +17,4 @@ The UART pair is crossed: sensor TX goes to board RX. Sensor RX goes to board TX
 
 Check continuity. Confirm that 3V3 and GND are not shorted before connecting USB.
 
-## Case files
-
-- <a href="/downloads/tinytouch-case-top.stl">Case top</a>
-- <a href="/downloads/tinytouch-case-bottom.stl">Case bottom</a>
-
 Next: [Flash factory firmware](/flash).
