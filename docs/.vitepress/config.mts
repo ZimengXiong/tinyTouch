@@ -33,8 +33,12 @@ export default defineConfig({
       {
         text: 'Guide',
         items: [
-          { text: 'Customer guide', link: '/customer/' },
+          { text: 'Overview', link: '/customer/' },
+          { text: 'Build', link: '/customer/build' },
           { text: 'Flash', link: '/flash' },
+          { text: 'Setup', link: '/customer/setup' },
+          { text: 'Use', link: '/customer/use' },
+          { text: 'Recovery', link: '/customer/recovery' },
         ],
       },
       {

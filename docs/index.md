@@ -13,5 +13,5 @@ hero:
       link: /customer/
     - theme: alt
       text: I’m building one
-      link: /customer/#build-a-device
+      link: /customer/build
 ---
