@@ -2474,6 +2474,8 @@ def ota_commit_failure_detail(status: dict[str, str], expected_version: object) 
     expected_prefix = f"{target}:{expected_version}:"
     if (
         status.get("reset_reason") == "4"
+        and status.get("update_last_reason") == "none"
+        and status.get("update_error") == "none"
         and status.get("ota_boot") == status.get("ota_running")
         and target_summary.startswith(expected_prefix)
         and target_summary.endswith(":missing")

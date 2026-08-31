@@ -236,6 +236,8 @@ class UpdateRegressionTests(unittest.TestCase):
     def test_commit_panic_before_boot_selection_is_identified(self):
         status = {
             "reset_reason": "4",
+            "update_last_reason": "none",
+            "update_error": "none",
             "ota_running": "ota_0",
             "ota_boot": "ota_0",
             "ota_next": "ota_1",
@@ -246,6 +248,11 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("before it selected", detail)
 
         status["reset_reason"] = "3"
+        self.assertEqual(cli.ota_commit_failure_detail(status, "0.7.18-preprod"), "")
+
+        status["reset_reason"] = "4"
+        status["update_last_reason"] = "commit_failed"
+        status["update_error"] = "ota_end:-1"
         self.assertEqual(cli.ota_commit_failure_detail(status, "0.7.18-preprod"), "")
 
     def test_local_flash_uses_same_pending_confirmation_contract(self):
