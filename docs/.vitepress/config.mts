@@ -37,7 +37,6 @@ export default defineConfig({
           { text: 'Build', link: '/customer/build' },
           { text: 'Flash', link: '/flash' },
           { text: 'Setup', link: '/customer/setup' },
-          { text: 'Use', link: '/customer/use' },
           { text: 'Recovery', link: '/customer/recovery' },
         ],
       },
