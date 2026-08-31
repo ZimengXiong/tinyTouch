@@ -517,6 +517,7 @@ body:has(.VPHome) {
 }
 
 .VPHero .image-container {
+  align-items: center;
   height: auto;
   display: flex;
   justify-content: center;
@@ -525,6 +526,7 @@ body:has(.VPHome) {
 }
 
 .VPHero .image {
+  align-items: center;
   display: flex;
   flex: 0 1 380px;
   justify-content: center;
@@ -536,13 +538,15 @@ body:has(.VPHome) {
 }
 
 .VPHero .image-src {
+  aspect-ratio: auto;
   display: block;
   height: auto;
-  max-height: 380px;
-  max-width: 380px;
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
   position: static;
   transform: none;
-  width: 100%;
+  width: auto;
 }
 
 .VPHome .vp-doc.container {
