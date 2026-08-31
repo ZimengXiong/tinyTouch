@@ -19,10 +19,4 @@ PIV presents a USB smart card for macOS login and `sudo`.
 
 HID presents a USB keyboard and types a Keychain password after a fingerprint match.
 
-Check the device:
-
-```sh
-tinytouch status
-```
-
 If setup reports an existing fingerprint, use [Recovery](./recovery).
