@@ -254,7 +254,6 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
         expected = set(public) | {
             "release-manifest.json",
             "tinytouch-firmware.tar.gz",
-            "tinytouch-web-flashers.tar.gz",
             "checksums.txt",
         }
         actual = {path.name for path in root.iterdir() if path.is_file()}

@@ -74,7 +74,6 @@ def main() -> None:
     parser.add_argument("--recovery-build", type=Path, required=True)
     parser.add_argument("--cli", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "release")
-    parser.add_argument("--web-root", type=Path)
     parser.add_argument("--build-id")
     args = parser.parse_args()
 
@@ -184,18 +183,6 @@ def main() -> None:
     (output / "release-manifest.json").write_text(
         json.dumps(release, indent=2) + "\n", encoding="utf-8"
     )
-
-    if args.web_root:
-        for kind, site_name in (("factory", "flash"), ("recovery", "recovery")):
-            site = args.web_root / site_name
-            firmware = site / "firmware"
-            if firmware.exists():
-                shutil.rmtree(firmware)
-            firmware.mkdir(parents=True, exist_ok=True)
-            for path in (output / kind).iterdir():
-                target = site / "manifest.json" if path.name == "manifest.json" else firmware / path.name
-                shutil.copy2(path, target)
-
 
 if __name__ == "__main__":
     main()

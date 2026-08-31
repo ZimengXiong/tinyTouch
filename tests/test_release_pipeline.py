@@ -122,8 +122,7 @@ class ReleasePipelineTests(unittest.TestCase):
             subprocess.run(
                 [
                     "python3", str(ROOT / "packaging" / "finalize-release.py"),
-                    str(release), "--web-source", str(ROOT / "web"),
-                    "--output", str(output), "--commit", self.commit,
+                    str(release), "--output", str(output), "--commit", self.commit,
                 ],
                 check=True,
             )
@@ -131,11 +130,29 @@ class ReleasePipelineTests(unittest.TestCase):
             integrity.validate_checksums(output)
             self.assertTrue((output / "ota_data_initial.bin").is_file())
             self.assertFalse((output / "ota_slot1.bin").exists())
-            with tarfile.open(output / "tinytouch-web-flashers.tar.gz", "r:gz") as archive:
-                names = {member.name for member in archive.getmembers()}
-            self.assertTrue(any(name.startswith("flash/") for name in names))
-            self.assertTrue(any(name.startswith("recovery/") for name in names))
-            self.assertFalse(any(name.startswith("docs/") for name in names))
+            self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
+
+            public = root / "public"
+            public.mkdir()
+            subprocess.run(
+                [
+                    "python3", str(ROOT / "packaging" / "sync-docs-release.py"),
+                    str(output), str(public), "--commit", self.commit,
+                ],
+                check=True,
+            )
+            release_manifest = json.loads((output / "release-manifest.json").read_text())
+            self.assertEqual(
+                json.loads((public / "flash" / "factory" / "manifest.json").read_text()),
+                release_manifest["firmware"]["factory"],
+            )
+            self.assertEqual(
+                json.loads((public / "release.json").read_text()), release_manifest
+            )
+            self.assertTrue(
+                (public / "flash" / "recovery" / "firmware" / "tiny_touch_recovery.bin").is_file()
+            )
+            self.assertTrue((public / "cli" / "tinytouch-macos-arm64.tar.gz").is_file())
             (output / "unexpected.bin").write_bytes(b"unexpected")
             with self.assertRaisesRegex(integrity.IntegrityError, "published asset set mismatch"):
                 integrity.validate_release(output, self.commit, flat=True)
