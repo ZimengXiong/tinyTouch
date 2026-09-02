@@ -1,6 +1,6 @@
 {
-  "version": "0.8.2",
-  "build": "1ddab3dfbec8",
+  "version": "0.8.3",
+  "build": "96362e189970",
   "protocol": 6,
   "secureVersion": 0,
   "boards": [
@@ -9,7 +9,7 @@
   ],
   "firmware": {
     "factory": {
-      "version": "0.8.2",
+      "version": "0.8.3",
       "protocol": 6,
       "secureVersion": 0,
       "flashSize": "4MB",
@@ -21,7 +21,7 @@
           "file": "bootloader.bin",
           "address": 0,
           "size": 21488,
-          "sha256": "94e51012e446358e95bbbe9ffc07129208ad6b78f5e9c382d9b54626be849302"
+          "sha256": "efc06f84bb379d8fb2c6f85102758b33cddeb0fcd6d69d5ee76e068cb18f51b5"
         },
         {
           "name": "Partition table",
@@ -35,7 +35,7 @@
           "file": "tiny_touch_unified.bin",
           "address": 65536,
           "size": 462848,
-          "sha256": "6a8502a5b1c72ce1458901957c7804ac006740347bbf85f961e57282e45b4e18"
+          "sha256": "cc7ec5c387c4ec288b6d4f0cb26a2d0ea8c339dcfba7b35d61d93c2d329df1ee"
         },
         {
           "name": "OTA state",
@@ -48,26 +48,26 @@
       "fullImage": {
         "file": "tiny_touch_factory_full.bin",
         "size": 2170880,
-        "sha256": "d9ee26d2b81db8500b4f3d570939a50fd688f313484074971d732052a8230f7c"
+        "sha256": "66be8d2fb2734e8133b57d952a5ee86b7289a88423ec32bdc28a2c10b75ee670"
       }
     }
   },
   "ota": {
     "file": "tiny_touch_unified.bin",
     "size": 462848,
-    "sha256": "6a8502a5b1c72ce1458901957c7804ac006740347bbf85f961e57282e45b4e18"
+    "sha256": "cc7ec5c387c4ec288b6d4f0cb26a2d0ea8c339dcfba7b35d61d93c2d329df1ee"
   },
   "cli": {
     "macos-arm64": {
       "file": "tinytouch-macos-arm64.tar.gz",
-      "size": 12303415,
-      "sha256": "87fd3ae79a97b03448b383c85c8a703247a5c33d7b3abed1973826721d341348",
+      "size": 12241727,
+      "sha256": "baf58f1754e499eeb23c42a750d9d04e72fea2a48a5ad3fe23ab0c28a1e04674",
       "format": "tar.gz"
     },
     "macos-x86_64": {
       "file": "tinytouch-macos-x86_64.tar.gz",
-      "size": 13149679,
-      "sha256": "d6d5d6f8ab0b122081240a13de47754cea7df2164c68b5a46934a2e5f0306fc0",
+      "size": 13085351,
+      "sha256": "496f1c2863033066d21febd197dea888950a5660861789492814b26c8ee22b05",
       "format": "tar.gz"
     }
   }
