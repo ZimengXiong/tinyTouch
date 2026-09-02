@@ -125,6 +125,21 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(payload["StandardOutPath"], str(cli.HELPER_LOG_PATH))
         self.assertNotIn("/tmp/", payload["StandardOutPath"])
 
+    def test_helper_suspension_keeps_launchd_loaded_and_recovers_after_cli_exit(self):
+        source = (ROOT / "tinytouch").read_text()
+        unload = source.split("def unload_helper", 1)[1].split(
+            "def remove_helper", 1
+        )[0]
+        load = source.split("def load_helper", 1)[1].split(
+            "def install_helper", 1
+        )[0]
+        helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        self.assertNotIn('"bootout"', unload)
+        self.assertIn("HELPER_SUSPEND_PATH", unload)
+        self.assertIn("HELPER_SUSPEND_PATH.unlink", load)
+        self.assertIn("def wait_for_cli_suspension", helper)
+        self.assertIn("os.kill(owner_pid, 0)", helper)
+
     def test_factory_reset_removes_all_local_device_credentials(self):
         args = SimpleNamespace(port=None, yes=True)
         deleted = []

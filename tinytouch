@@ -50,6 +50,7 @@ FIRMWARE_LOCK = SUPPORT_DIR / "firmware-update.lock"
 HELPER_LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
 HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
+HELPER_SUSPEND_PATH = SUPPORT_DIR / "helper-suspend"
 INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
@@ -1186,6 +1187,25 @@ def unload_helper() -> bool:
     was_running = helper_job_loaded() or helper_processes_running()
     if not was_running:
         return False
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = HELPER_SUSPEND_PATH.with_suffix(".tmp")
+    temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
+    temporary.replace(HELPER_SUSPEND_PATH)
+    for pattern in helper_process_patterns():
+        subprocess.run(
+            ["pkill", "-TERM", "-f", pattern],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    # Keep the launchd job registered. KeepAlive restarts the helper, which sees
+    # HELPER_SUSPEND_PATH and waits without opening the serial port. If this CLI
+    # is killed, the helper detects the stale owner PID and resumes by itself.
+    time.sleep(0.4)
+    return was_running
+
+
+def remove_helper() -> None:
     if LAUNCH_AGENT.exists():
         subprocess.run(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
@@ -1195,30 +1215,17 @@ def unload_helper() -> bool:
         )
     for pattern in helper_process_patterns():
         subprocess.run(
-            ["pkill", "-TERM", "-f", pattern],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ["pkill", "-TERM", "-f", pattern], check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-    deadline = time.monotonic() + 6
-    while helper_job_loaded() or helper_processes_running():
-        if time.monotonic() >= deadline:
-            raise ToolError(
-                "The HID background service did not release the serial port. Run "
-                "'tinytouch status' again; if this repeats, unplug and reconnect tinyTouch."
-            )
-        time.sleep(0.05)
-    time.sleep(0.15)
-    return was_running
-
-
-def remove_helper() -> None:
-    unload_helper()
+    HELPER_SUSPEND_PATH.unlink(missing_ok=True)
     LAUNCH_AGENT.unlink(missing_ok=True)
 
 
 def load_helper() -> None:
-    unload_helper()
+    HELPER_SUSPEND_PATH.unlink(missing_ok=True)
+    if helper_job_loaded():
+        return
     run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
 
 
