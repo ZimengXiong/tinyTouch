@@ -246,6 +246,17 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertLess(touch.index("usb_runtime_service_reconnect()"),
                         touch.index("fingerprint_service_health()"))
 
+    def test_sensor_health_state_is_synchronized_across_cores(self):
+        source = (MAIN / "fingerprint.c").read_text()
+
+        self.assertIn("sensor_state_lock = portMUX_INITIALIZER_UNLOCKED", source)
+        self.assertIn("static bool sensor_ready_snapshot(void)", source)
+        self.assertIn("static void set_sensor_ready(bool ready)", source)
+        getter = source.split("bool fingerprint_is_ready(void)", 1)[1].split(
+            "void fingerprint_service_health", 1
+        )[0]
+        self.assertIn("sensor_ready_snapshot()", getter)
+
     def test_piv_parser_rejects_ambiguous_or_replayable_authentication(self):
         source = (MAIN / "piv.c").read_text()
         verify = source.split("static bool handle_verify", 1)[1].split(

@@ -32,17 +32,37 @@ static SemaphoreHandle_t fp_mutex;
 static bool sensor_ready;
 static uint8_t consecutive_transport_failures;
 static TickType_t last_recovery_attempt;
+static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool sensor_ready_snapshot(void) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  bool ready = sensor_ready;
+  portEXIT_CRITICAL(&sensor_state_lock);
+  return ready;
+}
+
+static void set_sensor_ready(bool ready) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  sensor_ready = ready;
+  if (ready) consecutive_transport_failures = 0;
+  portEXIT_CRITICAL(&sensor_state_lock);
+}
 
 static void note_transport_success(void) {
-  sensor_ready = true;
-  consecutive_transport_failures = 0;
+  set_sensor_ready(true);
 }
 
 static void note_transport_failure(void) {
+  bool entered_degraded_state = false;
+  portENTER_CRITICAL(&sensor_state_lock);
   if (consecutive_transport_failures < UINT8_MAX) consecutive_transport_failures++;
   if (consecutive_transport_failures >= MAX_TRANSPORT_FAILURES) {
-    if (sensor_ready) ESP_LOGE(TAG, "fingerprint sensor entered degraded state");
+    entered_degraded_state = sensor_ready;
     sensor_ready = false;
+  }
+  portEXIT_CRITICAL(&sensor_state_lock);
+  if (entered_degraded_state) {
+    ESP_LOGE(TAG, "fingerprint sensor entered degraded state");
   }
 }
 
@@ -347,7 +367,7 @@ void fingerprint_init(void) {
     configASSERT(fp_take(2000));
     ok = fp_command(0x13, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
          confirm == 0x00;
-    sensor_ready = ok;
+    set_sensor_ready(ok);
     fp_give();
     if (!ok && attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
   }
@@ -356,11 +376,11 @@ void fingerprint_init(void) {
 }
 
 bool fingerprint_is_ready(void) {
-  return sensor_ready;
+  return sensor_ready_snapshot();
 }
 
 void fingerprint_service_health(void) {
-  if (sensor_ready) return;
+  if (sensor_ready_snapshot()) return;
   TickType_t now = xTaskGetTickCount();
   if ((TickType_t)(now - last_recovery_attempt) < pdMS_TO_TICKS(RECOVERY_INTERVAL_MS) ||
       !fp_take(0)) {
@@ -371,7 +391,7 @@ void fingerprint_service_health(void) {
   uint8_t confirm = 0xff;
   bool recovered = fp_command(0x13, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
                    confirm == 0x00;
-  sensor_ready = recovered;
+  set_sensor_ready(recovered);
   fp_give();
   if (recovered) {
     ESP_LOGI(TAG, "fingerprint sensor recovered");
