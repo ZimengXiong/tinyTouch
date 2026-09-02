@@ -696,6 +696,15 @@ def command_setup(args: argparse.Namespace) -> None:
         device = status(port)
         protocol6(device)
         sensor_ready(device)
+        if (
+            mode == "piv"
+            and device.get("mode") == "piv"
+            and device.get("piv") == "ready"
+            and device.get("fingerprints") == "4"
+            and paired_piv_identities()
+        ):
+            say("PIV is already set up on this Mac.")
+            return
         if device.get("mode") != mode:
             unlock(port)
             serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
@@ -1013,16 +1022,34 @@ def command_keys(args: argparse.Namespace) -> None:
     say("The PIV identity is active live. The device was not restarted.")
 
 
+def piv_identities() -> tuple[list[str], list[str]]:
+    """Return the paired and unpaired smart-card identity hashes."""
+    result = subprocess.run(
+        ["sc_auth", "identities"], check=False, text=True, capture_output=True
+    )
+    paired_text, separator, unpaired_text = result.stdout.partition("Unpaired identities:")
+    paired = re.findall(r"(?m)^([0-9A-Fa-f]{40})\b", paired_text)
+    unpaired = re.findall(r"(?m)^([0-9A-Fa-f]{40})\b", unpaired_text if separator else "")
+    return paired, unpaired
+
+
+def paired_piv_identities() -> list[str]:
+    return piv_identities()[0]
+
+
 def command_pair(_args: argparse.Namespace) -> None:
     require_macos()
     deadline = time.monotonic() + 10.0
+    paired: list[str] = []
     available: list[str] = []
     while time.monotonic() < deadline:
-        identities = subprocess.run(["sc_auth", "identities"], check=False, text=True, capture_output=True)
-        available = re.findall(r"\b([0-9A-Fa-f]{40})\b", identities.stdout)
-        if available:
+        paired, available = piv_identities()
+        if paired or available:
             break
         time.sleep(0.25)
+    if paired:
+        say("PIV is already paired with this Mac.")
+        return
     if not available:
         raise ToolError("macOS has not discovered a PIV identity. Select PIV mode, then try again.")
     if len(available) > 1:
