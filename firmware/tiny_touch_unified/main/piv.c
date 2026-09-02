@@ -194,27 +194,24 @@ static bool create_key_and_certificate(char *key_pem, size_t key_size,
 
 bool piv_create_identity(void) {
   if (piv_uses_provisioned_keys()) return false;
-  char cert_9a[sizeof(stored_cert_9a)] = {0};
-  char key_9a[sizeof(stored_key_9a)] = {0};
-  char cert_9d[sizeof(stored_cert_9d)] = {0};
-  char key_9d[sizeof(stored_key_9d)] = {0};
-  bool ok = create_key_and_certificate(key_9a, sizeof(key_9a), cert_9a, sizeof(cert_9a)) &&
-            create_key_and_certificate(key_9d, sizeof(key_9d), cert_9d, sizeof(cert_9d));
+  // RSA creation needs a worker task. Keep PEM output in static storage so
+  // the task does not overflow its stack with four multi-kilobyte buffers.
+  wipe_stored_identity();
+  bool ok = create_key_and_certificate(stored_key_9a, sizeof(stored_key_9a),
+                                       stored_cert_9a, sizeof(stored_cert_9a)) &&
+            create_key_and_certificate(stored_key_9d, sizeof(stored_key_9d),
+                                       stored_cert_9d, sizeof(stored_cert_9d));
   nvs_handle_t handle;
   if (ok && nvs_open("piv_keys", NVS_READWRITE, &handle) == ESP_OK) {
-    ok = write_identity_part(handle, "cert9a", cert_9a) &&
-         write_identity_part(handle, "key9a", key_9a) &&
-         write_identity_part(handle, "cert9d", cert_9d) &&
-         write_identity_part(handle, "key9d", key_9d) && nvs_commit(handle) == ESP_OK;
+    ok = write_identity_part(handle, "cert9a", stored_cert_9a) &&
+         write_identity_part(handle, "key9a", stored_key_9a) &&
+         write_identity_part(handle, "cert9d", stored_cert_9d) &&
+         write_identity_part(handle, "key9d", stored_key_9d) && nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
   } else {
     ok = false;
   }
   wipe_stored_identity();
-  secure_wipe(cert_9a, sizeof(cert_9a));
-  secure_wipe(key_9a, sizeof(key_9a));
-  secure_wipe(cert_9d, sizeof(cert_9d));
-  secure_wipe(key_9d, sizeof(key_9d));
   if (!ok) return false;
   piv_reload_keys();
   return piv_uses_provisioned_keys();
