@@ -39,4 +39,4 @@ bool device_config_submit_enter(void);
 bool device_config_set_submit_enter(bool value);
 uint16_t device_config_touch_cooldown_ms(void);
 bool device_config_set_touch_cooldown_ms(uint16_t value);
-void device_config_reload(void);
+bool device_config_factory_reset(void);
