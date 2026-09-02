@@ -376,47 +376,20 @@ bool fingerprint_recover(void) {
   return ok;
 }
 
-static bool fingerprint_authorize_locked(void) {
-  uint8_t confirm = 0xff;
+bool fingerprint_authorize_prompted(void (*prompt)(void)) {
+  // Use the same one-capture matcher as HID. The active flag keeps the
+  // background task out of this explicit console authorization.
+  prompted_authorization_active = true;
+  if (prompt) prompt();
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
+  bool ok = false;
   while (xTaskGetTickCount() < deadline) {
-    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 1000) && confirm == 0x00) {
-      return fingerprint_match_captured(false).slot != 0;
+    if (fingerprint_authorize_poll_match().slot != 0) {
+      ok = true;
+      break;
     }
     vTaskDelay(pdMS_TO_TICKS(120));
   }
-  return false;
-}
-
-static bool clear_stale_fingerprint_image(void) {
-  unsigned clear_samples = 0;
-  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
-  while (xTaskGetTickCount() < deadline) {
-    uint8_t confirm = 0xff;
-    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500) && confirm == 0x02) {
-      if (++clear_samples >= 3) return true;
-    } else {
-      clear_samples = 0;
-    }
-    vTaskDelay(pdMS_TO_TICKS(80));
-  }
-  return false;
-}
-
-bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  // Own the sensor before prompting. Otherwise the higher-priority background
-  // authentication task can capture the prompted touch first.
-  prompted_authorization_active = true;
-  bool ok = false;
-  if (!fp_take(FINGER_WAIT_MS + 1000)) goto done;
-  if (!clear_stale_fingerprint_image()) {
-    fp_give();
-    goto done;
-  }
-  if (prompt) prompt();
-  ok = fingerprint_authorize_locked();
-  fp_give();
-done:
   prompted_authorization_active = false;
   return ok;
 }
