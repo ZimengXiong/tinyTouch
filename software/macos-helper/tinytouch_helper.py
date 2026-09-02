@@ -35,6 +35,7 @@ HEARTBEAT_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
+KEYCHAIN_RETRY_SECONDS = 60.0
 
 # macOS virtual key codes for the physical keys used by TinyUSB's US ASCII map.
 _MAC_KEYCODES = {
@@ -548,7 +549,7 @@ def credentials_exist(device_id: str) -> bool:
 def run_manager() -> None:
     workers: dict[str, threading.Thread] = {}
     failed_attempts: dict[str, float] = {}
-    blocked_devices: set[str] = set()
+    keychain_retry_after: dict[str, float] = {}
     while True:
         now = time.monotonic()
         for port, worker in list(workers.items()):
@@ -562,22 +563,23 @@ def run_manager() -> None:
             if now - failed_attempts.get(port, 0.0) < 15.0:
                 continue
             device_id = port_identity(port)
-            if device_id in blocked_devices:
+            if now < keychain_retry_after.get(device_id, 0.0):
                 continue
             try:
                 if not credentials_exist(device_id):
                     continue
             except KeychainError as exc:
-                blocked_devices.add(device_id)
+                keychain_retry_after[device_id] = now + KEYCHAIN_RETRY_SECONDS
                 print(
-                    f"Keychain access for {device_id} is blocked; automatic retries are "
-                    f"disabled until the helper is restarted: {exc}",
+                    f"Keychain access for {device_id} failed; retrying in "
+                    f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
                     file=sys.stderr, flush=True,
                 )
                 continue
+            keychain_retry_after.pop(device_id, None)
             worker = threading.Thread(
                 target=managed_worker,
-                args=(port, device_id, blocked_devices),
+                args=(port, device_id, keychain_retry_after),
                 daemon=True,
                 name=f"tinyTouch-{device_id}",
             )
@@ -587,16 +589,17 @@ def run_manager() -> None:
 
 
 def managed_worker(
-    port: str, device_id: str | None = None, blocked_devices: set[str] | None = None
+    port: str, device_id: str | None = None,
+    keychain_retry_after: dict[str, float] | None = None,
 ) -> None:
     try:
         serve_port(port)
     except KeychainError as exc:
-        if blocked_devices is not None and device_id is not None:
-            blocked_devices.add(device_id)
+        if keychain_retry_after is not None and device_id is not None:
+            keychain_retry_after[device_id] = time.monotonic() + KEYCHAIN_RETRY_SECONDS
         print(
-            f"worker for {port} stopped because Keychain access failed; automatic retries "
-            f"are disabled until the helper is restarted: {exc}",
+            f"worker for {port} stopped because Keychain access failed; retrying in "
+            f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
             file=sys.stderr, flush=True,
         )
     except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
@@ -671,15 +674,12 @@ def main() -> None:
         except KeyboardInterrupt:
             raise
         except KeychainError as exc:
-            # launchd uses KeepAlive. Exiting here would immediately spawn a new
-            # helper and can turn one denied Keychain request into an endless
-            # authorization-dialog loop. Stay resident but inert instead.
             print(
-                f"Keychain access failed; helper is parked until it is restarted: {exc}",
+                f"Keychain access failed; retrying in {KEYCHAIN_RETRY_SECONDS:.0f} "
+                f"seconds: {exc}",
                 file=sys.stderr, flush=True,
             )
-            while True:
-                time.sleep(3600)
+            time.sleep(KEYCHAIN_RETRY_SECONDS)
         except Exception as exc:
             print(f"top-level restart after error: {exc!r}", file=sys.stderr, flush=True)
             time.sleep(1)

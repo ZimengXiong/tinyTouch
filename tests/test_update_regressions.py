@@ -511,15 +511,17 @@ class UpdateRegressionTests(unittest.TestCase):
                     with cli.firmware_transaction():
                         raise OSError("actual update failure")
 
-    def test_helper_keychain_denial_is_quarantined(self):
+    def test_helper_keychain_denial_recovers_without_setup(self):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         manager = helper.split("def run_manager", 1)[1].split("def run(port", 1)[0]
-        self.assertIn("blocked_devices", manager)
-        self.assertIn("automatic retries are", manager)
-        self.assertIn("disabled until the helper is restarted", manager)
+        self.assertIn("keychain_retry_after", manager)
+        self.assertIn("KEYCHAIN_RETRY_SECONDS", manager)
+        self.assertIn("retrying in", manager)
+        self.assertNotIn("blocked_devices", manager)
         top = helper.split("def main()", 1)[1]
         self.assertNotIn("except BaseException", top)
-        self.assertIn("helper is parked until it is restarted", top)
+        self.assertIn("time.sleep(KEYCHAIN_RETRY_SECONDS)", top)
+        self.assertNotIn("parked until it is restarted", top)
 
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
         source = (
@@ -544,8 +546,8 @@ class UpdateRegressionTests(unittest.TestCase):
 
     def test_fingerprint_packets_are_checksum_validated(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "fingerprint.c").read_text()
-        self.assertIn("expected_sum", source)
-        self.assertIn("received_sum", source)
+        self.assertIn("fp_response_checksum_valid", source)
+        self.assertIn("return received == expected", source)
         self.assertIn("checksum mismatch", source)
 
     def test_ccid_bounds_are_subtraction_based_and_in_transfer_is_serialized(self):
