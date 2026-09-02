@@ -47,6 +47,7 @@ SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
+STARTUP_STATUS_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
@@ -513,6 +514,10 @@ def open_serial(port: str) -> serial.Serial:
         ser.rts = False
     except (OSError, serial.SerialException):
         pass
+    # Discard boot diagnostics and any partial command from an earlier USB
+    # session. The helper only accepts this connection after a fresh PING/PONG.
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
     return ser
 
 
@@ -522,6 +527,27 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     if len(remainder) > MAX_SERIAL_LINE_BYTES:
         remainder = b""
     return lines, remainder
+
+
+def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> None:
+    """Run the probe that initializes HID after a USB reconnect."""
+    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+    ser.write(b"STATUS\n")
+    ser.flush()
+    deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        chunk = ser.read(256)
+        if not chunk:
+            continue
+        for raw in decoder.feed(chunk):
+            try:
+                line = raw.decode("ascii").strip()
+            except UnicodeDecodeError:
+                continue
+            if line.startswith("OK STATUS "):
+                return
+    diagnostic("worker.startup_status_failed", level="warning", device_id=device_id, port=port)
+    raise serial.SerialException(f"tinyTouch did not answer STATUS: {port}")
 
 
 def serve_port(
@@ -541,6 +567,7 @@ def serve_port(
     decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
         with open_serial(port) as ser:
+            require_startup_status(ser, device_id, port)
             diagnostic("worker.connected", device_id=device_id, port=port)
             while True:
                 if stop_event is not None and stop_event.is_set():
@@ -773,6 +800,17 @@ def run_manager() -> None:
                 level="warning",
                 device_id=device_id,
                 error_type=type(worker.error).__name__ if worker.error else "unexpected_exit",
+                keychain_operation=(
+                    worker.error.args[0].split()[1]
+                    if isinstance(worker.error, KeychainError) and worker.error.args
+                    else None
+                ),
+                keychain_status=(
+                    worker.error.status if isinstance(worker.error, KeychainError) else None
+                ),
+                keychain_status_name=(
+                    worker.error.status_name if isinstance(worker.error, KeychainError) else None
+                ),
                 retry_seconds=round(delay, 3),
             )
 
@@ -878,12 +916,12 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
+    set_background_mode()
     if args.self_test:
         if not args.device_id:
             raise SystemExit("--device-id is required for --self-test")
         self_test(args.device_id)
         return
-    set_background_mode()
     failures = 0
     backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     while True:

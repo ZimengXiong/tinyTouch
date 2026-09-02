@@ -5,17 +5,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 import getpass
 import hashlib
 import json
 import os
 import platform
 import plistlib
+import pty
 import re
+import select
 import secrets
 import ssl
 import subprocess
 import sys
+import threading
+import tty
 import time
 import urllib.request
 from pathlib import Path
@@ -37,9 +42,8 @@ LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
-RELEASE_CHANNEL_URL = "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
-SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", "https://tinytouch.alpacaengineer.ing").rstrip("/")
-FACTORY_FLASH_URL = f"{SITE_ORIGIN}/flash/"
+RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
+FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
 
@@ -51,6 +55,10 @@ from tinytouch_runtime import ForegroundLease, LeaseBusyError, LeaseProtocolErro
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
 _lease: ForegroundLease | None = None
+_sudo_session_ready = False
+_setup_password: bytearray | None = None
+_helper_suppressed = False
+_active_serial = None
 
 
 class ToolError(RuntimeError):
@@ -79,6 +87,46 @@ def run(command: list[str], **kwargs):
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
         raise ToolError(detail or f"Command failed: {command[0]}") from exc
+
+
+def authorize_macos() -> None:
+    """Authorize sudo through its native terminal prompt."""
+    global _sudo_session_ready
+    if _sudo_session_ready:
+        return
+    cached = subprocess.run(
+        ["sudo", "-n", "-v"], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if cached.returncode:
+        say("Authorize macOS in this terminal.")
+        validated = subprocess.run(["sudo", "-v"], check=False)
+        if validated.returncode:
+            raise ToolError("macOS authorization failed.")
+    _sudo_session_ready = True
+
+
+def prepare_hid_password() -> None:
+    """Capture the HID password and unlock Keychain without requiring sudo."""
+    global _setup_password
+    entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
+    if not entered:
+        raise ToolError("A Mac password is required for HID mode.")
+    try:
+        try:
+            _keychain().unlock_default_keychain(entered)
+            _keychain().disable_user_interaction()
+        except _keychain().KeychainError as exc:
+            raise ToolError("Mac password did not unlock the login Keychain.") from exc
+        _setup_password = bytearray(entered)
+    finally:
+        entered[:] = b"\x00" * len(entered)
+
+
+def run_sudo(command: list[str]) -> None:
+    """Run a privileged command after terminal-only authorization."""
+    authorize_macos()
+    run(["sudo", "-n", *command])
 
 
 def require_macos() -> None:
@@ -114,7 +162,11 @@ def notify(title: str, message: str) -> None:
     """Show a native macOS notification; failures do not hide the text prompt."""
     if sys.platform != "darwin":
         return
-    subprocess.run(["osascript", "-e", f'display notification {message!r} with title {title!r}'], check=False)
+    script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
+    subprocess.run(
+        ["osascript", "-e", script], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def ask(prompt: str) -> str:
@@ -157,6 +209,29 @@ def choose_port(explicit: str | None) -> str:
         raise ToolError("Select one of the listed devices.") from exc
 
 
+def current_port(port: str) -> str:
+    """Use the current macOS CDC node after the device re-enumerates."""
+    return port if Path(port).exists() else choose_port(None)
+
+
+def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
+    """Wait for a physical disconnect followed by a USB serial reconnect."""
+    deadline = time.monotonic() + timeout
+    disconnected = False
+    while time.monotonic() < deadline:
+        ports = detect_ports()
+        if not disconnected:
+            if port not in ports:
+                disconnected = True
+                say("Device disconnected. Waiting for it to reconnect...")
+        elif port in ports:
+            return port
+        elif len(ports) == 1:
+            return ports[0]
+        time.sleep(0.1)
+    raise ToolError("Timed out waiting for tinyTouch to be unplugged and reconnected.")
+
+
 def is_terminal(command: str, line: str) -> bool:
     words = command.split()
     verb = words[0]
@@ -172,7 +247,20 @@ def is_terminal(command: str, line: str) -> bool:
     return len(words) > 1 and verb in grouped and fields[1] == words[1]
 
 
-def human_error(line: str) -> str:
+def human_error(line: str, *, touch_prompted: bool = False) -> str:
+    """Turn compact device failures into the next useful user action."""
+    if line == "ERR AUTH":
+        if touch_prompted:
+            return (
+                "Fingerprint authorization expired without an enrolled match. "
+                "Keep your finger off the sensor until this prompt, then touch it once "
+                "and hold it still. If the sensor turns red before you touch, run "
+                "'tinytouch status'; it must report sensor=ready."
+            )
+        return (
+            "Fingerprint authorization did not start because the sensor was busy or "
+            "unavailable. Run 'tinytouch status'; it must report sensor=ready before retrying."
+        )
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -180,6 +268,8 @@ def human_error(line: str) -> str:
 
 def unload_helper() -> bool:
     global _lease
+    if _helper_suppressed:
+        return False
     if _lease is not None:
         return True
     loaded = subprocess.run(
@@ -209,6 +299,8 @@ def helper_loaded() -> bool:
 
 def load_helper() -> None:
     global _lease
+    if _helper_suppressed:
+        return
     if _lease is not None:
         _lease.release()
         _lease = None
@@ -218,11 +310,21 @@ def load_helper() -> None:
 
 def remove_helper() -> None:
     global _lease
+    global _helper_suppressed
+    _helper_suppressed = True
     if _lease is not None:
         _lease.release()
         _lease = None
     if LAUNCH_AGENT.exists():
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)], check=False)
+        process = subprocess.Popen(
+            ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         LAUNCH_AGENT.unlink(missing_ok=True)
     HELPER_SUSPEND.unlink(missing_ok=True)
     HELPER_SUSPEND_ACK.unlink(missing_ok=True)
@@ -241,6 +343,8 @@ def ensure_helper_environment() -> Path:
 
 
 def install_helper() -> None:
+    global _helper_suppressed
+    _helper_suppressed = False
     python = ensure_helper_environment()
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -260,40 +364,102 @@ def install_helper() -> None:
         raise ToolError("The HID helper did not load.")
 
 
-def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
+def exchange_serial(device, command: str, *, timeout: float) -> list[str]:
+    lines: list[str] = []
+    touch_prompted = False
+    device.write((command + "\n").encode("ascii"))
+    device.flush()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = device.readline()
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        lines.append(line)
+        verbose("device: " + line)
+        if line == "EVENT TOUCH" and not touch_prompted:
+            say("Touch the fingerprint sensor now.")
+            touch_prompted = True
+        elif line == "EVENT LIFT":
+            say("Lift your finger from the sensor.")
+        elif line == "EVENT TOUCH_AGAIN":
+            say("Touch the same finger again now.")
+        if is_terminal(command, line):
+            break
+    if not lines or not is_terminal(command, lines[-1]):
+        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
+    if lines[-1].startswith("ERR "):
+        raise ToolError(human_error(lines[-1], touch_prompted=touch_prompted))
+    return lines
+
+
+@contextmanager
+def foreground_session(port: str):
+    """Open one verified CDC session for a foreground device operation."""
+    global _active_serial
     try:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required. Run setup again.") from exc
     was_loaded = unload_helper()
-    lines: list[str] = []
-    try:
-        with serial.Serial(port, 115200, timeout=0.25, write_timeout=2) as device:
+    deadline = time.monotonic() + 6.0
+    last_error: Exception | None = None
+    device = None
+    while time.monotonic() < deadline:
+        try:
+            port = current_port(port)
+            device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
             time.sleep(0.2)
             device.reset_input_buffer()
-            device.write((command + "\n").encode("ascii"))
-            device.flush()
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                raw = device.readline()
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", "replace").strip()
-                if line:
-                    lines.append(line)
-                    verbose("device: " + line)
-                    if is_terminal(command, line):
-                        break
-    except Exception as exc:
-        raise ToolError(f"Could not communicate with tinyTouch on {port}: {exc}") from exc
+            exchange_serial(device, "PING", timeout=3)
+            break
+        except Exception as exc:
+            last_error = exc
+            if device is not None:
+                device.close()
+                device = None
+            time.sleep(0.25)
+    if device is None:
+        if "Device not configured" in str(last_error):
+            raise ToolError(
+                "tinyTouch's USB serial port did not become ready. Wait two seconds and run the command again; "
+                "do not unplug it unless 'tinytouch status' cannot find the device."
+            ) from last_error
+        raise ToolError(f"Could not communicate with tinyTouch on {port}: {last_error}") from last_error
+    _active_serial = device
+    try:
+        yield port
     finally:
+        _active_serial = None
+        device.close()
         if was_loaded:
             load_helper()
-    if not lines or not is_terminal(command, lines[-1]):
-        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
-    if lines[-1].startswith("ERR "):
-        raise ToolError(human_error(lines[-1]))
-    return lines
+
+
+def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
+    if _active_serial is not None:
+        try:
+            return exchange_serial(_active_serial, command, timeout=timeout)
+        except Exception as exc:
+            if "Device not configured" in str(exc):
+                raise ToolError(
+                    "tinyTouch's USB serial port reconnected during this command. "
+                    "No incomplete configuration was saved. Wait two seconds and run the command again."
+                ) from exc
+            raise
+    try:
+        with foreground_session(port):
+            return exchange_serial(_active_serial, command, timeout=timeout)
+    except Exception as exc:
+        if "Device not configured" in str(exc):
+            raise ToolError(
+                "tinyTouch's USB serial port became unavailable while this command was starting. "
+                "No fingerprint result was recorded. Wait two seconds and run the command again; "
+                "do not unplug it unless 'tinytouch status' cannot find the device."
+            ) from exc
+        raise
 
 
 def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
@@ -304,12 +470,19 @@ def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
 
 
 def status(port: str) -> dict[str, str]:
-    return fields_from(serial_command(port, "STATUS", timeout=4), "OK STATUS")
+    deadline = time.monotonic() + 6.0
+    while True:
+        try:
+            return fields_from(serial_command(port, "STATUS", timeout=4), "OK STATUS")
+        except ToolError as exc:
+            if "USB serial port became unavailable" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
 
 
 def protocol6(device: dict[str, str]) -> None:
-    if device.get("firmware") != "unified":
-        raise ToolError(f"This is not unified tinyTouch firmware. Flash it at {FACTORY_FLASH_URL}.")
+    if not device.get("firmware"):
+        raise ToolError(f"The device did not report a firmware version. Flash it at {FACTORY_FLASH_URL}.")
     try:
         protocol = int(device.get("protocol", "0"))
     except ValueError as exc:
@@ -324,11 +497,35 @@ def sensor_ready(device: dict[str, str]) -> None:
 
 
 def unlock(port: str) -> None:
-    serial_command(port, "AUTH", timeout=15)
+    deadline = time.monotonic() + 6.0
+    while True:
+        try:
+            serial_command(port, "AUTH", timeout=15)
+            return
+        except ToolError as exc:
+            if "USB serial port became unavailable while this command was starting" not in str(exc):
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
 
 
 def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
-    current = status(port)
+    # macOS can briefly release the CDC device while it probes the smart-card
+    # interface after PIV is enabled. The firmware keeps running and retains
+    # the mode change, so wait for the same USB device instead of reporting a
+    # completed write as a failed setup.
+    deadline = time.monotonic() + 6.0
+    last_error: ToolError | None = None
+    while True:
+        try:
+            current = status(port)
+            break
+        except ToolError as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(0.25)
     for key, value in expected.items():
         if current.get(key) != value:
             raise ToolError(f"Live verification failed: {key} is {current.get(key)!r}, expected {value!r}.")
@@ -336,6 +533,9 @@ def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
 
 
 def device_account(port: str) -> str:
+    override = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
+    if override:
+        return override
     try:
         import serial.tools.list_ports  # type: ignore
     except ImportError as exc:
@@ -354,8 +554,19 @@ def host_id(key: bytes) -> str:
 
 
 def password_for(account: str) -> str:
+    global _setup_password
     say("HID mode types this password after a fingerprint match.")
     say("It is stored in this Mac user's Keychain for this device.")
+    if _setup_password is not None:
+        try:
+            value = _setup_password.decode("utf-8")
+            if len(_setup_password) > 160:
+                raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
+            keychain_set(PASSWORD_SERVICE, account, value)
+            return value
+        finally:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Password again: ")
     if not first or first != second:
@@ -367,14 +578,11 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
+    prepare_hid_password()
     account = device_account(port)
-    stored = keychain_get(PAIRING_SERVICE, account)
-    try:
-        key = bytes.fromhex(stored) if stored else b""
-    except ValueError:
-        key = b""
-    if len(key) != 32:
-        key = secrets.token_bytes(32)
+    key = hashlib.sha256(
+        f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
+    ).digest()
     identifier = host_id(key)
     registered, capacity = host_list(port)
     if identifier not in registered:
@@ -382,16 +590,83 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
             raise ToolError("This device has no free HID host slot. Remove an old host first.")
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
     keychain_set(PAIRING_SERVICE, account, key.hex())
-    if not keychain_exists(PASSWORD_SERVICE, account):
-        password_for(account)
-    install_helper()
+    password_for(account)
     current = status(port)
     if current.get("hosts", "0") == "0":
         raise ToolError("HID setup is incomplete: the device has no registered host.")
-    if not helper_loaded():
-        raise ToolError("HID setup is incomplete: the helper is not loaded.")
     if identifier not in host_list(port)[0]:
         raise ToolError("HID setup is incomplete: the device has no registered host.")
+
+
+def command_hid_smoke(_: argparse.Namespace) -> None:
+    """Run the HID setup path against a temporary protocol-6 device."""
+    require_macos()
+    device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
+    master, slave = pty.openpty()
+    port = os.ttyname(slave)
+    tty.setraw(slave)
+    state = {"mode": "piv", "hosts": set()}
+    stopped = threading.Event()
+
+    def reply(line: str) -> str:
+        if line == "STATUS":
+            return (
+                "OK STATUS firmware=0.8.4 protocol=6 mode=" + state["mode"]
+                + f" sensor=ready fingerprints=4 piv=none hosts={len(state['hosts'])}"
+            )
+        if line == "AUTH":
+            return "EVENT TOUCH\nOK AUTH"
+        if line == "HOST LIST":
+            identifiers = ",".join(sorted(state["hosts"])) or "none"
+            return f"OK HOST LIST capacity=8 ids={identifiers}"
+        if line.startswith("HOST ADD "):
+            state["hosts"].add(line.split()[2].lower())
+            return "OK ADD"
+        if line == "SET MODE HID":
+            state["mode"] = "hid"
+            return "OK MODE"
+        return "ERR COMMAND"
+
+    def serve() -> None:
+        buffered = b""
+        while not stopped.is_set():
+            try:
+                readable, _, _ = select.select([master], [], [], 0.1)
+                if not readable:
+                    continue
+                chunk = os.read(master, 256)
+            except OSError:
+                return
+            if not chunk:
+                continue
+            buffered += chunk
+            while b"\n" in buffered:
+                raw, buffered = buffered.split(b"\n", 1)
+                response = reply(raw.decode("ascii", "replace").strip())
+                os.write(master, (response + "\n").encode("ascii"))
+
+    worker = threading.Thread(target=serve, daemon=True)
+    previous_account = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
+    try:
+        remove_helper()
+        os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = device_id
+        worker.start()
+        command_setup(argparse.Namespace(mode="hid", port=port, skip_enroll=True, no_pair=False))
+        run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
+        say(f"HID bridge password: {keychain_get(PASSWORD_SERVICE, device_id)}")
+        say("HID setup and bridge smoke test passed.")
+    finally:
+        stopped.set()
+        worker.join(timeout=1)
+        os.close(slave)
+        os.close(master)
+        if previous_account is None:
+            os.environ.pop("TINYTOUCH_DEVICE_ACCOUNT", None)
+        else:
+            os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = previous_account
+        keychain_delete(PAIRING_SERVICE, device_id)
+        keychain_delete(PASSWORD_SERVICE, device_id)
+        remove_helper()
 
 
 def host_list(port: str) -> tuple[set[str], int]:
@@ -433,31 +708,66 @@ def command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    sensor_ready(device)
-    unlock(port)
-    if mode == "hid":
-        configure_hid(port, device)
-        if device.get("mode") != "hid":
-            serial_command(port, "SET MODE HID", timeout=4)
-            device = fresh_status(port, {"mode": "hid"})
-    else:
-        if device.get("mode") != "piv":
-            serial_command(port, "SET MODE PIV", timeout=4)
-            fresh_status(port, {"mode": "piv"})
-        if device.get("piv") != "ready":
-            serial_command(port, "PIV CREATE", timeout=15)
-            if status(port).get("piv") != "ready":
-                raise ToolError("Live verification failed: the PIV identity is not ready.")
-        remove_helper()
-    enroll(port, args.skip_enroll)
-    device = status(port)
-    protocol6(device)
-    sensor_ready(device)
-    device = status(port)
+    # Setup starts from one known state. Remove the old HID service before
+    # opening the CDC port. Keep that port open through the entire setup.
+    remove_helper()
+    piv_rescan_needed = False
+    mode_changed = False
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        sensor_ready(device)
+        if (
+            mode == "piv"
+            and device.get("mode") == "piv"
+            and device.get("piv") == "ready"
+            and device.get("fingerprints") == "4"
+            and paired_piv_identities()
+        ):
+            say("PIV is already set up on this Mac.")
+            return
+        if device.get("mode") != mode:
+            unlock(port)
+            serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
+            mode_changed = True
+        elif mode == "hid":
+            unlock(port)
+            configure_hid(port, device)
+        else:
+            unlock(port)
+            if device.get("piv") != "ready":
+                serial_command(port, "PIV CREATE", timeout=45)
+                piv_rescan_needed = True
+        if not mode_changed and not piv_rescan_needed:
+            enroll(port, args.skip_enroll)
+            device = status(port)
+            protocol6(device)
+            sensor_ready(device)
+            device = status(port)
+    if mode_changed:
+        notify("tinyTouch mode changed", "Unplug tinyTouch and reconnect it normally.")
+        say(f"{mode.upper()} mode was selected.")
+        say("Unplug tinyTouch and reconnect it normally.")
+        say("Waiting for the device...")
+        reconnected_port = wait_for_reconnect(port)
+        say("Device reconnected. Continuing setup...")
+        resumed = argparse.Namespace(**vars(args))
+        resumed.mode = mode
+        resumed.port = reconnected_port
+        command_setup(resumed)
+        return
+    if piv_rescan_needed:
+        device = fresh_status(port, {"piv": "ready"})
+        enroll(port, args.skip_enroll)
+        device = status(port)
+        protocol6(device)
+        sensor_ready(device)
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete: the identity is not ready.")
+    if mode == "hid":
+        install_helper()
+        if not helper_loaded():
+            raise ToolError("HID setup is incomplete: the helper is not loaded.")
     if mode == "piv" and not args.no_pair:
         command_pair(args)
     say(f"tinyTouch is ready in {mode.upper()} mode. All changes are live; no restart is required.")
@@ -469,12 +779,15 @@ def command_mode(args: argparse.Namespace) -> None:
     protocol6(device)
     unlock(port)
     serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
-    # Firmware may detach and attach USB to update descriptors. It must not
-    # restart the MCU. The caller can run status again after re-enumeration.
-    fresh_status(port, {"mode": args.mode.lower()})
     if args.mode == "piv":
         remove_helper()
-    say(f"{args.mode.upper()} mode is active live. No restart is required.")
+    notify("tinyTouch mode changed", "Unplug tinyTouch and reconnect it normally.")
+    say(f"{args.mode.upper()} mode was selected.")
+    say("Unplug tinyTouch and reconnect it normally.")
+    say("Waiting for the device...")
+    reconnected_port = wait_for_reconnect(port)
+    fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    say(f"{args.mode.upper()} mode is active.")
 
 
 def command_config(args: argparse.Namespace) -> None:
@@ -551,6 +864,7 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     protocol6(device)
     if ask("Factory reset clears fingerprints, keys, hosts, and settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
         raise ToolError("Factory reset cancelled.")
+    remove_helper()
     unlock(port)
     serial_command(port, "RESET FACTORY", timeout=15)
     cleared = status(port)
@@ -637,17 +951,9 @@ def package_test() -> None:
 
 
 def network_test() -> None:
-    """Check the active channel and one downloadable OTA asset."""
+    """Check the latest stable release and one downloadable OTA asset."""
     try:
-        channel = json.loads(download(RELEASE_CHANNEL_URL).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ToolError("release channel is not valid JSON") from exc
-    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
-    parsed_url = urlparse(manifest_url) if isinstance(manifest_url, str) else None
-    if parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise ToolError("release channel has no valid manifest URL")
-    try:
-        manifest = json.loads(download(manifest_url).decode("utf-8"))
+        manifest = json.loads(download(RELEASE_MANIFEST_URL).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ToolError("release manifest is not valid JSON") from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
@@ -671,7 +977,7 @@ def network_test() -> None:
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
         raise ToolError("release manifest has an invalid OTA asset")
-    image = download(urljoin(manifest_url, filename))
+    image = download(urljoin(RELEASE_MANIFEST_URL, filename))
     if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
         raise ToolError("release OTA asset does not match its manifest")
     say("network ok")
@@ -681,15 +987,11 @@ def command_update(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    channel = json.loads(download(RELEASE_CHANNEL_URL).decode())
-    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
-    if not isinstance(manifest_url, str):
-        raise ToolError("The update channel has no release manifest.")
-    manifest = json.loads(download(manifest_url).decode())
+    manifest = json.loads(download(RELEASE_MANIFEST_URL).decode())
     metadata = manifest.get("ota") if isinstance(manifest, dict) else None
     if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
         raise ToolError("The release manifest has no verified firmware asset.")
-    image = download(urljoin(manifest_url, str(metadata["file"])))
+    image = download(urljoin(RELEASE_MANIFEST_URL, str(metadata["file"])))
     digest = hashlib.sha256(image).hexdigest()
     if digest != metadata["sha256"]:
         raise ToolError("The downloaded firmware digest does not match the release manifest.")
@@ -713,6 +1015,13 @@ def command_status(args: argparse.Namespace) -> None:
     say(json.dumps(data, indent=2, sort_keys=True))
 
 
+def command_logs(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    for line in serial_command(port, "LOGS", timeout=4):
+        if line.startswith("LOG "):
+            say(line)
+
+
 def command_test(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     status(port)
@@ -731,10 +1040,34 @@ def command_keys(args: argparse.Namespace) -> None:
     say("The PIV identity is active live. The device was not restarted.")
 
 
+def piv_identities() -> tuple[list[str], list[str]]:
+    """Return the paired and unpaired smart-card identity hashes."""
+    result = subprocess.run(
+        ["sc_auth", "identities"], check=False, text=True, capture_output=True
+    )
+    paired_text, separator, unpaired_text = result.stdout.partition("Unpaired identities:")
+    paired = re.findall(r"(?m)^([0-9A-Fa-f]{40})\b", paired_text)
+    unpaired = re.findall(r"(?m)^([0-9A-Fa-f]{40})\b", unpaired_text if separator else "")
+    return paired, unpaired
+
+
+def paired_piv_identities() -> list[str]:
+    return piv_identities()[0]
+
+
 def command_pair(_args: argparse.Namespace) -> None:
     require_macos()
-    identities = subprocess.run(["sc_auth", "identities"], check=False, text=True, capture_output=True)
-    available = re.findall(r"\b([0-9A-Fa-f]{40})\b", identities.stdout)
+    deadline = time.monotonic() + 10.0
+    paired: list[str] = []
+    available: list[str] = []
+    while time.monotonic() < deadline:
+        paired, available = piv_identities()
+        if paired or available:
+            break
+        time.sleep(0.25)
+    if paired:
+        say("PIV is already paired with this Mac.")
+        return
     if not available:
         raise ToolError("macOS has not discovered a PIV identity. Select PIV mode, then try again.")
     if len(available) > 1:
@@ -748,7 +1081,7 @@ def command_pair(_args: argparse.Namespace) -> None:
             raise ToolError("Invalid identity selection.") from exc
     else:
         identity = available[0]
-    run(["sudo", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
+    run_sudo(["sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
     say("PIV is paired with this Mac. The device was not restarted.")
 
 
@@ -803,6 +1136,9 @@ def parser() -> argparse.ArgumentParser:
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("--port")
     status_cmd.set_defaults(func=command_status)
+    logs = sub.add_parser("logs", help="show the device event log without probing the sensor")
+    logs.add_argument("--port")
+    logs.set_defaults(func=command_logs)
     test = sub.add_parser("test")
     test.add_argument("--port")
     test.set_defaults(func=command_test)
@@ -812,6 +1148,8 @@ def parser() -> argparse.ArgumentParser:
     pair = sub.add_parser("pair")
     pair.add_argument("--port")
     pair.set_defaults(func=command_pair)
+    hid_smoke = sub.add_parser("hid-smoke")
+    hid_smoke.set_defaults(func=command_hid_smoke)
     return parser
 
 

@@ -12,6 +12,7 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/oid.h"
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
 
@@ -77,6 +78,8 @@ static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
 static uint8_t user_presence_slots_used;
+
+#define PIV_IDENTITY_SCHEMA 2
 
 static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
   if (deadline == 0) return false;
@@ -158,6 +161,15 @@ static bool write_identity_part(nvs_handle_t handle, const char *name,
 static bool create_certificate(mbedtls_pk_context *key, char *output,
                                size_t output_size) {
   uint8_t serial_bytes[16];
+  static const unsigned char client_auth_oid[] = MBEDTLS_OID_CLIENT_AUTH;
+  mbedtls_asn1_sequence client_auth = {
+    .buf = {
+      .tag = MBEDTLS_ASN1_OID,
+      .len = sizeof(client_auth_oid) - 1,
+      .p = (unsigned char *)client_auth_oid,
+    },
+    .next = NULL,
+  };
   mbedtls_x509write_cert certificate;
   mbedtls_x509write_crt_init(&certificate);
   esp_fill_random(serial_bytes, sizeof(serial_bytes));
@@ -173,6 +185,10 @@ static bool create_certificate(mbedtls_pk_context *key, char *output,
   if (result == 0) result = mbedtls_x509write_crt_set_serial_raw(
       &certificate, serial_bytes, sizeof(serial_bytes));
   if (result == 0) mbedtls_x509write_crt_set_md_alg(&certificate, MBEDTLS_MD_SHA256);
+  if (result == 0) result = mbedtls_x509write_crt_set_basic_constraints(&certificate, 0, -1);
+  if (result == 0) result = mbedtls_x509write_crt_set_key_usage(
+      &certificate, MBEDTLS_X509_KU_DIGITAL_SIGNATURE | MBEDTLS_X509_KU_KEY_ENCIPHERMENT);
+  if (result == 0) result = mbedtls_x509write_crt_set_ext_key_usage(&certificate, &client_auth);
   if (result == 0) result = mbedtls_x509write_crt_pem(
       &certificate, (unsigned char *)output, output_size, piv_rng, NULL);
   secure_wipe(serial_bytes, sizeof(serial_bytes));
@@ -194,27 +210,25 @@ static bool create_key_and_certificate(char *key_pem, size_t key_size,
 
 bool piv_create_identity(void) {
   if (piv_uses_provisioned_keys()) return false;
-  char cert_9a[sizeof(stored_cert_9a)] = {0};
-  char key_9a[sizeof(stored_key_9a)] = {0};
-  char cert_9d[sizeof(stored_cert_9d)] = {0};
-  char key_9d[sizeof(stored_key_9d)] = {0};
-  bool ok = create_key_and_certificate(key_9a, sizeof(key_9a), cert_9a, sizeof(cert_9a)) &&
-            create_key_and_certificate(key_9d, sizeof(key_9d), cert_9d, sizeof(cert_9d));
+  // RSA creation needs a worker task. Keep PEM output in static storage so
+  // the task does not overflow its stack with four multi-kilobyte buffers.
+  wipe_stored_identity();
+  bool ok = create_key_and_certificate(stored_key_9a, sizeof(stored_key_9a),
+                                       stored_cert_9a, sizeof(stored_cert_9a)) &&
+            create_key_and_certificate(stored_key_9d, sizeof(stored_key_9d),
+                                       stored_cert_9d, sizeof(stored_cert_9d));
   nvs_handle_t handle;
   if (ok && nvs_open("piv_keys", NVS_READWRITE, &handle) == ESP_OK) {
-    ok = write_identity_part(handle, "cert9a", cert_9a) &&
-         write_identity_part(handle, "key9a", key_9a) &&
-         write_identity_part(handle, "cert9d", cert_9d) &&
-         write_identity_part(handle, "key9d", key_9d) && nvs_commit(handle) == ESP_OK;
+    ok = write_identity_part(handle, "cert9a", stored_cert_9a) &&
+         write_identity_part(handle, "key9a", stored_key_9a) &&
+         write_identity_part(handle, "cert9d", stored_cert_9d) &&
+         write_identity_part(handle, "key9d", stored_key_9d) &&
+         nvs_set_u8(handle, "schema", PIV_IDENTITY_SCHEMA) == ESP_OK && nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
   } else {
     ok = false;
   }
   wipe_stored_identity();
-  secure_wipe(cert_9a, sizeof(cert_9a));
-  secure_wipe(key_9a, sizeof(key_9a));
-  secure_wipe(cert_9d, sizeof(cert_9d));
-  secure_wipe(key_9d, sizeof(key_9d));
   if (!ok) return false;
   piv_reload_keys();
   return piv_uses_provisioned_keys();
@@ -546,12 +560,9 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     user_presence_until = 0;
     return append_sw(response, response_len, response_cap, 0x6985);
   }
-  if (!deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)) {
-    pin_verified_until = 0;
-    return append_sw(response, response_len, response_cap, 0x6982);
-  }
-  // PIN verification authorizes one cryptographic attempt. Malformed input
-  // must not leave a reusable authorization window behind.
+  // The fingerprint-confirmed setup command grants the short user-presence
+  // window for one operation in each PIV slot. A separate PIV PIN is not
+  // required for this fingerprint-authenticated device.
   pin_verified_until = 0;
   const uint8_t *data = NULL;
   size_t data_len = 0;
@@ -646,7 +657,9 @@ void piv_init(void) {
   bool have_provisioned_material = false;
   nvs_handle_t nvs_handle;
   if (nvs_open("piv_keys", NVS_READONLY, &nvs_handle) == ESP_OK) {
-    have_provisioned_material =
+    uint8_t schema = 0;
+    have_provisioned_material = nvs_get_u8(nvs_handle, "schema", &schema) == ESP_OK &&
+      schema == PIV_IDENTITY_SCHEMA &&
       load_nvs_string(nvs_handle, "cert9a", stored_cert_9a, sizeof(stored_cert_9a)) &&
       load_nvs_string(nvs_handle, "key9a", stored_key_9a, sizeof(stored_key_9a)) &&
       load_nvs_string(nvs_handle, "cert9d", stored_cert_9d, sizeof(stored_cert_9d)) &&

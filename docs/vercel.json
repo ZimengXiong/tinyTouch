@@ -17,22 +17,10 @@
       "permanent": true
     }
   ],
-  "headers": [
+  "rewrites": [
     {
-      "source": "/release.json",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
-    },
-    {
-      "source": "/flash/(.*)/manifest.json",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
-    },
-    {
-      "source": "/flash/(.*)/firmware/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
-    },
-    {
-      "source": "/cli/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+      "source": "/github-releases/:path*",
+      "destination": "https://github.com/ZimengXiong/tinyTouch/releases/:path*"
     }
   ]
 }

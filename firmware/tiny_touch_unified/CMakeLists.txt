@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
+# Local hardware recovery only. Release builds leave this OFF and therefore
+# require a matching enrolled fingerprint for every protected operation.
+option(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
+       "Allow local development firmware to bypass fingerprint authorization"
+       OFF)
+
 set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
 file(READ "${TINYTOUCH_VERSION_FILE}" TINYTOUCH_VERSION)

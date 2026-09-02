@@ -55,9 +55,26 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
 
     def test_fingerprint_auth_requires_presence(self) -> None:
         source = self.source("touch_pin_hid.c")
-        self.assertIn("if (!present || !fingerprint_is_ready() || !tud_hid_ready())", source)
+        self.assertIn("if (!present || !runtime.presence_armed)", source)
+        self.assertIn("if (!fingerprint_is_ready())", source)
+        self.assertIn("wait_hid_ready()", source)
         self.assertNotIn("fingerprint_service_health", source)
         self.assertNotIn("usb_runtime", source)
+
+    def test_fingerprint_operations_report_each_required_touch(self) -> None:
+        console = self.source("config_console.c")
+        self.assertIn('"EVENT %s"', console)
+        self.assertIn("fingerprint_enroll((uint16_t)slot, enroll_prompt)", console)
+        self.assertIn('"ERR AUTH no_match"', console)
+
+    def test_development_auth_bypass_is_explicitly_opt_in(self) -> None:
+        project = (MAIN.parent / "CMakeLists.txt").read_text()
+        component = self.source("CMakeLists.txt")
+        console = self.source("config_console.c")
+        self.assertIn("option(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH", project)
+        self.assertIn("OFF)", project)
+        self.assertIn("if(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH)", component)
+        self.assertIn("#ifdef TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH", console)
 
 
 if __name__ == "__main__":

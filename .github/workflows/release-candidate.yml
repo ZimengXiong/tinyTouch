@@ -2,16 +2,12 @@ name: Release candidate
 
 on:
   push:
-    branches: [main]
+    branches: [main, "beta/**"]
     paths-ignore:
       - channels/**
-      - docs/public/cli/**
-      - docs/public/flash/factory/**
-      - docs/public/flash/recovery/**
-      - docs/public/release.json
 
 concurrency:
-  group: release-candidate-main
+  group: release-candidate-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -23,12 +19,12 @@ jobs:
   production-preflight:
     runs-on: ubuntu-latest
     steps:
-      # Configure release-signing with "Selected branches and tags" and allow only main.
+      # The signing environment allows only main and beta release branches.
       # GitHub enforces that policy before the firmware job can read its signing secret.
-      - name: Require an automatic main-branch push
+      - name: Require a release branch push
         run: |
           test "$GITHUB_EVENT_NAME" = push
-          test "$GITHUB_REF" = refs/heads/main
+          [[ "$GITHUB_REF" = refs/heads/main || "$GITHUB_REF" = refs/heads/beta/* ]]
 
   firmware:
     needs: production-preflight

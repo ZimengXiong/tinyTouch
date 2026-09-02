@@ -24,8 +24,8 @@ static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
 
-static uint8_t current_led = 0xff;
 static SemaphoreHandle_t fp_mutex;
+static volatile bool prompted_authorization_active;
 static bool sensor_ready;
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -194,15 +194,9 @@ static void fp_give(void) {
 }
 
 static void set_aura(uint8_t color) {
-  if (color == current_led) return;
   uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
   uint8_t confirm = 0xff;
-  if (fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) &&
-      confirm == 0x00) {
-    current_led = color;
-  } else {
-    current_led = 0xff;
-  }
+  fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000);
 }
 
 static void show_result(bool ok) {
@@ -353,49 +347,68 @@ bool fingerprint_is_ready(void) {
   return sensor_ready_snapshot();
 }
 
-static bool fingerprint_authorize_locked(void) {
-  uint8_t confirm = 0xff;
-  ESP_LOGI(TAG, "finger present hint=%d", finger_present());
-  set_aura(FP_LED_BLUE);
+bool fingerprint_recover(void) {
+  if (!fp_take(3000)) return false;
 
-  TickType_t start = xTaskGetTickCount();
-  TickType_t deadline = pdMS_TO_TICKS(FINGER_WAIT_MS);
-  bool got_image = false;
-  while ((xTaskGetTickCount() - start) < deadline) {
-    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 1000) && confirm == 0x00) {
-      got_image = true;
-      break;
-    }
-    vTaskDelay(pdMS_TO_TICKS(150));
+  // A USB reconnect must not be required to recover one interrupted UART
+  // transaction. Flush stale bytes, reapply the known sensor baud rate, and
+  // verify the sensor in place. This does not erase state or restart either
+  // processor.
+  uart_flush_input(FP_UART);
+  uart_set_baudrate(FP_UART, 57600);
+  const uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
+  bool ok = false;
+  for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+    uint8_t confirm = 0xff;
+    ok = fp_command(0x13, params, sizeof(params), &confirm, NULL, NULL, 1200) &&
+         confirm == 0x00;
+    if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(100));
   }
-  if (!got_image) {
-    ESP_LOGW(TAG, "gen image failed confirm=0x%02x", confirm);
-    show_result(false);
-    return false;
-  }
-
-  return fingerprint_match_captured(false).slot != 0;
-}
-
-bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  // Own the sensor before prompting. Otherwise the higher-priority background
-  // authentication task can capture the prompted touch first.
-  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
-  if (prompt) prompt();
-  bool ok = fingerprint_authorize_locked();
+  set_sensor_ready(ok);
   fp_give();
   return ok;
 }
 
+bool fingerprint_authorize_prompted(void (*prompt)(void)) {
+  // TOUCH_OUT is not reliable enough to gate a foreground capture on every
+  // supported module. Reuse HID's quiet matcher and keep polling until the
+  // user presents a valid enrolled finger or the authorization window ends.
+  prompted_authorization_active = true;
+  if (prompt) prompt();
+  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
+  bool ok = false;
+  while (xTaskGetTickCount() < deadline) {
+    if (fingerprint_authorize_poll_match().slot != 0) {
+      ok = true;
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
+  }
+  prompted_authorization_active = false;
+  return ok;
+}
+
+bool fingerprint_prompted_authorization_active(void) {
+  return prompted_authorization_active;
+}
+
 int fingerprint_count(void) {
-  if (!fp_take(2000)) return -1;
-  uint8_t confirm = 0xff;
-  uint8_t data[2];
-  size_t data_len = sizeof(data);
-  bool ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
-            confirm == 0x00 && data_len == sizeof(data);
-  fp_give();
-  return ok ? ((int)data[0] << 8) | data[1] : -1;
+  for (unsigned attempt = 0; attempt < 3; attempt++) {
+    if (fp_take(2000)) {
+      uint8_t confirm = 0xff;
+      uint8_t data[2];
+      size_t data_len = sizeof(data);
+      bool ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
+                confirm == 0x00 && data_len == sizeof(data);
+      fp_give();
+      if (ok) return ((int)data[0] << 8) | data[1];
+    }
+    if (attempt < 2) {
+      fingerprint_recover();
+      vTaskDelay(pdMS_TO_TICKS(150));
+    }
+  }
+  return -1;
 }
 
 static bool wait_capture_template(uint8_t buffer_id, uint32_t timeout_ms) {

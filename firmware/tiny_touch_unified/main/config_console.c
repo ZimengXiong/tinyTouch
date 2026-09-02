@@ -18,6 +18,7 @@
 #include "firmware_update.h"
 #include "piv.h"
 #include "touch_pin_hid.h"
+#include "usb_ccid.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
 #define TINYTOUCH_FIRMWARE_VERSION "development"
@@ -28,6 +29,7 @@
 
 #define AUTH_WINDOW_US (120LL * 1000000LL)
 #define OTA_WINDOW_US (30LL * 1000000LL)
+#define CDC_WRITE_TIMEOUT_US (2LL * 1000000LL)
 
 static char command[5632];
 static size_t command_length;
@@ -36,17 +38,40 @@ static char ota_token[33];
 static int64_t authorized_until;
 static int64_t ota_last_activity;
 static SemaphoreHandle_t write_lock;
+static volatile bool piv_create_active;
 
 static void wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
   while (length--) *cursor++ = 0;
 }
 
+static bool cdc_write_all(const char *data, size_t length, int64_t deadline) {
+  if (!tud_cdc_connected()) return false;
+
+  size_t offset = 0;
+  while (offset < length) {
+    size_t remaining = length - offset;
+    uint32_t request = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+    uint32_t written = tud_cdc_write(data + offset, request);
+    if (written) {
+      offset += written;
+      tud_cdc_write_flush();
+      continue;
+    }
+
+    tud_cdc_write_flush();
+    if (esp_timer_get_time() >= deadline) return false;
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return true;
+}
+
 void config_console_send_line(const char *line) {
+  if (!line) return;
   if (write_lock) xSemaphoreTake(write_lock, portMAX_DELAY);
-  tud_cdc_write_str(line);
-  tud_cdc_write_str("\r\n");
-  tud_cdc_write_flush();
+  int64_t deadline = esp_timer_get_time() + CDC_WRITE_TIMEOUT_US;
+  bool sent = cdc_write_all(line, strlen(line), deadline);
+  if (sent) cdc_write_all("\r\n", 2, deadline);
   if (write_lock) xSemaphoreGive(write_lock);
 }
 
@@ -86,11 +111,25 @@ static bool require_authorized(void) {
 
 static void touch_prompt(void) { reply("EVENT TOUCH"); }
 
+static void enroll_prompt(const char *state) {
+  char line[48];
+  snprintf(line, sizeof(line), "EVENT %s", state);
+  reply(line);
+}
+
 static void authorize(void) {
-  int count = fingerprint_count();
-  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
-  if (!ok) { reply("ERR AUTH"); return; }
+#ifdef TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
+  // This symbol exists only in an explicitly opted-in local CMake build.
   authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
+  reply("OK AUTH development=unlocked");
+  return;
+#endif
+  int count = fingerprint_count();
+  if (count < 0) { reply("ERR AUTH sensor=offline"); return; }
+  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
+  if (!ok) { reply("ERR AUTH no_match"); return; }
+  authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
+  piv_note_user_presence();
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
 }
 
@@ -106,12 +145,16 @@ static void clear_ota(void) {
 static void status(void) {
   char line[320];
   int count = fingerprint_count();
+  // fingerprint_count probes the UART and can update the live health state.
+  // Read health after that probe so one STATUS line cannot say ready with an
+  // unavailable fingerprint count.
+  bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
            "hosts=%u ota=%s",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
-           fingerprint_is_ready() ? "ready" : "offline", count,
+           sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
            (firmware_update_active() ? "writing" : "idle"));
   reply(line);
@@ -182,7 +225,7 @@ static void fingerprint_command(char *arguments) {
   uint32_t slot = 0;
   bool ok = false;
   if (strncmp(arguments, "ENROLL ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
-    ok = fingerprint_enroll((uint16_t)slot, NULL);
+    ok = fingerprint_enroll((uint16_t)slot, enroll_prompt);
   } else if (strncmp(arguments, "DELETE ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
     ok = fingerprint_delete((uint16_t)slot) && device_config_set_fingerprint_profile_views(0);
   } else if (strcmp(arguments, "CLEAR") == 0) {
@@ -202,9 +245,31 @@ static void factory_reset(void) {
   reply(ok ? "OK RESET FACTORY" : "ERR RESET FACTORY");
 }
 
+static void piv_create_task(void *argument) {
+  (void)argument;
+  bool ok = piv_create_identity();
+  piv_create_active = false;
+  reply(ok ? "OK PIV CREATE" : "ERR PIV CREATE");
+  if (ok) {
+    // Give CDC enough time to deliver the successful response before asking
+    // macOS to rescan the PIV token.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    usb_ccid_rescan();
+  }
+  vTaskDelete(NULL);
+}
+
 static void piv_create(void) {
   if (!require_authorized()) return;
-  reply(piv_create_identity() ? "OK PIV CREATE" : "ERR PIV CREATE");
+  if (piv_create_active) { reply("ERR PIV BUSY"); return; }
+  piv_create_active = true;
+  BaseType_t created = xTaskCreate(piv_create_task, "piv_create", 10240, NULL, 1, NULL);
+  if (created != pdPASS) {
+    piv_create_active = false;
+    reply("ERR PIV CREATE");
+    return;
+  }
+  reply("EVENT PIV_CREATE");
 }
 
 static void ota_begin(char *arguments) {
@@ -249,6 +314,7 @@ static void ota_commit(const char *token) {
 static void handle_command(void) {
   if (strcmp(command, "PING") == 0) reply("PONG 6");
   else if (strcmp(command, "STATUS") == 0) status();
+  else if (strcmp(command, "LOGS") == 0) touch_pin_hid_send_logs();
   else if (strcmp(command, "AUTH") == 0) authorize();
   else if (strncmp(command, "SET MODE ", 9) == 0) set_mode(command + 9);
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);
@@ -289,7 +355,10 @@ static void console_task(void *arg) {
         else command_overflow = true;
       }
     }
-    if (!activity) vTaskDelay(pdMS_TO_TICKS(2));
+    // The scheduler tick is 10 ms. A 2 ms conversion becomes zero and leaves
+    // this higher-priority loop ready forever, starving app_main before it can
+    // create the background fingerprint task.
+    if (!activity) vTaskDelay(1);
   }
 }
 

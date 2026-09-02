@@ -3,6 +3,8 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "device_config.h"
 #include "piv.h"
 #include "tinyusb.h"
@@ -199,4 +201,13 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.full_speed_config = tiny_touch_configuration_descriptor;
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
+}
+
+void usb_ccid_rescan(void) {
+  // PIV keys can be created after macOS has already scanned this card. A
+  // runtime USB detach/attach makes CryptoTokenKit rescan the new identity
+  // without restarting the ESP32 or requiring the user to reconnect it.
+  tud_disconnect();
+  vTaskDelay(pdMS_TO_TICKS(250));
+  tud_connect();
 }

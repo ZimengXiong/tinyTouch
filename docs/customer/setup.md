@@ -3,7 +3,7 @@
 On an Apple silicon or Intel Mac:
 
 ```sh
-curl -fsSL https://alpacaengineer.ing/tinytouch/batch-0/install.sh | sh
+curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh
 tinytouch setup
 ```
 

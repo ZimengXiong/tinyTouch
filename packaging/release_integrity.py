@@ -229,10 +229,16 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
         validate_cli_archive(path)
         public[name] = metadata["sha256"]
     if flat:
+        installer = root / "install.sh"
+        require(installer.is_file() and installer.stat().st_size < 64 * 1024,
+                "missing or invalid installer")
+        require(installer.read_bytes().startswith(b"#!/bin/sh\n"),
+                "installer must be a POSIX shell script")
         expected = set(public) | {
             "release-manifest.json",
             "tinytouch-firmware.tar.gz",
             "checksums.txt",
+            "install.sh",
         }
         actual = {path.name for path in root.iterdir() if path.is_file()}
         require(actual == expected,
