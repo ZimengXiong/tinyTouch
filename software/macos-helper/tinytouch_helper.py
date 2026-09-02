@@ -47,7 +47,6 @@ SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
-STARTUP_HANDSHAKE_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
@@ -529,27 +528,6 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     return lines, remainder
 
 
-def require_startup_pong(ser: serial.Serial, device_id: str, port: str) -> None:
-    """Confirm that the newly opened console accepts commands before serving HID."""
-    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
-    ser.write(b"PING\n")
-    ser.flush()
-    deadline = time.monotonic() + STARTUP_HANDSHAKE_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        chunk = ser.read(256)
-        if not chunk:
-            continue
-        for raw in decoder.feed(chunk):
-            try:
-                line = raw.decode("ascii").strip()
-            except UnicodeDecodeError:
-                continue
-            if line == "PONG":
-                return
-    diagnostic("worker.startup_handshake_failed", level="warning", device_id=device_id, port=port)
-    raise serial.SerialException(f"tinyTouch console did not answer PING: {port}")
-
-
 def serve_port(
     port: str,
     once: bool = False,
@@ -567,7 +545,6 @@ def serve_port(
     decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
         with open_serial(port) as ser:
-            require_startup_pong(ser, device_id, port)
             diagnostic("worker.connected", device_id=device_id, port=port)
             while True:
                 if stop_event is not None and stop_event.is_set():
