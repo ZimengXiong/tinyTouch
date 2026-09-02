@@ -469,14 +469,14 @@ def schedule_auto_update() -> None:
         verbose(f"automatic CLI update could not be scheduled: {exc}")
 
 
-def wait_for_port_departure(port: str, *, wait_seconds: int = 10) -> None:
-    say("Waiting for tinyTouch to restart...")
+def wait_for_port_departure(port: str, *, wait_seconds: int = 60) -> None:
+    say("Waiting for tinyTouch to disconnect...")
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         if port not in detect_ports():
             return
         time.sleep(0.1)
-    raise SupportError("tinyTouch did not restart after accepting the firmware update.")
+    raise SupportError("tinyTouch did not disconnect. Unplug its USB cable and try again.")
 
 
 def install_command_if_needed() -> None:
@@ -952,6 +952,64 @@ def wait_for_runtime_port(
     )
 
 
+def show_hardware_prompt(title: str, message: str) -> subprocess.Popen[bytes] | None:
+    """Show a native prompt while the CLI independently observes USB state."""
+    say(message)
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return subprocess.Popen(
+            [
+                "osascript", "-e",
+                f'display dialog "{message}" with title "{title}" '
+                'buttons {"I reconnected it"} default button "I reconnected it" with icon caution',
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+
+
+def close_hardware_prompt(prompt: subprocess.Popen[bytes] | None) -> None:
+    if prompt is not None and prompt.poll() is None:
+        prompt.terminate()
+
+
+def cold_power_cycle_runtime(
+    port: str,
+    *,
+    message: str,
+    location: str | None = None,
+    serial_number: str | None = None,
+) -> str:
+    """Require observed USB removal before accepting the same device again."""
+    location = location or port_usb_location(port)
+    serial_number = serial_number or port_usb_serial(port)
+    prompt = show_hardware_prompt("tinyTouch power cycle", message)
+    try:
+        wait_for_port_departure(port)
+        return wait_for_runtime_port(
+            location=location, serial_number=serial_number, wait_seconds=60
+        )
+    finally:
+        close_hardware_prompt(prompt)
+
+
+def enter_download_mode_manually(port: str, *, location: str | None = None) -> str:
+    """Require BOOT during a physical reconnect instead of warm-resetting the ESP32."""
+    location = location or port_usb_location(port)
+    prompt = show_hardware_prompt(
+        "tinyTouch ROM mode",
+        "Hold BOOT while unplugging and reconnecting tinyTouch. Release BOOT when it reconnects.",
+    )
+    try:
+        return wait_for_download_port(port, location=location, wait_seconds=120)
+    finally:
+        close_hardware_prompt(prompt)
+
+
 def normalize_mac(value: str) -> str:
     """Return a 12-digit uppercase MAC address or reject the value."""
     normalized = re.sub(r"[^0-9A-Fa-f]", "", value).upper()
@@ -1406,6 +1464,7 @@ def run_idf(arguments: list[str]) -> None:
 
 def flash_piv(port: str) -> str:
     location = port_usb_location(port)
+    serial_number = port_usb_serial(port)
     download_mode = port_is_download_mode(port)
     if not download_mode:
         fields = status_fields(port)
@@ -1419,14 +1478,15 @@ def flash_piv(port: str) -> str:
     # a full clean build on every update and delays the touch prompt.
     run_idf(["build"])
     if not download_mode:
-        try:
-            serial_command(port, "BOOTLOADER", timeout=3)
-        except ToolError:
-            # USB can detach before the final acknowledgment reaches the host.
-            pass
-        port = wait_for_download_port(port, location=location)
+        serial_command(port, "BOOTLOADER", timeout=3)
+        port = enter_download_mode_manually(port, location=location)
     run_idf(["-p", port, "flash"])
-    return wait_for_runtime_port(location=location)
+    return cold_power_cycle_runtime(
+        port,
+        location=location,
+        serial_number=serial_number,
+        message="Flashing is complete. Unplug tinyTouch and reconnect it normally.",
+    )
 
 
 def is_terminal_response(command: str, line: str) -> bool:
@@ -1651,10 +1711,9 @@ def install_ota_firmware(
                 try:
                     serial_exchange(device, f"UPDATE_COMMIT {token}", timeout=8)
                 except SerialResponseTimeout as exc:
-                    # COMMIT intentionally restarts USB. A lost final ACK is
-                    # ambiguous; only the post-reconnect build/slot proof can
-                    # decide whether it succeeded.
-                    verbose(f"update commit ACK lost during restart: {exc}")
+                    # A lost final ACK is ambiguous. The cold boot and exact
+                    # build/slot proof determine whether the commit succeeded.
+                    verbose(f"update commit ACK was not received: {exc}")
             except (Exception, KeyboardInterrupt):
                 progress_done()
                 if not commit_sent:
@@ -1669,15 +1728,14 @@ def install_ota_firmware(
         if not commit_sent:
             raise ToolError(serial_failure_message(port, exc)) from exc
         verbose(f"update port closed during restart: {exc}")
-    try:
-        wait_for_port_departure(port)
-    except SupportError as exc:
-        # macOS can miss a fast detach/re-enumeration. Identity + STATUS after
-        # reconnect are authoritative, not whether a path visibly disappeared.
-        verbose(str(exc))
-    time.sleep(0.25)
-    return wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
+    return cold_power_cycle_runtime(
+        port,
+        location=location,
+        serial_number=serial_number,
+        message=(
+            "Firmware is ready. Unplug tinyTouch, reconnect it normally, and wait while "
+            "the new version starts."
+        ),
     )
 
 
@@ -1732,16 +1790,8 @@ def migrate_partition_layout(
             )
         say("Touch the sensor to authorize a one-time flash. This enables later updates without BOOT.")
         unlock_configuration(port)
-        say("Switching to download mode...")
-        try:
-            serial_command(port, "BOOTLOADER", timeout=3)
-        except ToolError as exc:
-            try:
-                download_port = wait_for_download_port(port, location=location, wait_seconds=5)
-            except ToolError:
-                raise exc
-        else:
-            download_port = wait_for_download_port(port, location=location)
+        serial_command(port, "BOOTLOADER", timeout=3)
+        download_port = enter_download_mode_manually(port, location=location)
     with tempfile.TemporaryDirectory(prefix="tinytouch-update-") as directory_name:
         directory = Path(directory_name)
         paths = {}
@@ -1805,7 +1855,7 @@ def migrate_partition_layout(
             flash_arguments("no_reset", "0x8000", str(paths["partition-table.bin"])),
             flash_arguments("no_reset", "0x210000", str(paths["ota_data_initial.bin"])),
             flash_arguments("no_reset", "0x10000", str(paths["tiny_touch_unified.bin"])),
-            flash_arguments("hard_reset", "0x0", str(paths["bootloader.bin"])),
+            flash_arguments("no_reset", "0x0", str(paths["bootloader.bin"])),
         ]
         output = io.StringIO()
         try:
@@ -1837,8 +1887,11 @@ def migrate_partition_layout(
                 "The firmware migration stopped before completion. Keep the board connected; "
                 "use the recovery flasher if it no longer boots normally."
             ) from exc
-    return wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
+    return cold_power_cycle_runtime(
+        download_port,
+        location=location,
+        serial_number=serial_number,
+        message="Migration is complete. Unplug tinyTouch and reconnect it normally.",
     )
 
 
@@ -1881,16 +1934,7 @@ def provision_piv_keys(port: str, bundle: dict[str, str]) -> str:
             )
     serial_command(port, "PROVISION_COMMIT", timeout=5)
     say("  ✓ Unique PIV identity stored on tinyTouch.")
-    location = port_usb_location(port)
-    try:
-        serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        # A quick USB detach can race the final acknowledgment.
-        pass
-    # USB_RECONNECT is acknowledged before the USB detach. Do not rediscover the
-    # still-present old device node during that short interval.
-    time.sleep(1.0)
-    return wait_for_runtime_port(location=location)
+    return port
 
 
 def unlock_configuration(port: str) -> None:
@@ -2241,8 +2285,10 @@ def configure_unified_device(
             else:
                 local_hid_ready = status.get("hid_key") == "configured"
 
+    needs_piv_keys = mode == "piv" and status.get("keys") != "nvs"
+    mode_changes = status.get("mode") != mode
     changes_needed = (
-        status.get("keys") != "nvs"
+        needs_piv_keys
         or status.get("mode") != mode
         or (not args.skip_enroll and fingerprint_profile != 4)
         or (mode == "hid" and not local_hid_ready)
@@ -2250,7 +2296,7 @@ def configure_unified_device(
     step(first_step, total_steps, "Secure this device")
     if changes_needed:
         unlock_configuration(port)
-    if status.get("keys") != "nvs":
+    if needs_piv_keys:
         say("Creating this device's unique keys...")
         port = provision_piv_keys(port, generate_piv_bundle())
         status = status_fields(port)
@@ -2277,25 +2323,27 @@ def configure_unified_device(
         say("Fingerprint enrollment was skipped as requested.")
 
     step(first_step + 2, total_steps, f"Finish {mode.upper()} setup")
-    if status.get("mode") != mode:
+    if mode_changes:
         serial_command(port, f"MODE {mode}", timeout=3)
         say(f"  ✓ {mode.upper()} mode enabled.")
-    if mode == "piv" and not args.no_pair:
-        pair_piv(port=port)
-    elif mode == "piv":
-        say("macOS smart-card pairing was skipped as requested.")
     if mode == "piv" and LAUNCH_AGENT.exists():
         # PIV is handled by macOS CCID directly. Leaving the HID helper active
         # only keeps CDC/Keychain activity alive and can provoke authorization
         # prompts after an update even though PIV does not need the helper.
         remove_helper()
-    location = port_usb_location(port)
-    try:
+    if mode_changes or needs_piv_keys:
         serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        pass
-    time.sleep(1.0)
-    wait_for_runtime_port(location=location)
+        port = cold_power_cycle_runtime(
+            port,
+            message=(
+                "Setup is saved. Unplug tinyTouch and reconnect it normally to activate "
+                f"{mode.upper()} mode."
+            ),
+        )
+    if mode == "piv" and not args.no_pair:
+        pair_piv(port=port)
+    elif mode == "piv":
+        say("macOS smart-card pairing was skipped as requested.")
     say(f"tinyTouch is ready in {mode.upper()} mode.")
 
 
@@ -2364,7 +2412,7 @@ def command_add_computer(args: argparse.Namespace) -> None:
     else:
         say("Touch your enrolled finger when macOS pairing requests authorization.")
 
-    if status.get("keys") != "nvs":
+    if mode == "piv" and status.get("keys") != "nvs":
         port = provision_piv_keys(port, generate_piv_bundle())
         status = status_fields(port)
 
@@ -2730,29 +2778,12 @@ def recover_fingerprint_sensor_after_ota(port: str, status: dict[str, str]) -> t
     """Ask for a USB power cycle when the fingerprint sensor cannot survive an ESP restart."""
     if status.get("sensor") == "ok":
         return port, status
-    location = port_usb_location(port)
-    serial_number = port_usb_serial(port)
-    message = (
-        "Firmware installation is complete. Unplug tinyTouch, reconnect it, wait five seconds, "
-        "then click Continue."
-    )
-    say(message)
-    try:
-        subprocess.run(
-            [
-                "osascript",
-                "-e",
-                'display dialog "' + message + '" with title "tinyTouch update" '
-                'buttons {"Continue"} default button "Continue" with icon caution',
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        ask("Press Return after reconnecting tinyTouch. ")
-    recovered_port = wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
+    recovered_port = cold_power_cycle_runtime(
+        port,
+        message=(
+            "The fingerprint sensor needs power recovery. Unplug tinyTouch and reconnect it "
+            "normally."
+        ),
     )
     recovered = status_fields(recovered_port)
     require_unified_firmware(recovered)
@@ -2925,7 +2956,12 @@ def command_keys(args: argparse.Namespace) -> None:
     port = provision_piv_keys(port, generate_piv_bundle())
     status = status_fields(port)
     if status.get("keys") != "nvs":
-        raise ToolError("The rotated keys were not loaded after restart.")
+        raise ToolError("The rotated keys were not loaded.")
+    serial_command(port, "USB_RECONNECT", timeout=3)
+    port = cold_power_cycle_runtime(
+        port,
+        message="New PIV keys are saved. Unplug tinyTouch and reconnect it normally.",
+    )
     say("PIV keys rotated successfully.")
     say("Run 'tinytouch pair' on every Mac that should continue using this device.")
 
@@ -2959,13 +2995,10 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     helper_state_path(account).unlink(missing_ok=True)
     if LAUNCH_AGENT.exists():
         remove_helper()
-    location = port_usb_location(port)
-    try:
-        serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        pass
-    time.sleep(1.0)
-    wait_for_runtime_port(location=location)
+    cold_power_cycle_runtime(
+        port,
+        message="Factory reset is complete. Unplug tinyTouch and reconnect it normally.",
+    )
     say("Factory reset complete.")
     say("The device is now unconfigured. Run 'tinytouch setup' to use it again.")
 
@@ -2977,6 +3010,7 @@ def command_bootloader(args: argparse.Namespace) -> None:
     require_fingerprint_sensor(fields)
     unlock_configuration(port)
     serial_command(port, "BOOTLOADER", timeout=3)
+    enter_download_mode_manually(port)
     say("tinyTouch entered firmware download mode.")
 
 
