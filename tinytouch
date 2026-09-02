@@ -2019,10 +2019,70 @@ def require_fingerprint_sensor(status: dict[str, str]) -> None:
     )
 
 
+def migrate_legacy_hid_credentials(
+    account: str,
+    registered_ids: set[str],
+    *,
+    single_key_device: bool,
+) -> bool:
+    """Copy a proven legacy pairing into the per-device namespace."""
+    if keychain_get(PAIRING_SERVICE, account) is not None:
+        return False
+    for legacy_account in dict.fromkeys((DEFAULT_DEVICE_ACCOUNT, ACCOUNT)):
+        if legacy_account == account:
+            continue
+        candidate_hex = keychain_get(PAIRING_SERVICE, legacy_account)
+        try:
+            candidate = bytes.fromhex(candidate_hex) if candidate_hex else None
+        except ValueError:
+            candidate = None
+        if candidate is None or len(candidate) != 32:
+            continue
+        if not single_key_device and hid_key_id(candidate) not in registered_ids:
+            continue
+        keychain_set(PAIRING_SERVICE, account, candidate.hex())
+        if not keychain_exists(PASSWORD_SERVICE, account):
+            password = keychain_get(PASSWORD_SERVICE, legacy_account)
+            if password is None and legacy_account != ACCOUNT:
+                password = keychain_get(PASSWORD_SERVICE, ACCOUNT)
+            if password is not None:
+                keychain_set(PASSWORD_SERVICE, account, password)
+                del password
+        destination_settings = keyboard_settings_path(account)
+        for source in (
+            keyboard_settings_path(legacy_account),
+            SUPPORT_DIR / "settings-legacy.json",
+        ):
+            if not destination_settings.exists() and source.is_file():
+                atomic_write_bytes(destination_settings, source.read_bytes())
+        destination_state = helper_state_path(account)
+        for source in (
+            helper_state_path(legacy_account),
+            SUPPORT_DIR / "state-legacy.json",
+        ):
+            if not destination_state.exists() and source.is_file():
+                atomic_write_bytes(destination_state, source.read_bytes())
+        verbose(f"migrated legacy HID credentials from {legacy_account} to {account}")
+        return True
+    return False
+
+
 def configure_hid_credentials(port: str, status: dict[str, str]) -> None:
     python = ensure_helper_environment()
     account = pairing_account_for_port(port)
     device_has_key = status.get("hid_key") == "configured"
+    registered_ids: set[str] = set()
+    capacity = 1
+    protocol = firmware_protocol(status)
+    if protocol >= 2:
+        registered_ids, capacity = hid_key_ids(port)
+    migrated = migrate_legacy_hid_credentials(
+        account,
+        registered_ids,
+        single_key_device=protocol < 2 and device_has_key,
+    )
+    if migrated:
+        say("  ✓ Existing HID credentials migrated for this device.")
     local_key_hex = keychain_get(PAIRING_SERVICE, account)
     try:
         local_key = bytes.fromhex(local_key_hex) if local_key_hex else None
@@ -2032,8 +2092,7 @@ def configure_hid_credentials(port: str, status: dict[str, str]) -> None:
         local_key = None
     local_has_password = keychain_exists(PASSWORD_SERVICE, account)
 
-    if firmware_protocol(status) >= 2:
-        registered_ids, capacity = hid_key_ids(port)
+    if protocol >= 2:
         if local_key is None:
             local_key = secrets.token_bytes(32)
         local_id = hid_key_id(local_key)

@@ -505,6 +505,36 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertNotIn("top secret", " ".join(str(call) for call in say.call_args_list))
 
+    def test_legacy_credentials_migrate_only_after_key_matches_device(self):
+        legacy_key = bytes(range(32))
+        credentials = {
+            (cli.PAIRING_SERVICE, cli.DEFAULT_DEVICE_ACCOUNT): legacy_key.hex(),
+            (cli.PASSWORD_SERVICE, cli.DEFAULT_DEVICE_ACCOUNT): "secret",
+        }
+
+        def get_secret(service, account):
+            return credentials.get((service, account))
+
+        def set_secret(service, account, value):
+            credentials[(service, account)] = value
+
+        with (
+            mock.patch.object(cli, "keychain_get", side_effect=get_secret),
+            mock.patch.object(cli, "keychain_exists", side_effect=lambda s, a: (s, a) in credentials),
+            mock.patch.object(cli, "keychain_set", side_effect=set_secret),
+            mock.patch.object(Path, "is_file", return_value=False),
+        ):
+            self.assertFalse(
+                cli.migrate_legacy_hid_credentials("TT-NEW", {"other"}, single_key_device=False)
+            )
+            self.assertTrue(
+                cli.migrate_legacy_hid_credentials(
+                    "TT-NEW", {cli.hid_key_id(legacy_key)}, single_key_device=False
+                )
+            )
+        self.assertEqual(credentials[(cli.PAIRING_SERVICE, "TT-NEW")], legacy_key.hex())
+        self.assertEqual(credentials[(cli.PASSWORD_SERVICE, "TT-NEW")], "secret")
+
     def test_keychain_secrets_never_use_process_arguments(self):
         cli_source = (ROOT / "tinytouch").read_text()
         helper_source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
