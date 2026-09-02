@@ -153,12 +153,8 @@ def keychain_get(service: str, account: str) -> str | None:
     return _keychain().get_password(service, account)
 
 
-def keychain_set(
-    service: str, account: str, value: str, *, trusted_application: str | None = None,
-) -> None:
-    _keychain().set_password(
-        service, account, value, trusted_application=trusted_application,
-    )
+def keychain_set(service: str, account: str, value: str) -> None:
+    _keychain().set_password(service, account, value)
 
 
 def keychain_delete(service: str, account: str) -> None:
@@ -450,7 +446,7 @@ def host_id(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
 
 
-def password_for(account: str, trusted_application: str) -> str:
+def password_for(account: str) -> str:
     global _setup_password
     say("HID mode types this password after a fingerprint match.")
     say("It is stored in this Mac user's Keychain for this device.")
@@ -459,9 +455,7 @@ def password_for(account: str, trusted_application: str) -> str:
             value = _setup_password.decode("utf-8")
             if len(_setup_password) > 160:
                 raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
-            keychain_set(
-                PASSWORD_SERVICE, account, value, trusted_application=trusted_application,
-            )
+            keychain_set(PASSWORD_SERVICE, account, value)
             return value
         finally:
             _setup_password[:] = b"\x00" * len(_setup_password)
@@ -472,13 +466,12 @@ def password_for(account: str, trusted_application: str) -> str:
         raise ToolError("Passwords must be non-empty and match.")
     if len(first.encode()) > 160:
         raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
-    keychain_set(PASSWORD_SERVICE, account, first, trusted_application=trusted_application)
+    keychain_set(PASSWORD_SERVICE, account, first)
     return first
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
     authorize_macos(retain_password=True)
-    trusted_application = str(Path(sys.executable).resolve())
     account = device_account(port)
     key = hashlib.sha256(
         f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
@@ -489,8 +482,8 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
         if len(registered) >= capacity:
             raise ToolError("This device has no free HID host slot. Remove an old host first.")
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
-    keychain_set(PAIRING_SERVICE, account, key.hex(), trusted_application=trusted_application)
-    password_for(account, trusted_application)
+    keychain_set(PAIRING_SERVICE, account, key.hex())
+    password_for(account)
     install_helper()
     current = status(port)
     if current.get("hosts", "0") == "0":

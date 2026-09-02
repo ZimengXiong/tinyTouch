@@ -51,24 +51,6 @@ _SECURITY.SecKeychainUnlock.argtypes = [
     ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_bool,
 ]
 _SECURITY.SecKeychainUnlock.restype = ctypes.c_int32
-_SECURITY.SecTrustedApplicationCreateFromPath.argtypes = [
-    ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p),
-]
-_SECURITY.SecTrustedApplicationCreateFromPath.restype = ctypes.c_int32
-_SECURITY.SecAccessCreate.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
-]
-_SECURITY.SecAccessCreate.restype = ctypes.c_int32
-_SECURITY.SecKeychainItemSetAccess.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_SECURITY.SecKeychainItemSetAccess.restype = ctypes.c_int32
-_CORE_FOUNDATION.CFStringCreateWithCString.argtypes = [
-    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
-]
-_CORE_FOUNDATION.CFStringCreateWithCString.restype = ctypes.c_void_p
-_CORE_FOUNDATION.CFArrayCreate.argtypes = [
-    ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_long, ctypes.c_void_p,
-]
-_CORE_FOUNDATION.CFArrayCreate.restype = ctypes.c_void_p
 
 
 class KeychainError(RuntimeError):
@@ -179,9 +161,7 @@ def has_password(service: str, account: str) -> bool:
     return True
 
 
-def set_password(
-    service: str, account: str, value: str, *, trusted_application: str | None = None,
-) -> None:
+def set_password(service: str, account: str, value: str) -> None:
     """Store a password readable by both the CLI and its LaunchAgent.
 
     Do not attach a per-executable ACL. The CLI is a replaceable standalone
@@ -213,35 +193,6 @@ def set_password(
             raise KeychainError("write", result)
         if not new_item:
             raise KeychainError("write", -1)
-        if trusted_application:
-            application = ctypes.c_void_p()
-            result = _SECURITY.SecTrustedApplicationCreateFromPath(
-                trusted_application.encode("utf-8"), ctypes.byref(application)
-            )
-            if result != 0:
-                raise KeychainError("create trusted application", result)
-            description = _CORE_FOUNDATION.CFStringCreateWithCString(
-                None, b"tinyTouch HID helper", 0x08000100
-            )
-            values = (ctypes.c_void_p * 1)(application)
-            applications = _CORE_FOUNDATION.CFArrayCreate(None, values, 1, None)
-            access = ctypes.c_void_p()
-            try:
-                result = _SECURITY.SecAccessCreate(description, applications, ctypes.byref(access))
-                if result != 0:
-                    raise KeychainError("create access", result)
-                result = _SECURITY.SecKeychainItemSetAccess(new_item, access)
-                if result != 0:
-                    raise KeychainError("set access", result)
-            finally:
-                if access:
-                    _CORE_FOUNDATION.CFRelease(access)
-                if applications:
-                    _CORE_FOUNDATION.CFRelease(applications)
-                if description:
-                    _CORE_FOUNDATION.CFRelease(description)
-                if application:
-                    _CORE_FOUNDATION.CFRelease(application)
         _CORE_FOUNDATION.CFRelease(new_item)
     finally:
         if item:
