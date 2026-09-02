@@ -49,7 +49,7 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         console = self.source("config_console.c")
         piv = self.source("piv.c")
         self.assertIn('strcmp(command, "PIV CREATE")', console)
-        self.assertIn('"piv=%s"', console)
+        self.assertIn('piv_uses_provisioned_keys() ? "ready" : "unconfigured"', console)
         self.assertIn("piv_create_identity", piv)
         self.assertIn("piv_reload_keys()", piv)
 

@@ -12,7 +12,6 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/sha256.h"
-#include "mbedtls/bignum.h"
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
 
@@ -159,12 +158,10 @@ static bool write_identity_part(nvs_handle_t handle, const char *name,
 static bool create_certificate(mbedtls_pk_context *key, char *output,
                                size_t output_size) {
   uint8_t serial_bytes[16];
-  mbedtls_mpi serial;
   mbedtls_x509write_cert certificate;
-  mbedtls_mpi_init(&serial);
   mbedtls_x509write_crt_init(&certificate);
   esp_fill_random(serial_bytes, sizeof(serial_bytes));
-  int result = mbedtls_mpi_read_binary(&serial, serial_bytes, sizeof(serial_bytes));
+  int result = 0;
   mbedtls_x509write_crt_set_subject_key(&certificate, key);
   mbedtls_x509write_crt_set_issuer_key(&certificate, key);
   if (result == 0) result = mbedtls_x509write_crt_set_subject_name(
@@ -173,13 +170,13 @@ static bool create_certificate(mbedtls_pk_context *key, char *output,
       &certificate, "CN=tinyTouch PIV");
   if (result == 0) result = mbedtls_x509write_crt_set_validity(
       &certificate, "20260101000000", "20460101000000");
-  if (result == 0) result = mbedtls_x509write_crt_set_serial(&certificate, &serial);
+  if (result == 0) result = mbedtls_x509write_crt_set_serial_raw(
+      &certificate, serial_bytes, sizeof(serial_bytes));
   if (result == 0) mbedtls_x509write_crt_set_md_alg(&certificate, MBEDTLS_MD_SHA256);
   if (result == 0) result = mbedtls_x509write_crt_pem(
       &certificate, (unsigned char *)output, output_size, piv_rng, NULL);
   secure_wipe(serial_bytes, sizeof(serial_bytes));
   mbedtls_x509write_crt_free(&certificate);
-  mbedtls_mpi_free(&serial);
   return result == 0;
 }
 
