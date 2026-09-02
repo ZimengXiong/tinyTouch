@@ -428,7 +428,15 @@ def foreground_session(port: str):
 
 def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
     if _active_serial is not None:
-        return exchange_serial(_active_serial, command, timeout=timeout)
+        try:
+            return exchange_serial(_active_serial, command, timeout=timeout)
+        except Exception as exc:
+            if "Device not configured" in str(exc):
+                raise ToolError(
+                    "tinyTouch's USB serial port reconnected during this command. "
+                    "No incomplete configuration was saved. Wait two seconds and run the command again."
+                ) from exc
+            raise
     try:
         with foreground_session(port):
             return exchange_serial(_active_serial, command, timeout=timeout)
