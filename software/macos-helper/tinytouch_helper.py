@@ -47,6 +47,7 @@ SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
+STARTUP_HANDSHAKE_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
@@ -513,6 +514,10 @@ def open_serial(port: str) -> serial.Serial:
         ser.rts = False
     except (OSError, serial.SerialException):
         pass
+    # Discard boot diagnostics and any partial command from an earlier USB
+    # session. The helper only accepts this connection after a fresh PING/PONG.
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
     return ser
 
 
@@ -522,6 +527,27 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     if len(remainder) > MAX_SERIAL_LINE_BYTES:
         remainder = b""
     return lines, remainder
+
+
+def require_startup_pong(ser: serial.Serial, device_id: str, port: str) -> None:
+    """Confirm that the newly opened console accepts commands before serving HID."""
+    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+    ser.write(b"PING\n")
+    ser.flush()
+    deadline = time.monotonic() + STARTUP_HANDSHAKE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        chunk = ser.read(256)
+        if not chunk:
+            continue
+        for raw in decoder.feed(chunk):
+            try:
+                line = raw.decode("ascii").strip()
+            except UnicodeDecodeError:
+                continue
+            if line == "PONG":
+                return
+    diagnostic("worker.startup_handshake_failed", level="warning", device_id=device_id, port=port)
+    raise serial.SerialException(f"tinyTouch console did not answer PING: {port}")
 
 
 def serve_port(
@@ -541,14 +567,8 @@ def serve_port(
     decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
         with open_serial(port) as ser:
+            require_startup_pong(ser, device_id, port)
             diagnostic("worker.connected", device_id=device_id, port=port)
-            # A USB reconnect can expose the serial node before the device's
-            # console is usable. Probe now instead of waiting five seconds for
-            # the normal idle heartbeat; a failed probe makes the manager open
-            # a fresh port automatically.
-            ser.write(b"PING\n")
-            ser.flush()
-            heartbeat_sent_at = time.monotonic()
             while True:
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
