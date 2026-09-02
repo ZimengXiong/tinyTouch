@@ -123,7 +123,7 @@ class ReleasePipelineTests(unittest.TestCase):
             )
             integrity.validate_release(output, self.commit, flat=True)
             integrity.validate_checksums(output)
-            self.assertFalse((output / "ota_data_initial.bin").exists())
+            self.assertTrue((output / "ota_data_initial.bin").is_file())
             self.assertFalse((output / "ota_slot1.bin").exists())
             self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
 
