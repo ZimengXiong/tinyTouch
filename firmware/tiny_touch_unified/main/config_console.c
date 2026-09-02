@@ -668,7 +668,11 @@ static void handle_command(void) {
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
+#ifdef TINYTOUCH_LOCAL_OTA_TEST
+    bool sensor_ok = true;
+#else
     bool sensor_ok = fingerprint_count() >= 0;
+#endif
     bool ok = build_matches && sensor_ok && firmware_update_confirm_running();
     send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
