@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "device_config.h"
 #include "piv.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
@@ -94,6 +95,11 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
       send_parameters(slot, seq);
       break;
     case 0x6f: {
+      if (device_config_mode() != DEVICE_MODE_PIV) {
+        const uint8_t unavailable[] = {0x69, 0x85};
+        send_ccid(0x80, slot, seq, 0x00, 0x00, unavailable, sizeof(unavailable));
+        break;
+      }
       size_t resp_len = sizeof(tx_buf) - 10;
       bool ok = apdu_handler &&
                 apdu_handler(msg + 10, len, tx_buf + 10, &resp_len, sizeof(tx_buf) - 10);
