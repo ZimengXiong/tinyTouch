@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "esp_log.h"
-#include "device_config.h"
 #include "piv.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
@@ -191,10 +190,7 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.device = &tiny_touch_device_descriptor;
   tusb_cfg.descriptor.string = tiny_touch_string_descriptors;
   tusb_cfg.descriptor.string_count = tiny_touch_string_descriptor_count;
-  tusb_cfg.descriptor.full_speed_config =
-      device_config_mode() == DEVICE_MODE_HID
-          ? tiny_touch_hid_configuration_descriptor
-          : tiny_touch_piv_configuration_descriptor;
+  tusb_cfg.descriptor.full_speed_config = tiny_touch_configuration_descriptor;
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 }

@@ -8,7 +8,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "runtime_health.h"
 
 static const char *TAG = "fingerprint";
 
@@ -24,15 +23,10 @@ static const uint8_t FP_LED_BLUE = 0x01;
 static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
-static const uint8_t MAX_TRANSPORT_FAILURES = 3;
-static const uint32_t RECOVERY_INTERVAL_MS = 5000;
 
 static uint8_t current_led = 0xff;
 static SemaphoreHandle_t fp_mutex;
 static bool sensor_ready;
-static bool background_paused;
-static uint8_t consecutive_transport_failures;
-static TickType_t last_recovery_attempt;
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool sensor_ready_snapshot(void) {
@@ -42,23 +36,9 @@ static bool sensor_ready_snapshot(void) {
   return ready;
 }
 
-static bool background_paused_snapshot(void) {
-  portENTER_CRITICAL(&sensor_state_lock);
-  bool paused = background_paused;
-  portEXIT_CRITICAL(&sensor_state_lock);
-  return paused;
-}
-
-static void set_background_paused(bool paused) {
-  portENTER_CRITICAL(&sensor_state_lock);
-  background_paused = paused;
-  portEXIT_CRITICAL(&sensor_state_lock);
-}
-
 static void set_sensor_ready(bool ready) {
   portENTER_CRITICAL(&sensor_state_lock);
   sensor_ready = ready;
-  if (ready) consecutive_transport_failures = 0;
   portEXIT_CRITICAL(&sensor_state_lock);
 }
 
@@ -66,19 +46,7 @@ static void note_transport_success(void) {
   set_sensor_ready(true);
 }
 
-static void note_transport_failure(void) {
-  bool entered_degraded_state = false;
-  portENTER_CRITICAL(&sensor_state_lock);
-  if (consecutive_transport_failures < UINT8_MAX) consecutive_transport_failures++;
-  if (consecutive_transport_failures >= MAX_TRANSPORT_FAILURES) {
-    entered_degraded_state = sensor_ready;
-    sensor_ready = false;
-  }
-  portEXIT_CRITICAL(&sensor_state_lock);
-  if (entered_degraded_state) {
-    ESP_LOGE(TAG, "fingerprint sensor entered degraded state");
-  }
-}
+static void note_transport_failure(void) { set_sensor_ready(false); }
 
 static uint16_t fp_checksum(uint8_t packet_id, const uint8_t *payload, size_t payload_len) {
   uint16_t length = payload_len + 2;
@@ -155,12 +123,10 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       if (response[2] != 0xff || response[3] != 0xff ||
           response[4] != 0xff || response[5] != 0xff || resp_len < 2) {
         ESP_LOGW(TAG, "fingerprint response has invalid address/length");
-        runtime_health_note_sensor_protocol_error();
         note_transport_failure();
         return false;
       }
       if (expected > sizeof(response)) {
-        runtime_health_note_sensor_protocol_error();
         note_transport_failure();
         return false;
       }
@@ -169,14 +135,12 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       size_t response_payload_len = resp_len - 2;
       if (!fp_response_checksum_valid(response, expected)) {
         ESP_LOGW(TAG, "fingerprint response checksum mismatch");
-        runtime_health_note_sensor_protocol_error();
         note_transport_failure();
         return false;
       }
 
       if (packet_id == 0x07) {
         if (response_payload_len < 1) {
-          runtime_health_note_sensor_protocol_error();
           note_transport_failure();
           return false;
         }
@@ -248,12 +212,7 @@ static void show_result(bool ok) {
 }
 
 void fingerprint_led_idle(void) {
-  if (background_paused_snapshot()) return;
   if (!fp_take(1000)) return;
-  if (background_paused_snapshot()) {
-    fp_give();
-    return;
-  }
   set_aura(FP_LED_BLUE);
   fp_give();
 }
@@ -338,12 +297,7 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
 
 fingerprint_match_t fingerprint_authorize_poll_match(void) {
   fingerprint_match_t no_match = {0};
-  if (background_paused_snapshot()) return no_match;
   if (!fp_take(0)) return no_match;
-  if (background_paused_snapshot()) {
-    fp_give();
-    return no_match;
-  }
   uint8_t confirm = 0xff;
   if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
     fp_give();
@@ -403,31 +357,6 @@ bool fingerprint_is_ready(void) {
   return sensor_ready_snapshot();
 }
 
-void fingerprint_service_health(void) {
-  if (sensor_ready_snapshot() || background_paused_snapshot()) return;
-  TickType_t now = xTaskGetTickCount();
-  if ((TickType_t)(now - last_recovery_attempt) < pdMS_TO_TICKS(RECOVERY_INTERVAL_MS) ||
-      !fp_take(0)) {
-    return;
-  }
-  if (background_paused_snapshot()) {
-    fp_give();
-    return;
-  }
-  last_recovery_attempt = now;
-  uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
-  uint8_t confirm = 0xff;
-  bool recovered = fp_command(0x13, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
-                   confirm == 0x00;
-  set_sensor_ready(recovered);
-  fp_give();
-  if (recovered) {
-    ESP_LOGI(TAG, "fingerprint sensor recovered");
-    current_led = 0xff;
-    fingerprint_led_idle();
-  }
-}
-
 static bool fingerprint_authorize_locked(void) {
   uint8_t confirm = 0xff;
   ESP_LOGI(TAG, "finger present hint=%d", finger_present());
@@ -466,42 +395,6 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   if (prompt) prompt();
   bool ok = fingerprint_authorize_locked();
   fp_give();
-  return ok;
-}
-
-bool fingerprint_authorize_update_prompted(void (*prompt)(void)) {
-  // Keep the sensor bus quiet after authorization. The OTA restart must not
-  // truncate a background UART command and leave the sensor parser wedged.
-  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
-  if (prompt) prompt();
-  bool ok = fingerprint_authorize_locked();
-  if (ok) set_background_paused(true);
-  fp_give();
-  return ok;
-}
-
-void fingerprint_background_resume(void) {
-  set_background_paused(false);
-}
-
-bool fingerprint_background_pause(void) {
-  set_background_paused(true);
-  if (!fp_take(2000)) {
-    set_background_paused(false);
-    return false;
-  }
-  fp_give();
-  return true;
-}
-
-bool fingerprint_prepare_for_restart(void) {
-  if (!fp_take(2000)) return false;
-  uint8_t confirm = 0xff;
-  bool ok = fp_command(0x3d, NULL, 0, &confirm, NULL, NULL, 1000) &&
-            confirm == 0x00;
-  set_sensor_ready(false);
-  fp_give();
-  if (ok) vTaskDelay(pdMS_TO_TICKS(200));
   return ok;
 }
 
