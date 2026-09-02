@@ -1915,7 +1915,7 @@ def pair_piv(requested_identity: str | None = None, port: str | None = None) -> 
             say()
             say("macOS may show three prompts:")
             say("  1. Terminal Password — your normal Mac password")
-            say("  2. Smart Card PIN — 111111 (six zeros)")
+            say("  2. Smart Card PIN — 111111 (six ones)")
             say("  3. Keychain/System Password — your normal Mac password again")
             try:
                 try:
