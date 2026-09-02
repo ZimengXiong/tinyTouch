@@ -42,18 +42,8 @@ _SECURITY.SecKeychainItemFreeContent.restype = ctypes.c_int32
 _CORE_FOUNDATION.CFRelease.argtypes = [ctypes.c_void_p]
 
 
-_SECURITY.SecAccessCreate.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
-]
-_SECURITY.SecAccessCreate.restype = ctypes.c_int32
-_SECURITY.SecKeychainItemSetAccess.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_SECURITY.SecKeychainItemSetAccess.restype = ctypes.c_int32
 _SECURITY.SecKeychainSetUserInteractionAllowed.argtypes = [ctypes.c_bool]
 _SECURITY.SecKeychainSetUserInteractionAllowed.restype = ctypes.c_int32
-_CORE_FOUNDATION.CFStringCreateWithCString.argtypes = [
-    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
-]
-_CORE_FOUNDATION.CFStringCreateWithCString.restype = ctypes.c_void_p
 
 
 class KeychainError(RuntimeError):
@@ -77,29 +67,6 @@ def set_background_mode() -> None:
 def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
     raw = value.encode("utf-8")
     return raw, ctypes.create_string_buffer(raw, len(raw) + 1)
-
-
-def _set_calling_app_access(item, service: str) -> None:
-    """Restrict the item to the calling application and verify the ACL update."""
-    if not item:
-        raise KeychainError("set access", -1)
-    service_bytes = service.encode("utf-8")
-    cf_desc = _CORE_FOUNDATION.CFStringCreateWithCString(None, service_bytes, 0x08000100)
-    if not cf_desc:
-        raise KeychainError("set access", -1)
-    access = ctypes.c_void_p()
-    try:
-        status = _SECURITY.SecAccessCreate(cf_desc, None, ctypes.byref(access))
-    finally:
-        _CORE_FOUNDATION.CFRelease(cf_desc)
-    if status != 0 or not access:
-        raise KeychainError("create access", status)
-    try:
-        status = _SECURITY.SecKeychainItemSetAccess(item, access)
-        if status != 0:
-            raise KeychainError("set access", status)
-    finally:
-        _CORE_FOUNDATION.CFRelease(access)
 
 
 def _find(service: str, account: str, *, include_secret: bool):
@@ -154,35 +121,35 @@ def has_password(service: str, account: str) -> bool:
 
 
 def set_password(service: str, account: str, value: str) -> None:
+    """Store a password readable by both the CLI and its LaunchAgent.
+
+    Do not attach a per-executable ACL. The CLI is a replaceable standalone
+    executable while the helper is a separate LaunchAgent executable. An ACL
+    written for one of those paths makes the other fail without a usable UI.
+    Recreating an old item deliberately removes any ACL created by an older
+    tinyTouch version.
+    """
     status, item, _, _ = _find(service, account, include_secret=False)
     value_raw, value_buffer = _encoded(value)
     try:
         if status == 0:
-            result = _SECURITY.SecKeychainItemModifyAttributesAndData(
-                item, None, len(value_raw), value_buffer
-            )
+            result = _SECURITY.SecKeychainItemDelete(item)
             if result != 0:
-                raise KeychainError("write", result)
-            _set_calling_app_access(item, service)
-            return
-        if status == _NOT_FOUND:
-            service_raw, service_buffer = _encoded(service)
-            account_raw, account_buffer = _encoded(account)
-            new_item = ctypes.c_void_p()
-            result = _SECURITY.SecKeychainAddGenericPassword(
-                None, len(service_raw), service_buffer, len(account_raw), account_buffer,
-                len(value_raw), value_buffer, ctypes.byref(new_item),
-            )
-            if result != 0:
-                raise KeychainError("write", result)
-            if not new_item:
-                raise KeychainError("write", -1)
-            try:
-                _set_calling_app_access(new_item, service)
-            finally:
-                _CORE_FOUNDATION.CFRelease(new_item)
-            return
-        raise KeychainError("find", status)
+                raise KeychainError("replace", result)
+        elif status != _NOT_FOUND:
+            raise KeychainError("find", status)
+        service_raw, service_buffer = _encoded(service)
+        account_raw, account_buffer = _encoded(account)
+        new_item = ctypes.c_void_p()
+        result = _SECURITY.SecKeychainAddGenericPassword(
+            None, len(service_raw), service_buffer, len(account_raw), account_buffer,
+            len(value_raw), value_buffer, ctypes.byref(new_item),
+        )
+        if result != 0:
+            raise KeychainError("write", result)
+        if not new_item:
+            raise KeychainError("write", -1)
+        _CORE_FOUNDATION.CFRelease(new_item)
     finally:
         if item:
             _CORE_FOUNDATION.CFRelease(item)

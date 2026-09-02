@@ -411,6 +411,12 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
     keychain_set(PAIRING_SERVICE, account, key.hex())
     if not keychain_exists(PASSWORD_SERVICE, account):
         password_for(account)
+    else:
+        saved_password = keychain_get(PASSWORD_SERVICE, account)
+        # Recreate an item written by an older CLI so the background helper
+        # can read it too. This does not ask for the password again.
+        if saved_password is not None:
+            keychain_set(PASSWORD_SERVICE, account, saved_password)
     install_helper()
     current = status(port)
     if current.get("hosts", "0") == "0":

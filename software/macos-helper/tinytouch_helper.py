@@ -773,6 +773,17 @@ def run_manager() -> None:
                 level="warning",
                 device_id=device_id,
                 error_type=type(worker.error).__name__ if worker.error else "unexpected_exit",
+                keychain_operation=(
+                    worker.error.args[0].split()[1]
+                    if isinstance(worker.error, KeychainError) and worker.error.args
+                    else None
+                ),
+                keychain_status=(
+                    worker.error.status if isinstance(worker.error, KeychainError) else None
+                ),
+                keychain_status_name=(
+                    worker.error.status_name if isinstance(worker.error, KeychainError) else None
+                ),
                 retry_seconds=round(delay, 3),
             )
 
