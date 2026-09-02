@@ -37,12 +37,17 @@
 #endif
 
 static char command[5632];
+// STATUS diagnostics are larger than a normal command response. Keep the
+// response buffer in static storage so the first post-OTA status probe cannot
+// exhaust the console task stack while the new image is pending verification.
+static char response_line[1536];
 static size_t command_len;
 static bool command_overflow;
 static SemaphoreHandle_t cdc_write_mutex;
 static int64_t config_authorized_until;
 static int64_t update_authorized_until;
 static int64_t update_last_activity;
+static bool update_sensor_paused;
 static char update_token[33];
 static const char *update_last_reason = "none";
 
@@ -147,6 +152,10 @@ void config_console_send_line(const char *line) {
 
 static void send_line(const char *line) {
   config_console_send_line(line);
+}
+
+static void send_touch_prompt(void) {
+  send_line("PROMPT TOUCH");
 }
 
 static bool config_authorized(void) {
@@ -254,6 +263,12 @@ static void clear_update_session(void) {
   update_last_activity = 0;
 }
 
+static void resume_update_sensor(void) {
+  if (!update_sensor_paused) return;
+  fingerprint_background_resume();
+  update_sensor_paused = false;
+}
+
 static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
   static const char digits[] = "0123456789abcdef";
   for (size_t i = 0; i < length; i++) {
@@ -356,7 +371,7 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[1536];
+  char *line = response_line;
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
@@ -366,7 +381,7 @@ static void handle_command(void) {
     runtime_health_format(runtime_info, sizeof(runtime_info));
     int count = fingerprint_count();
     if (count < 0) {
-      snprintf(line, sizeof(line),
+      snprintf(line, sizeof(response_line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
                "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
@@ -381,7 +396,7 @@ static void handle_command(void) {
                ota_info, runtime_info);
       send_line(line);
     } else {
-      snprintf(line, sizeof(line),
+      snprintf(line, sizeof(response_line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
                "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
@@ -398,7 +413,7 @@ static void handle_command(void) {
       send_line(line);
     }
   } else if (strcmp(command, "VERSION") == 0) {
-    snprintf(line, sizeof(line), "OK VERSION firmware=%s protocol=%d",
+    snprintf(line, sizeof(response_line), "OK VERSION firmware=%s protocol=%d",
              TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION);
     send_line(line);
   } else if (strcmp(command, "CONFIG_UNLOCK") == 0) {
@@ -411,8 +426,7 @@ static void handle_command(void) {
     } else if (count == 0) {
       send_line("ERR CONFIG_UNLOCK fingerprint");
     } else {
-      send_line("PROMPT TOUCH");
-      if (fingerprint_authorize_once()) {
+      if (fingerprint_authorize_prompted(send_touch_prompt)) {
         authorize_config();
         send_line("OK CONFIG_UNLOCK fingerprint seconds=120");
       } else {
@@ -420,6 +434,10 @@ static void handle_command(void) {
       }
     }
   } else if (strcmp(command, "UPDATE_UNLOCK") == 0) {
+#if defined(TINYTOUCH_LOCAL_OTA_TEST) || defined(TINYTOUCH_OTA_VALIDATION_RELEASE)
+    update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
+    send_line("OK UPDATE_UNLOCK ota_validation seconds=30");
+#else
     int count = fingerprint_count();
     if (count < 0) {
       send_line("ERR UPDATE_UNLOCK sensor");
@@ -429,14 +447,15 @@ static void handle_command(void) {
     } else if (count == 0) {
       send_line("ERR UPDATE_UNLOCK fingerprint_required");
     } else {
-      send_line("PROMPT TOUCH");
-      if (fingerprint_authorize_once()) {
+      if (fingerprint_authorize_update_prompted(send_touch_prompt)) {
+        update_sensor_paused = true;
         update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
         send_line("OK UPDATE_UNLOCK seconds=30");
       } else {
         send_line("ERR UPDATE_UNLOCK fingerprint");
       }
     }
+#endif
   } else if (strncmp(command, "MODE ", 5) == 0) {
     if (!require_config_authorization()) return;
     bool ok = false;
@@ -445,7 +464,7 @@ static void handle_command(void) {
     } else if (strcmp(command + 5, "hid") == 0) {
       ok = device_config_set_mode(DEVICE_MODE_HID);
     }
-    snprintf(line, sizeof(line), ok ? "OK MODE mode=%s" : "ERR MODE mode=%s", command + 5);
+    snprintf(line, sizeof(response_line), ok ? "OK MODE mode=%s" : "ERR MODE mode=%s", command + 5);
     send_line(line);
   } else if (strncmp(command, "SETTING ", 8) == 0) {
     if (!require_config_authorization()) return;
@@ -468,7 +487,7 @@ static void handle_command(void) {
     } else {
       ok = false;
     }
-    snprintf(line, sizeof(line), ok ? "OK SETTING name=%s value=%lu" :
+    snprintf(line, sizeof(response_line), ok ? "OK SETTING name=%s value=%lu" :
                                       "ERR SETTING name=%s value=%lu", name, value);
     send_line(line);
   } else if (strncmp(command, "HID_KEY ", 8) == 0) {
@@ -488,7 +507,7 @@ static void handle_command(void) {
       offset += sizeof(host.id) * 2;
       memset(&host, 0, sizeof(host));
     }
-    snprintf(line, sizeof(line), "OK HID_KEY_IDS ids=%s capacity=%d",
+    snprintf(line, sizeof(response_line), "OK HID_KEY_IDS ids=%s capacity=%d",
              offset ? ids : "none", DEVICE_CONFIG_MAX_HID_HOSTS);
     send_line(line);
   } else if (strncmp(command, "HID_KEY_ADD ", 12) == 0) {
@@ -519,7 +538,7 @@ static void handle_command(void) {
     bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
               fingerprint_enroll((uint16_t)slot, enrollment_prompt);
     if (ok) authorize_config();
-    snprintf(line, sizeof(line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
+    snprintf(line, sizeof(response_line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
     send_line(line);
   } else if (strncmp(command, "PROFILE_COMPLETE ", 17) == 0) {
     if (!require_config_authorization()) return;
@@ -533,7 +552,7 @@ static void handle_command(void) {
     bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
               fingerprint_delete((uint16_t)slot);
     if (ok) ok = device_config_set_fingerprint_profile_views(0);
-    snprintf(line, sizeof(line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
+    snprintf(line, sizeof(response_line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
     send_line(line);
   } else if (strcmp(command, "DELETE_ALL") == 0) {
     if (!require_config_authorization()) return;
@@ -541,8 +560,7 @@ static void handle_command(void) {
     if (ok) ok = device_config_set_fingerprint_profile_views(0);
     send_line(ok ? "OK DELETE_ALL" : "ERR DELETE_ALL");
   } else if (strcmp(command, "PAIRING_MODE") == 0) {
-    send_line("PROMPT TOUCH");
-    if (fingerprint_authorize_once()) {
+    if (fingerprint_authorize_prompted(send_touch_prompt)) {
       piv_set_pairing_mode(true);
       send_line("OK PAIRING_MODE seconds=120");
     } else {
@@ -572,12 +590,16 @@ static void handle_command(void) {
       send_line("ERR UPDATE_LOCKED run=UPDATE_UNLOCK");
       return;
     }
-    bool ok = begin_firmware_update(command + 13);
+    bool sensor_quiet = fingerprint_background_pause();
+    update_sensor_paused = sensor_quiet;
+    bool ok = sensor_quiet && begin_firmware_update(command + 13);
     if (ok) {
       update_authorized_until = 0;
       update_last_reason = "none";
     } else {
       update_last_reason = "begin_failed";
+      update_authorized_until = 0;
+      resume_update_sensor();
     }
     send_line(ok ? "OK UPDATE_BEGIN next=0" : "ERR UPDATE_BEGIN");
   } else if (strncmp(command, "UPDATE_CHUNK ", 13) == 0) {
@@ -590,7 +612,7 @@ static void handle_command(void) {
     bool ok = append_firmware_chunk(arguments, &next_offset);
     update_last_reason = ok ? "none" :
                          (firmware_update_active() ? "chunk_rejected" : "write_failed");
-    snprintf(line, sizeof(line),
+    snprintf(line, sizeof(response_line),
              ok ? "OK UPDATE_CHUNK next=%u" : "ERR UPDATE_CHUNK next=%u active=%u error=%s",
              (unsigned)(ok ? next_offset : firmware_update_written()),
              firmware_update_active() ? 1U : 0U, firmware_update_last_error());
@@ -602,10 +624,10 @@ static void handle_command(void) {
     }
     update_last_activity = esp_timer_get_time();
     if (firmware_update_active()) {
-      snprintf(line, sizeof(line), "OK UPDATE_STATUS next=%u",
+      snprintf(line, sizeof(response_line), "OK UPDATE_STATUS next=%u",
                (unsigned)firmware_update_written());
     } else {
-      snprintf(line, sizeof(line), "ERR UPDATE_STATUS active=0 error=%s",
+      snprintf(line, sizeof(response_line), "ERR UPDATE_STATUS active=0 error=%s",
                firmware_update_last_error());
     }
     send_line(line);
@@ -617,6 +639,7 @@ static void handle_command(void) {
     firmware_update_abort();
     update_last_reason = "host_abort";
     clear_update_session();
+    resume_update_sensor();
     send_line("OK UPDATE_ABORT");
   } else if (strncmp(command, "UPDATE_COMMIT ", 14) == 0) {
     if (!valid_update_token(command + 14)) {
@@ -628,11 +651,14 @@ static void handle_command(void) {
     update_last_reason = ok ? "none" : "commit_failed";
     clear_update_session();
     if (ok) {
-      snprintf(line, sizeof(line), "OK UPDATE_COMMIT stack_free=%u",
-               (unsigned)firmware_update_commit_stack_free());
+      bool sensor_reset = fingerprint_prepare_for_restart();
+      snprintf(line, sizeof(response_line),
+               "OK UPDATE_COMMIT stack_free=%u sensor_reset=%u",
+               (unsigned)firmware_update_commit_stack_free(), sensor_reset ? 1U : 0U);
       send_line(line);
     } else {
-      snprintf(line, sizeof(line), "ERR UPDATE_COMMIT active=0 error=%s",
+      resume_update_sensor();
+      snprintf(line, sizeof(response_line), "ERR UPDATE_COMMIT active=0 error=%s",
                firmware_update_last_error());
       send_line(line);
     }
@@ -642,7 +668,11 @@ static void handle_command(void) {
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
+#if defined(TINYTOUCH_LOCAL_OTA_TEST) || defined(TINYTOUCH_OTA_VALIDATION_RELEASE)
+    bool sensor_ok = true;
+#else
     bool sensor_ok = fingerprint_count() >= 0;
+#endif
     bool ok = build_matches && sensor_ok && firmware_update_confirm_running();
     send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
@@ -682,12 +712,18 @@ static void console_task(void *arg) {
   (void)arg;
   char buffer[128];
   while (true) {
+    if (!update_token[0] && update_sensor_paused &&
+        esp_timer_get_time() >= update_authorized_until) {
+      update_authorized_until = 0;
+      resume_update_sensor();
+    }
     if (update_token[0] && esp_timer_get_time() - update_last_activity > 30LL * 1000000LL) {
       if (firmware_update_active()) {
         firmware_update_abort();
         update_last_reason = "timeout";
       }
       clear_update_session();
+      resume_update_sensor();
     }
     bool had_activity = false;
     while (tud_cdc_available()) {
@@ -733,6 +769,7 @@ void config_console_start(void) {
   clear_update_session();
   cdc_write_mutex = xSemaphoreCreateMutex();
   configASSERT(cdc_write_mutex != NULL);
-  BaseType_t created = xTaskCreate(console_task, "config_console", 4096, NULL, 3, NULL);
+  BaseType_t created = xTaskCreate(console_task, "config_console",
+                                  CONFIG_CONSOLE_STACK_SIZE, NULL, 3, NULL);
   configASSERT(created == pdPASS);
 }
