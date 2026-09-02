@@ -59,6 +59,18 @@ class WorkerStateMachineTests(unittest.TestCase):
         self.assertEqual(worker.started_at, 123.0)
         self.assertEqual(worker.phase, helper.WorkerPhase.STOPPED)
 
+    def test_worker_carries_stable_identity_across_port_churn(self):
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.renumbered", "1-1")
+        with mock.patch.object(helper, "serve_port") as serve_port:
+            worker = helper.Worker(endpoint)
+            worker.start()
+            worker.thread.join()
+        serve_port.assert_called_once_with(
+            "/dev/cu.renumbered",
+            stop_event=worker.stop_event,
+            device_id="TT-001122334455",
+        )
+
 
 class HelperProtocolTests(unittest.TestCase):
     @staticmethod

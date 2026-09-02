@@ -524,8 +524,9 @@ def serve_port(
     port: str,
     once: bool = False,
     stop_event: threading.Event | None = None,
+    device_id: str | None = None,
 ) -> None:
-    device_id = port_identity(port)
+    device_id = normalize_serial(device_id or "") or port_identity(port)
     password = load_passwords(device_id)
     pairing_key = pairing_keychain_get(device_id)
     state = load_state(device_id)
@@ -662,7 +663,11 @@ class Worker:
 
     def _run(self) -> None:
         try:
-            serve_port(self.endpoint.port, stop_event=self.stop_event)
+            serve_port(
+                self.endpoint.port,
+                stop_event=self.stop_event,
+                device_id=self.endpoint.device_id,
+            )
         except Exception as exc:
             self.error = exc
             self.phase = WorkerPhase.FAILED
