@@ -607,10 +607,9 @@ def command_setup(args: argparse.Namespace) -> None:
     device = status(port)
     protocol6(device)
     sensor_ready(device)
-    # HID owns the same CDC port. Release it before PIV authorization so the
-    # foreground request has one owner for the complete mode transition.
-    if mode == "piv":
-        remove_helper()
+    # Setup starts from one known state. Remove the old HID service before
+    # opening the CDC port, then install a fresh service after HID pairing.
+    remove_helper()
     unlock(port)
     if mode == "hid":
         configure_hid(port, device)
