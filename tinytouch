@@ -104,10 +104,9 @@ def authorize_macos(*, retain_password: bool = False) -> None:
             raise ToolError("A Mac password is required for this step.")
         try:
             try:
-                _keychain().unlock_default_keychain(entered)
                 _keychain().disable_user_interaction()
             except _keychain().KeychainError as exc:
-                raise ToolError("Mac password did not unlock the login Keychain.") from exc
+                raise ToolError("Could not disable Keychain dialogs for this setup.") from exc
             validated = subprocess.run(
                 ["sudo", "-S", "-p", "", "-v"], input=bytes(entered) + b"\n",
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
