@@ -267,6 +267,7 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
         raise ToolError("pyserial is required. Run setup again.") from exc
     was_loaded = unload_helper()
     lines: list[str] = []
+    touch_prompted = False
     try:
         with serial.Serial(port, 115200, timeout=0.25, write_timeout=2) as device:
             time.sleep(0.2)
@@ -282,6 +283,9 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
                 if line:
                     lines.append(line)
                     verbose("device: " + line)
+                    if line == "EVENT TOUCH" and not touch_prompted:
+                        say("Touch the fingerprint sensor now.")
+                        touch_prompted = True
                     if is_terminal(command, line):
                         break
     except Exception as exc:
