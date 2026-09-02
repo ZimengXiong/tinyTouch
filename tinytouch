@@ -417,8 +417,17 @@ def foreground_session(port: str):
 def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
     if _active_serial is not None:
         return exchange_serial(_active_serial, command, timeout=timeout)
-    with foreground_session(port):
-        return exchange_serial(_active_serial, command, timeout=timeout)
+    try:
+        with foreground_session(port):
+            return exchange_serial(_active_serial, command, timeout=timeout)
+    except Exception as exc:
+        if "Device not configured" in str(exc):
+            raise ToolError(
+                "tinyTouch's USB serial port became unavailable while this command was starting. "
+                "No fingerprint result was recorded. Wait two seconds and run the command again; "
+                "do not unplug it unless 'tinytouch status' cannot find the device."
+            ) from exc
+        raise
 
 
 def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
@@ -676,17 +685,14 @@ def command_setup(args: argparse.Namespace) -> None:
             serial_command(port, "SET MODE HID", timeout=4)
             device = fresh_status(port, {"mode": "hid"})
     else:
-        # PIV setup keeps one foreground CDC connection through authorization,
-        # mode selection, and identity creation.
-        with foreground_session(port):
-            unlock(port)
-            if device.get("mode") != "piv":
-                serial_command(port, "SET MODE PIV", timeout=4)
-                fresh_status(port, {"mode": "piv"})
-            if device.get("piv") != "ready":
-                serial_command(port, "PIV CREATE", timeout=15)
-                if status(port).get("piv") != "ready":
-                    raise ToolError("Live verification failed: the PIV identity is not ready.")
+        unlock(port)
+        if device.get("mode") != "piv":
+            serial_command(port, "SET MODE PIV", timeout=4)
+            fresh_status(port, {"mode": "piv"})
+        if device.get("piv") != "ready":
+            serial_command(port, "PIV CREATE", timeout=15)
+            if status(port).get("piv") != "ready":
+                raise ToolError("Live verification failed: the PIV identity is not ready.")
     enroll(port, args.skip_enroll)
     device = status(port)
     protocol6(device)
@@ -788,10 +794,9 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     if ask("Factory reset clears fingerprints, keys, hosts, and settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
         raise ToolError("Factory reset cancelled.")
     remove_helper()
-    with foreground_session(port):
-        unlock(port)
-        serial_command(port, "RESET FACTORY", timeout=15)
-        cleared = status(port)
+    unlock(port)
+    serial_command(port, "RESET FACTORY", timeout=15)
+    cleared = status(port)
     for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
         if key == "piv" and key not in cleared:
             continue
