@@ -255,6 +255,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git fetch origin main
+          git checkout --detach origin/main
           python packaging/sync-docs-release.py dist/candidate/publish docs/public \
             --commit "$RELEASE_COMMIT"
           test "$(jq -r .version docs/public/release.json)" = "${RELEASE_TAG#v}"
