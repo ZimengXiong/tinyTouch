@@ -270,10 +270,9 @@ jobs:
           done
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add docs/public/cli docs/public/flash/factory \
-            docs/public/flash/recovery docs/public/release.json
+          git add docs/public/cli docs/public/flash/factory docs/public/release.json
           unexpected="$(git diff --cached --name-only | grep -Ev \
-            '^docs/public/(cli|flash/(factory|recovery))(/|$)|^docs/public/release\.json$' || true)"
+            '^docs/public/(cli|flash/factory)(/|$)|^docs/public/release\.json$' || true)"
           test -z "$unexpected"
           if git diff --cached --quiet; then
             echo "The docs site already contains $RELEASE_TAG."
@@ -300,7 +299,7 @@ jobs:
           test -s dist/live-release.json
           test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
-          find docs/public/flash/factory docs/public/flash/recovery docs/public/cli \
+          find docs/public/flash/factory docs/public/cli \
             -type f -print0 | while IFS= read -r -d '' expected; do
             public_relative="${expected#docs/public/}"
             curl -fsSL --max-time 60 \

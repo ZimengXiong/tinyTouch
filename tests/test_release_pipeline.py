@@ -29,7 +29,7 @@ def metadata(path: Path) -> dict:
 class ReleasePipelineTests(unittest.TestCase):
     commit = "1234567890ab" + "c" * 28
 
-    def make_app(self, path: Path, marker: bytes) -> None:
+    def make_app(self, path: Path) -> None:
         payload = bytearray(512)
         offset = 32
         struct.pack_into("<I", payload, offset, integrity.APP_DESCRIPTION_MAGIC)
@@ -41,8 +41,6 @@ class ReleasePipelineTests(unittest.TestCase):
         idf = b"v5.3.2"
         payload[offset + 112:offset + 112 + len(idf)] = idf
         payload[256:268] = self.commit[:12].encode()
-        if marker == b"recovery":
-            payload[300:317] = b"RECOVERY COMPLETE"
         path.write_bytes(payload)
 
     def make_cli(self, path: Path) -> None:
@@ -66,7 +64,7 @@ class ReleasePipelineTests(unittest.TestCase):
             for address, name in images.items():
                 path = directory / name
                 if address == 0x10000:
-                    self.make_app(path, kind.encode())
+                    self.make_app(path)
                 elif name == "ota_data_initial.bin":
                     path.write_bytes(b"ota" * 32)
                 elif name == "partition-table.bin":
@@ -88,9 +86,7 @@ class ReleasePipelineTests(unittest.TestCase):
             }
             (directory / "manifest.json").write_text(json.dumps(layouts[kind]))
         factory_app = root / "factory" / "tiny_touch_unified.bin"
-        factory_state = root / "factory" / "ota_data_initial.bin"
         (root / "tiny_touch_unified.bin").write_bytes(factory_app.read_bytes())
-        (root / "ota_data_initial.bin").write_bytes(factory_state.read_bytes())
         cli = {}
         for key, name in (
             ("macos-arm64", "tinytouch-macos-arm64.tar.gz"),
@@ -107,7 +103,6 @@ class ReleasePipelineTests(unittest.TestCase):
             "boards": ["esp32s3-super-mini", "seeed-xiao-esp32s3"],
             "firmware": layouts,
             "ota": metadata(root / "tiny_touch_unified.bin"),
-            "migration": {"otaState": metadata(root / "ota_data_initial.bin")},
             "cli": cli,
         }
         (root / "release-manifest.json").write_text(json.dumps(manifest))
@@ -128,7 +123,7 @@ class ReleasePipelineTests(unittest.TestCase):
             )
             integrity.validate_release(output, self.commit, flat=True)
             integrity.validate_checksums(output)
-            self.assertTrue((output / "ota_data_initial.bin").is_file())
+            self.assertFalse((output / "ota_data_initial.bin").exists())
             self.assertFalse((output / "ota_slot1.bin").exists())
             self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
 
@@ -149,9 +144,7 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((public / "release.json").read_text()), release_manifest
             )
-            self.assertTrue(
-                (public / "flash" / "recovery" / "firmware" / "tiny_touch_recovery.bin").is_file()
-            )
+            self.assertFalse((public / "flash" / "recovery").exists())
             self.assertTrue((public / "cli" / "tinytouch-macos-arm64.tar.gz").is_file())
             (output / "unexpected.bin").write_bytes(b"unexpected")
             with self.assertRaisesRegex(integrity.IntegrityError, "published asset set mismatch"):
@@ -241,6 +234,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', candidate)
         self.assertNotIn("tinytouch-web-flashers.tar.gz", workflow)
         self.assertNotIn("web/flash", workflow)
+        candidate_workflow = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
+        self.assertNotIn("build-recovery", candidate_workflow)
+        self.assertNotIn("--recovery-build", candidate_workflow)
 
         build_script = (ROOT / "packaging" / "build-standalone-macos.sh").read_text()
         self.assertIn("--require-hashes", build_script)
@@ -263,6 +259,9 @@ class ReleasePipelineTests(unittest.TestCase):
     def test_browser_requires_protocol_six_and_prefetches_before_usb(self):
         source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
         self.assertIn("const UPDATE_PROTOCOL = 6", source)
+        self.assertIn("await loader.eraseFlash()", source)
+        self.assertIn("const base = '/flash/factory'", source)
+        self.assertNotIn("/flash/recovery", source)
         self.assertIn("nextManifest.eraseAll !== false", source)
         self.assertIn("nextManifest.compress !== false", source)
         self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)

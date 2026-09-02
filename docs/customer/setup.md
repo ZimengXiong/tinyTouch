@@ -19,4 +19,4 @@ PIV presents a USB smart card for macOS login and `sudo`.
 
 HID presents a USB keyboard and types a Keychain password after a fingerprint match.
 
-If setup reports an existing fingerprint, use [Recovery](./recovery).
+If setup reports an existing fingerprint, use [Recovery](./recovery) to erase and reinstall the factory image.

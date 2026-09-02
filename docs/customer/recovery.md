@@ -9,7 +9,7 @@ tinytouch status --verbose
 tinytouch factory-reset
 ```
 
-If the device still cannot be set up, open the [Flash center](/flash), choose **Recovery firmware**, and follow the steps. You need Chrome or Edge, a USB data cable, and access to **BOOT** and **RESET**.
+If the device still cannot be set up, open the [Flash center](/flash), choose **Recovery**, and follow the steps. Recovery erases flash and writes the signed factory image. You need Chrome or Edge, a USB data cable, and access to **BOOT** and **RESET**.
 
 After recovery, unplug and reconnect the device, wait 20 seconds, then run:
 

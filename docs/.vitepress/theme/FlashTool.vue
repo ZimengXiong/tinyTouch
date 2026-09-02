@@ -75,7 +75,7 @@ async function sha256(data: ArrayBuffer) {
 }
 
 async function loadManifest(mode: ToolName) {
-  const base = mode === 'factory' ? '/flash/factory' : '/flash/recovery'
+  const base = '/flash/factory'
   const label = mode === 'factory' ? 'Firmware' : 'Recovery'
   const response = await fetch(`${base}/manifest.json`, { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
@@ -153,7 +153,11 @@ async function flash() {
 
     const totalBytes = currentManifest.images.reduce((sum, image) => sum + image.size, 0)
     const written = fileArray.map(() => 0)
-    stage.value = mode === 'recovery' ? 'Writing recovery firmware' : 'Writing firmware'
+    if (mode === 'recovery') {
+      stage.value = 'Erasing flash'
+      await loader.eraseFlash()
+    }
+    stage.value = mode === 'recovery' ? 'Writing factory firmware' : 'Writing firmware'
     phase = 'writing'
     await loader.writeFlash({
       fileArray,
@@ -168,14 +172,13 @@ async function flash() {
       },
     })
     progress.value = 100
-    if (mode === 'recovery') stage.value = 'Starting one-time erase'
     phase = 'reset'
     try { await loader.after('hard_reset') } catch (error) { writeLog(`Reset notice: ${error}`) }
     try { await transport.disconnect() } catch {}
     transport = undefined
     phase = 'done'
     show(mode === 'recovery'
-      ? 'Recovery firmware installed. Unplug and reconnect the device, wait 20 seconds, then run tinytouch setup.'
+      ? 'Flash complete. The device was erased and the factory firmware was installed. Unplug and reconnect it once, then run tinytouch setup.'
       : 'Flash complete. Unplug the board and reconnect it once.', 'success')
   } catch (error) {
     show(friendlyError(error, phase, mode), 'error')

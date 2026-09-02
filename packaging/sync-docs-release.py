@@ -28,13 +28,16 @@ def main() -> None:
     manifest = validate_release(release, args.commit, flat=True)
 
     flash_root = public / "flash"
-    for kind in ("factory", "recovery"):
+    recovery = flash_root / "recovery"
+    if recovery.exists():
+        shutil.rmtree(recovery)
+    for kind in ("factory",):
         destination = flash_root / kind
         if destination.exists():
             shutil.rmtree(destination)
         firmware = destination / "firmware"
         firmware.mkdir(parents=True)
-        layout = manifest["firmware"][kind]
+        layout = manifest["firmware"]["factory"]
         (destination / "manifest.json").write_text(
             json.dumps(layout, indent=2) + "\n", encoding="utf-8"
         )

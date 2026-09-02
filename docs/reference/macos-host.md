@@ -169,9 +169,8 @@ Developer ID distribution remains an optional future release step. See Apple's
 and [distribution-signing guidance](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac)
 if that distribution model is adopted later.
 
-Upgrade uses immutable generations and an atomic symlink replacement. The
-launch-agent migration has a durable marker. A crash at any migration phase
-causes the next CLI run to repeat the migration.
+Upgrade verifies the release archive before replacing the CLI. Device state is
+stored on the device and is not changed by a CLI upgrade.
 
 Run this command to remove executable service components:
 
@@ -179,8 +178,8 @@ Run this command to remove executable service components:
 tinytouch uninstall
 ```
 
-Uninstall preserves Keychain credentials, settings, nonce history, and rollback
-generations. This allows recovery or reinstall without erasing user-owned state.
+Uninstall preserves Keychain credentials, settings, and nonce history. This
+allows a host reinstall without erasing device state.
 
 ## Diagnostics
 
