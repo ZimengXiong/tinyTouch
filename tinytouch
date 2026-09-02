@@ -418,7 +418,21 @@ def unlock(port: str) -> None:
 
 
 def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
-    current = status(port)
+    # macOS can briefly release the CDC device while it probes the smart-card
+    # interface after PIV is enabled. The firmware keeps running and retains
+    # the mode change, so wait for the same USB device instead of reporting a
+    # completed write as a failed setup.
+    deadline = time.monotonic() + 6.0
+    last_error: ToolError | None = None
+    while True:
+        try:
+            current = status(port)
+            break
+        except ToolError as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(0.25)
     for key, value in expected.items():
         if current.get(key) != value:
             raise ToolError(f"Live verification failed: {key} is {current.get(key)!r}, expected {value!r}.")
