@@ -103,6 +103,18 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("hid_remote_wakeup_enabled", hid)
         self.assertIn("tud_remote_wakeup()", hid)
 
+    def test_hid_mode_does_not_advertise_a_smart_card(self):
+        descriptors = (MAIN / "usb_descriptors.c").read_text()
+        usb_start = (MAIN / "usb_ccid.c").read_text()
+        hid_descriptor = descriptors.split(
+            "tiny_touch_hid_configuration_descriptor[]", 1
+        )[1].split("static char tiny_touch_serial", 1)[0]
+        self.assertNotIn("TUSB_DESC_INTERFACE, PIV_ITF_NUM_CCID", hid_descriptor)
+        self.assertNotIn("0x0b, 0x00, 0x00", hid_descriptor)
+        self.assertIn("TUD_HID_DESCRIPTOR", hid_descriptor)
+        self.assertIn("TUD_CDC_DESCRIPTOR", hid_descriptor)
+        self.assertIn("device_config_mode() == DEVICE_MODE_HID", usb_start)
+
     def test_remote_wake_requires_a_fingerprint_match(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         task = source.split("static void touch_hid_task", 1)[1].split(
