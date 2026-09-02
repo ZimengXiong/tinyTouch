@@ -1,6 +1,7 @@
 """Small Security.framework wrapper for generic-password items."""
 
 import ctypes
+import subprocess
 
 
 _SECURITY = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
@@ -115,6 +116,18 @@ def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
     return raw, ctypes.create_string_buffer(raw, len(raw) + 1)
 
 
+def _delete_with_security_tool(service: str, account: str) -> bool:
+    """Remove a legacy item whose old helper ACL blocks a replacement CLI."""
+    result = subprocess.run(
+        ["/usr/bin/security", "delete-generic-password", "-s", service, "-a", account],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _find(service: str, account: str, *, include_secret: bool):
     service_raw, service_buffer = _encoded(service)
     account_raw, account_buffer = _encoded(account)
@@ -182,6 +195,9 @@ def set_password(
     try:
         if status == 0:
             result = _SECURITY.SecKeychainItemDelete(item)
+            if result == -25293 and not _BACKGROUND_MODE:
+                if _delete_with_security_tool(service, account):
+                    result = 0
             if result != 0:
                 raise KeychainError("replace", result)
         elif status != _NOT_FOUND:
