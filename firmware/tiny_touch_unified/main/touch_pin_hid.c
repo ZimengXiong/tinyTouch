@@ -383,6 +383,11 @@ static void touch_hid_task(void *arg) {
     if (usb_runtime_service_reconnect()) continue;
     TickType_t now = xTaskGetTickCount();
     service_hid_release();
+    fingerprint_service_health();
+    if (!fingerprint_is_ready()) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
     bool present = fingerprint_present_hint();
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_HOST) {

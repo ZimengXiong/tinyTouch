@@ -9,6 +9,8 @@ typedef struct {
 } fingerprint_match_t;
 
 void fingerprint_init(void);
+bool fingerprint_is_ready(void);
+void fingerprint_service_health(void);
 bool fingerprint_present_hint(void);
 void fingerprint_led_idle(void);
 bool fingerprint_authorize_poll_once(void);

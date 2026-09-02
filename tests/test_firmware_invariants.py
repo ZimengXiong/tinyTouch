@@ -230,6 +230,22 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("current_mode == DEVICE_MODE_HID && hid_host_count == 0", reload)
         self.assertIn("current_mode = DEVICE_MODE_PIV", reload)
 
+    def test_sensor_transport_degrades_and_recovers_without_blocking_usb(self):
+        fingerprint = (MAIN / "fingerprint.c").read_text()
+        touch = (MAIN / "touch_pin_hid.c").read_text()
+        health = fingerprint.split("void fingerprint_service_health", 1)[1].split(
+            "bool fingerprint_authorize_once", 1
+        )[0]
+
+        self.assertIn("MAX_TRANSPORT_FAILURES", fingerprint)
+        self.assertIn("RECOVERY_INTERVAL_MS", fingerprint)
+        self.assertIn("sensor_ready = false", fingerprint)
+        self.assertIn("fingerprint sensor recovered", health)
+        self.assertIn("fingerprint_service_health()", touch)
+        self.assertIn("if (!fingerprint_is_ready())", touch)
+        self.assertLess(touch.index("usb_runtime_service_reconnect()"),
+                        touch.index("fingerprint_service_health()"))
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]
