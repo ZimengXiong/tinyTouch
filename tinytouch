@@ -42,9 +42,8 @@ LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
-RELEASE_CHANNEL_URL = "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
-SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", "https://tinytouch.alpacaengineer.ing").rstrip("/")
-FACTORY_FLASH_URL = f"{SITE_ORIGIN}/flash/"
+RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
+FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
 
@@ -952,17 +951,9 @@ def package_test() -> None:
 
 
 def network_test() -> None:
-    """Check the active channel and one downloadable OTA asset."""
+    """Check the latest stable release and one downloadable OTA asset."""
     try:
-        channel = json.loads(download(RELEASE_CHANNEL_URL).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ToolError("release channel is not valid JSON") from exc
-    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
-    parsed_url = urlparse(manifest_url) if isinstance(manifest_url, str) else None
-    if parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise ToolError("release channel has no valid manifest URL")
-    try:
-        manifest = json.loads(download(manifest_url).decode("utf-8"))
+        manifest = json.loads(download(RELEASE_MANIFEST_URL).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ToolError("release manifest is not valid JSON") from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
@@ -986,7 +977,7 @@ def network_test() -> None:
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
         raise ToolError("release manifest has an invalid OTA asset")
-    image = download(urljoin(manifest_url, filename))
+    image = download(urljoin(RELEASE_MANIFEST_URL, filename))
     if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
         raise ToolError("release OTA asset does not match its manifest")
     say("network ok")
@@ -996,15 +987,11 @@ def command_update(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    channel = json.loads(download(RELEASE_CHANNEL_URL).decode())
-    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
-    if not isinstance(manifest_url, str):
-        raise ToolError("The update channel has no release manifest.")
-    manifest = json.loads(download(manifest_url).decode())
+    manifest = json.loads(download(RELEASE_MANIFEST_URL).decode())
     metadata = manifest.get("ota") if isinstance(manifest, dict) else None
     if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
         raise ToolError("The release manifest has no verified firmware asset.")
-    image = download(urljoin(manifest_url, str(metadata["file"])))
+    image = download(urljoin(RELEASE_MANIFEST_URL, str(metadata["file"])))
     digest = hashlib.sha256(image).hexdigest()
     if digest != metadata["sha256"]:
         raise ToolError("The downloaded firmware digest does not match the release manifest.")

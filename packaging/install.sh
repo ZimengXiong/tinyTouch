@@ -1,12 +1,8 @@
 #!/bin/sh
-# tinyTouch Batch 0 installer for macOS.
+# tinyTouch installer for macOS.
 set -eu
 
-site_root="${TINYTOUCH_SITE_ORIGIN:-https://tinytouch.alpacaengineer.ing}"
-case "$site_root" in
-  https://tinytouch.alpacaengineer.ing|https://docs.tinytouch.dev) ;;
-  *) echo 'TINYTOUCH_SITE_ORIGIN is not a trusted tinyTouch site.' >&2; exit 1 ;;
-esac
+release_root="${TINYTOUCH_RELEASE_ROOT:-https://github.com/ZimengXiong/tinyTouch/releases/latest/download}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 
@@ -25,12 +21,12 @@ case "$machine" in
   *) echo "tinyTouch does not support this Mac architecture: $(uname -m)." >&2; exit 1 ;;
 esac
 
-curl -fsSL "$site_root/release.json" -o "$work_dir/release.json"
+curl -fsSL "$release_root/release-manifest.json" -o "$work_dir/release.json"
 version="$(plutil -extract version raw -o - "$work_dir/release.json")"
 release_file="$(plutil -extract "cli.$cli_key.file" raw -o - "$work_dir/release.json")"
 release_sha256="$(plutil -extract "cli.$cli_key.sha256" raw -o - "$work_dir/release.json")"
 case "$version" in
-  [0-9]*.[0-9]*.[0-9]*-preprod) ;;
+  [0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*-*) ;;
   *) echo 'The tinyTouch release version is invalid.' >&2; exit 1 ;;
 esac
 if [ "$release_file" != "$expected_file" ]; then
@@ -44,7 +40,7 @@ if [ "${#release_sha256}" -ne 64 ]; then
   echo 'The tinyTouch CLI checksum is invalid.' >&2
   exit 1
 fi
-release_url="$site_root/cli/$release_file?sha256=$release_sha256"
+release_url="$release_root/$release_file"
 
 path_contains() {
   case ":$PATH:" in

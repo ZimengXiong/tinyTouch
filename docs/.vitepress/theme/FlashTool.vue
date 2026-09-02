@@ -19,6 +19,7 @@ const FLASH_BYTES = 4 * 1024 * 1024
 const UPDATE_PROTOCOL = 6
 const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
 const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
+const RELEASE_ROOT = 'https://github.com/ZimengXiong/tinyTouch/releases/latest/download'
 
 const selected = ref<ToolName>('factory')
 const manifest = ref<Manifest | null>(null)
@@ -75,11 +76,12 @@ async function sha256(data: ArrayBuffer) {
 }
 
 async function loadManifest(mode: ToolName) {
-  const base = '/flash/factory'
+  const base = RELEASE_ROOT
   const label = mode === 'factory' ? 'Firmware' : 'Recovery'
-  const response = await fetch(`${base}/manifest.json`, { cache: 'no-store' })
+  const response = await fetch(`${base}/release-manifest.json`, { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
-  const nextManifest = await response.json() as Manifest
+  const release = await response.json() as { firmware?: { factory?: Manifest } }
+  const nextManifest = release.firmware?.factory
   if (!nextManifest || typeof nextManifest !== 'object' || typeof nextManifest.version !== 'string' ||
       nextManifest.protocol !== UPDATE_PROTOCOL || nextManifest.secureVersion !== 0 ||
       nextManifest.flashSize !== '4MB' || nextManifest.eraseAll !== false ||

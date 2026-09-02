@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitepress'
 
-const siteOrigin = process.env.TINYTOUCH_SITE_ORIGIN ?? 'https://tinytouch.alpacaengineer.ing'
+const siteOrigin = process.env.TINYTOUCH_SITE_ORIGIN ?? 'https://docs.tinytouch.dev'
 
 export default defineConfig({
   title: 'tinyTouch',

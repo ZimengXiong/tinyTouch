@@ -41,6 +41,7 @@ def main() -> None:
             copy_once(release / kind / metadata["file"], output / metadata["file"])
     for metadata in (manifest["ota"], *manifest["cli"].values()):
         copy_once(release / metadata["file"], output / metadata["file"])
+    copy_once(ROOT / "packaging" / "install.sh", output / "install.sh")
 
     with tarfile.open(output / "tinytouch-firmware.tar.gz", "w:gz") as archive:
         for name in ("factory", "release-manifest.json"):
