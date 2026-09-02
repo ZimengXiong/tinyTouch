@@ -58,7 +58,6 @@ class FirmwareInvariantTests(unittest.TestCase):
         denied_path = body[presence_gate:body.index("uint8_t sig", presence_gate)]
         self.assertIn("0x6982", denied_path)
         self.assertLess(presence_gate, body.index("mbedtls_rsa_private"))
-        self.assertLess(presence_gate, body.index("mbedtls_pk_sign"))
 
     def test_one_touch_allows_keychain_unlock_without_reusing_a_slot(self):
         source = (MAIN / "piv.c").read_text()
@@ -274,9 +273,17 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("apdu[2] == 0xff && apdu_len == 4", verify)
         self.assertIn("saw_challenge && saw_empty_response", parser)
         self.assertIn("outer_off + outer_len != data_len", authenticate)
+        self.assertIn("challenge_len != sig_len", authenticate)
+        self.assertIn("mbedtls_rsa_private", authenticate)
+        self.assertNotIn("mbedtls_pk_sign", authenticate)
         self.assertLess(authenticate.index("pin_verified_until = 0"),
                         authenticate.index("parse_dynamic_auth"))
         self.assertIn("required > response_cap", authenticate)
+
+        validation = source.split("static bool validate_identity_pair", 1)[1].split(
+            "bool piv_validate_identity", 1
+        )[0]
+        self.assertIn("mbedtls_pk_get_bitlen(&key) == 2048", validation)
 
     def test_piv_transport_rejects_unsupported_cla_and_stale_responses(self):
         source = (MAIN / "piv.c").read_text()

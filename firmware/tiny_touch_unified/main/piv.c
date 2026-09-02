@@ -133,6 +133,7 @@ static bool validate_identity_pair(const char *certificate, const char *private_
                                     strlen(private_key) + 1,
                                     NULL, 0, NULL, NULL);
   bool valid = result == 0 && mbedtls_pk_get_type(&key) == MBEDTLS_PK_RSA &&
+               mbedtls_pk_get_bitlen(&key) == 2048 &&
                load_certificate_for_key(certificate, &key, NULL, 0, NULL);
   mbedtls_pk_free(&key);
   return valid;
@@ -534,17 +535,12 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   }
 
   uint8_t sig[256];
-  size_t sig_len = sizeof(sig);
-  int rc = 0;
-  if (challenge_len == sizeof(sig)) {
-    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*key);
-    rc = mbedtls_rsa_private(rsa, piv_rng, NULL, challenge, sig);
-  } else {
-    uint8_t hash[32];
-    mbedtls_sha256(challenge, challenge_len, hash, 0);
-    rc = mbedtls_pk_sign(key, MBEDTLS_MD_SHA256, hash, sizeof(hash),
-                         sig, sizeof(sig), &sig_len, piv_rng, NULL);
+  size_t sig_len = mbedtls_pk_get_len(key);
+  if (sig_len != sizeof(sig) || challenge_len != sig_len) {
+    return append_sw(response, response_len, response_cap, 0x6700);
   }
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*key);
+  int rc = mbedtls_rsa_private(rsa, piv_rng, NULL, challenge, sig);
   if (rc != 0) {
     ESP_LOGE(TAG, "sign failed: -0x%x", -rc);
     return append_sw(response, response_len, response_cap, 0x6f00);
@@ -609,7 +605,8 @@ void piv_init(void) {
                                 (const unsigned char *)key_9a_pem,
                                 strlen(key_9a_pem) + 1,
                                 NULL, 0, NULL, NULL);
-  bool auth_ok = rc == 0 && mbedtls_pk_get_type(&auth_key) == MBEDTLS_PK_RSA;
+  bool auth_ok = rc == 0 && mbedtls_pk_get_type(&auth_key) == MBEDTLS_PK_RSA &&
+                 mbedtls_pk_get_bitlen(&auth_key) == 2048;
   if (!auth_ok) {
     ESP_LOGW(TAG, "provisioned auth private key could not be loaded");
   }
@@ -618,7 +615,9 @@ void piv_init(void) {
                             (const unsigned char *)key_9d_pem,
                             strlen(key_9d_pem) + 1,
                             NULL, 0, NULL, NULL);
-  bool key_mgmt_ok = rc == 0 && mbedtls_pk_get_type(&key_mgmt_key) == MBEDTLS_PK_RSA;
+  bool key_mgmt_ok = rc == 0 &&
+                     mbedtls_pk_get_type(&key_mgmt_key) == MBEDTLS_PK_RSA &&
+                     mbedtls_pk_get_bitlen(&key_mgmt_key) == 2048;
   if (!key_mgmt_ok) {
     ESP_LOGW(TAG, "provisioned key-management private key could not be loaded");
   }
