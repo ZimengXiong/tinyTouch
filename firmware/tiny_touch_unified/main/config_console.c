@@ -116,6 +116,12 @@ static void enroll_prompt(const char *state) {
 }
 
 static void authorize(void) {
+#ifdef TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
+  // This symbol exists only in an explicitly opted-in local CMake build.
+  authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
+  reply("OK AUTH development=unlocked");
+  return;
+#endif
   int count = fingerprint_count();
   if (count < 0) { reply("ERR AUTH sensor=offline"); return; }
   bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
