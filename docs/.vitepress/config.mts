@@ -46,6 +46,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'CLI commands', link: '/reference/cli' },
+          { text: 'macOS host architecture', link: '/reference/macos-host' },
           { text: 'Recovery', link: '/reference/recovery' },
         ],
       },
