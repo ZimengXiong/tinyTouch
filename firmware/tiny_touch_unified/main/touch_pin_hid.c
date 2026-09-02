@@ -455,15 +455,18 @@ static void touch_hid_task(void *arg) {
     if (match.slot == 0) {
       log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
-      vTaskDelay(pdMS_TO_TICKS(10));
+      vTaskDelay(pdMS_TO_TICKS(350));
+      fingerprint_led_idle();
       continue;
     }
 
     log_event("finger_matched", match.slot);
+    // Keep result feedback bounded. Host communication must not leave the
+    // sensor green when a helper, USB endpoint, or PIN field is unavailable.
+    vTaskDelay(pdMS_TO_TICKS(350));
+    fingerprint_led_idle();
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());
-    vTaskDelay(pdMS_TO_TICKS(250));
-    fingerprint_led_idle();
   }
 }
 

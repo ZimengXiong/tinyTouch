@@ -133,6 +133,23 @@ def authorize_macos(*, retain_password: bool = False) -> None:
     _sudo_session_ready = True
 
 
+def prepare_hid_password() -> None:
+    """Capture the HID password and unlock Keychain without requiring sudo."""
+    global _setup_password
+    entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
+    if not entered:
+        raise ToolError("A Mac password is required for HID mode.")
+    try:
+        try:
+            _keychain().unlock_default_keychain(entered)
+            _keychain().disable_user_interaction()
+        except _keychain().KeychainError as exc:
+            raise ToolError("Mac password did not unlock the login Keychain.") from exc
+        _setup_password = bytearray(entered)
+    finally:
+        entered[:] = b"\x00" * len(entered)
+
+
 def run_sudo(command: list[str]) -> None:
     """Run a privileged command after terminal-only authorization."""
     authorize_macos()
@@ -566,7 +583,7 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
-    authorize_macos(retain_password=True)
+    prepare_hid_password()
     account = device_account(port)
     key = hashlib.sha256(
         f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")

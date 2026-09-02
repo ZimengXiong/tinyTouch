@@ -24,7 +24,6 @@ static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
 
-static uint8_t current_led = 0xff;
 static SemaphoreHandle_t fp_mutex;
 static volatile bool prompted_authorization_active;
 static bool sensor_ready;
@@ -195,15 +194,9 @@ static void fp_give(void) {
 }
 
 static void set_aura(uint8_t color) {
-  if (color == current_led) return;
   uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
   uint8_t confirm = 0xff;
-  if (fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) &&
-      confirm == 0x00) {
-    current_led = color;
-  } else {
-    current_led = 0xff;
-  }
+  fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000);
 }
 
 static void show_result(bool ok) {
