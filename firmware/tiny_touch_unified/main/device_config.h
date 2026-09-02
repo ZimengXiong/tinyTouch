@@ -26,6 +26,8 @@ bool device_config_get_hid_key(uint8_t key[32]);
 bool device_config_set_hid_key(const uint8_t key[32]);
 size_t device_config_hid_host_count(void);
 bool device_config_get_hid_host(size_t index, device_hid_host_t *host);
+size_t device_config_copy_hid_hosts(
+    device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS]);
 bool device_config_add_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE],
                                 const uint8_t key[32]);
 bool device_config_remove_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE]);

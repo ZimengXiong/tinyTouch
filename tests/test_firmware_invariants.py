@@ -218,7 +218,7 @@ class FirmwareInvariantTests(unittest.TestCase):
         validation = source.split("static bool hid_hosts_valid", 1)[1].split(
             "static bool save_hid_hosts", 1
         )[0]
-        reload = source.split("void device_config_reload", 1)[1].split(
+        reload = source.split("static void reload_locked", 1)[1].split(
             "void device_config_init", 1
         )[0]
 
@@ -348,6 +348,17 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("esp_task_wdt_delete(NULL)", worker)
         self.assertLess(worker.index("esp_task_wdt_add(NULL)"),
                         worker.index("esp_ota_end"))
+
+    def test_device_configuration_is_serialized_and_hid_hosts_are_snapshotted(self):
+        config = (MAIN / "device_config.c").read_text()
+        hid = (MAIN / "touch_pin_hid.c").read_text()
+
+        self.assertIn("xSemaphoreCreateMutex()", config)
+        self.assertIn("static void config_lock(void)", config)
+        self.assertIn("device_config_copy_hid_hosts", config)
+        self.assertIn("device_config_copy_hid_hosts(hosts)", hid)
+        request = hid.split("static bool request_and_type_password", 1)[1]
+        self.assertNotIn("device_config_get_hid_host(i", request)
 
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()

@@ -168,6 +168,7 @@ static bool decrypt_password(const uint8_t pairing_key[32], const char *expected
 }
 
 static bool decrypt_password_v2(const char *expected_nonce, char *response,
+                                const device_hid_host_t *hosts, size_t host_count,
                                 uint8_t *password, size_t *password_length) {
   char *save = NULL;
   char *kind = strtok_r(response, " ", &save);
@@ -184,9 +185,9 @@ static bool decrypt_password_v2(const char *expected_nonce, char *response,
   device_hid_host_t host = {0};
   bool found = false;
   if (!hex_to_bytes(key_id_hex, key_id, sizeof(key_id))) return false;
-  for (size_t i = 0; i < device_config_hid_host_count(); i++) {
-    if (device_config_get_hid_host(i, &host) &&
-        constant_time_equal(host.id, key_id, sizeof(key_id))) {
+  for (size_t i = 0; i < host_count; i++) {
+    if (constant_time_equal(hosts[i].id, key_id, sizeof(key_id))) {
+      host = hosts[i];
       found = true;
       break;
     }
@@ -252,11 +253,13 @@ static bool request_and_type_password(fingerprint_match_t match) {
   char event[896];
   char response[640];
   uint8_t password[160];
+  device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS] = {0};
   size_t password_length = sizeof(password);
   bool result = false;
 
-  size_t host_count = device_config_hid_host_count();
-  if (!device_config_get_hid_key(pairing_key) || host_count == 0) return false;
+  size_t host_count = device_config_copy_hid_hosts(hosts);
+  if (host_count == 0) return false;
+  memcpy(pairing_key, hosts[0].key, sizeof(pairing_key));
   esp_fill_random(nonce_bytes, sizeof(nonce_bytes));
   bytes_to_hex(nonce_bytes, sizeof(nonce_bytes), nonce);
   event_counter++;
@@ -275,24 +278,20 @@ static bool request_and_type_password(fingerprint_match_t match) {
     int used = snprintf(event, sizeof(event), "EV2 %s %lu %u %u", nonce,
                         (unsigned long)event_counter, match.slot, match.score);
     for (size_t i = 0; i < host_count && used > 0 && used < sizeof(event); i++) {
-      device_hid_host_t host;
+      const device_hid_host_t *host = &hosts[i];
       char id_hex[DEVICE_CONFIG_HID_KEY_ID_SIZE * 2 + 1];
-      if (!device_config_get_hid_host(i, &host)) goto done;
-      bytes_to_hex(host.id, sizeof(host.id), id_hex);
+      bytes_to_hex(host->id, sizeof(host->id), id_hex);
       snprintf(material, sizeof(material), "EV2|%s|%s|%lu|%u|%u", id_hex, nonce,
                (unsigned long)event_counter, match.slot, match.score);
-      if (!hmac_sha256(host.key, material, event_mac)) {
-        secure_wipe(&host, sizeof(host));
-        goto done;
-      }
+      if (!hmac_sha256(host->key, material, event_mac)) goto done;
       bytes_to_hex(event_mac, sizeof(event_mac), mac_hex);
       used += snprintf(event + used, sizeof(event) - used, " %s:%s", id_hex, mac_hex);
-      secure_wipe(&host, sizeof(host));
     }
     if (used <= 0 || used >= sizeof(event)) goto done;
     config_console_send_line(event);
     if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(1500)) == pdTRUE &&
-        decrypt_password_v2(nonce, response, password, &password_length)) {
+        decrypt_password_v2(nonce, response, hosts, host_count, password,
+                            &password_length)) {
       result = type_ascii(password, password_length);
       goto done;
     }
@@ -314,6 +313,7 @@ done:
   secure_wipe(nonce_bytes, sizeof(nonce_bytes));
   secure_wipe(event_mac, sizeof(event_mac));
   secure_wipe(password, sizeof(password));
+  secure_wipe(hosts, sizeof(hosts));
   return result;
 }
 
