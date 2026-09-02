@@ -9,6 +9,7 @@ import getpass
 import hashlib
 import json
 import os
+import platform
 import plistlib
 import re
 import secrets
@@ -335,11 +336,21 @@ def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
 
 
 def device_account(port: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", Path(port).name)
+    try:
+        import serial.tools.list_ports  # type: ignore
+    except ImportError as exc:
+        raise ToolError("pyserial is required to identify this tinyTouch device.") from exc
+    for candidate in serial.tools.list_ports.comports():
+        if candidate.device != port:
+            continue
+        serial_number = re.sub(r"[^A-Za-z0-9_.-]", "", candidate.serial_number or "").upper()
+        if serial_number:
+            return serial_number
+    raise ToolError("tinyTouch did not expose a stable USB serial identity.")
 
 
 def host_id(key: bytes) -> str:
-    return hashlib.sha256(key).hexdigest()[:16].upper()
+    return hashlib.sha256(key).hexdigest()[:16]
 
 
 def password_for(account: str) -> str:
@@ -387,7 +398,9 @@ def host_list(port: str) -> tuple[set[str], int]:
     lines = serial_command(port, "HOST LIST", timeout=4)
     line = next((item for item in lines if item.startswith("OK HOST LIST")), "")
     data = dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
-    ids = set() if data.get("ids") in {None, "none"} else set(data["ids"].split(","))
+    ids = set() if data.get("ids") in {None, "none"} else {
+        value.lower() for value in data["ids"].split(",")
+    }
     try:
         capacity = int(data.get("capacity", "8"))
     except ValueError as exc:
@@ -400,7 +413,11 @@ def enroll(port: str, skip: bool) -> None:
     if skip:
         say("Fingerprint enrollment skipped.")
         return
-    if int(current.get("fingerprints", "0")) and current.get("fingerprint_profile") != "4":
+    count = int(current.get("fingerprints", "0"))
+    if count == 4:
+        say("The four-view fingerprint profile is already enrolled.")
+        return
+    if count:
         if ask("Replace the existing fingerprint enrollment? [y/N] ").lower() not in {"y", "yes"}:
             raise ToolError("Fingerprint enrollment was not changed.")
     unlock(port)
@@ -408,8 +425,8 @@ def enroll(port: str, skip: bool) -> None:
         say(f"Touch the sensor for view {slot} of 4.")
         serial_command(port, f"FINGER ENROLL {slot}", timeout=45)
     current = status(port)
-    if current.get("fingerprints") != "1":
-        raise ToolError("Live verification failed: one enrolled fingerprint was not reported.")
+    if current.get("fingerprints") != "4":
+        raise ToolError("Live verification failed: the four-view fingerprint profile was not reported.")
 
 
 def command_setup(args: argparse.Namespace) -> None:
@@ -429,11 +446,18 @@ def command_setup(args: argparse.Namespace) -> None:
         if device.get("mode") != "piv":
             serial_command(port, "SET MODE PIV", timeout=4)
             fresh_status(port, {"mode": "piv"})
+        if device.get("piv") != "ready":
+            serial_command(port, "PIV CREATE", timeout=15)
+            if status(port).get("piv") != "ready":
+                raise ToolError("Live verification failed: the PIV identity is not ready.")
         remove_helper()
     enroll(port, args.skip_enroll)
     device = status(port)
     protocol6(device)
     sensor_ready(device)
+    device = status(port)
+    if mode == "piv" and device.get("piv") != "ready":
+        raise ToolError("PIV setup is incomplete: the identity is not ready.")
     if mode == "piv" and not args.no_pair:
         command_pair(args)
     say(f"tinyTouch is ready in {mode.upper()} mode. All changes are live; no restart is required.")
@@ -503,21 +527,22 @@ def command_computers(args: argparse.Namespace) -> None:
             say(f"  {identifier}")
         return
     if args.remove:
-        if args.remove.upper() not in registered:
+        identifier = args.remove.lower()
+        if identifier not in registered:
             raise ToolError(f"HID host {args.remove} is not registered on this device.")
         unlock(port)
-        serial_command(port, f"HOST REMOVE {args.remove.upper()}", timeout=5)
-        if args.remove.upper() in host_list(port)[0]:
+        serial_command(port, f"HOST REMOVE {identifier}", timeout=5)
+        if identifier in host_list(port)[0]:
             raise ToolError("Live verification failed: the HID host is still registered.")
         account = device_account(port)
         local = keychain_get(PAIRING_SERVICE, account)
         if local:
             try:
-                if host_id(bytes.fromhex(local)) == args.remove.upper():
+                if host_id(bytes.fromhex(local)) == identifier:
                     keychain_delete(PAIRING_SERVICE, account)
             except ValueError:
                 pass
-        say(f"HID host {args.remove.upper()} was removed live.")
+        say(f"HID host {identifier} was removed live.")
 
 
 def command_factory_reset(args: argparse.Namespace) -> None:
@@ -529,7 +554,9 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     unlock(port)
     serial_command(port, "RESET FACTORY", timeout=15)
     cleared = status(port)
-    for key, expected in (("fingerprints", "0"), ("hosts", "0")):
+    for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
+        if key == "piv" and key not in cleared:
+            continue
         if cleared.get(key) != expected:
             raise ToolError(f"Factory reset verification failed: {key}={cleared.get(key)!r}.")
     remove_helper()
@@ -602,6 +629,30 @@ def download(url: str) -> bytes:
         raise ToolError("Could not download the firmware release.") from exc
 
 
+def package_test() -> None:
+    """Check bundled imports and report the executable architecture."""
+    import certifi  # noqa: F401
+    import serial  # type: ignore  # noqa: F401
+    say(f"package ok ({platform.machine()})")
+
+
+def network_test() -> None:
+    """Check that the active channel names a verified protocol-6 OTA asset."""
+    channel = json.loads(download(RELEASE_CHANNEL_URL).decode())
+    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
+    if not isinstance(manifest_url, str):
+        raise ToolError("channel has no manifest URL")
+    manifest = json.loads(download(manifest_url).decode())
+    if manifest.get("protocol") != CURRENT_PROTOCOL:
+        raise ToolError("release manifest protocol is not 6")
+    ota = manifest.get("ota")
+    if not isinstance(ota, dict) or not ota.get("file") or not re.fullmatch(
+        r"[0-9a-f]{64}", str(ota.get("sha256", ""))
+    ):
+        raise ToolError("release manifest has no verified OTA asset")
+    say("network ok")
+
+
 def command_update(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
@@ -645,8 +696,15 @@ def command_test(args: argparse.Namespace) -> None:
     say("tinyTouch answered PING.")
 
 
-def command_keys(_args: argparse.Namespace) -> None:
-    raise ToolError("PIV keys are created during 'tinytouch setup --mode piv'; no restart is used.")
+def command_keys(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    device = status(port)
+    protocol6(device)
+    unlock(port)
+    serial_command(port, "PIV CREATE", timeout=15)
+    if status(port).get("piv") != "ready":
+        raise ToolError("Live verification failed: the PIV identity is not ready.")
+    say("The PIV identity is active live. The device was not restarted.")
 
 
 def command_pair(_args: argparse.Namespace) -> None:
@@ -673,6 +731,7 @@ def command_pair(_args: argparse.Namespace) -> None:
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tinytouch")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
     setup = sub.add_parser("setup")
     setup.add_argument("--mode", choices=("hid", "piv"))
@@ -734,6 +793,16 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     global VERBOSE
+    if len(sys.argv) > 1 and sys.argv[1] == "_package_test":
+        package_test()
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "_network_test":
+        try:
+            network_test()
+        except ToolError as exc:
+            say(f"network error: {exc}")
+            return 1
+        return 0
     if len(sys.argv) > 1 and sys.argv[1] == "_helper":
         from tinytouch_helper import main as helper_main  # type: ignore
         sys.argv = [str(HELPER), *sys.argv[2:]]

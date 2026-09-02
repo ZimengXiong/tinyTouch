@@ -16,7 +16,7 @@ type Manifest = {
 type FirmwareFile = { data: Uint8Array; address: number }
 
 const FLASH_BYTES = 4 * 1024 * 1024
-const UPDATE_PROTOCOL = 5
+const UPDATE_PROTOCOL = 6
 const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
 const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
 

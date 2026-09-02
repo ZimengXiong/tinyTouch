@@ -260,9 +260,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("GitHub Actions is handling the release", release_script)
         self.assertNotIn("tag-release", release_script)
 
-    def test_browser_requires_protocol_five_and_prefetches_before_usb(self):
+    def test_browser_requires_protocol_six_and_prefetches_before_usb(self):
         source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
-        self.assertIn("const UPDATE_PROTOCOL = 5", source)
+        self.assertIn("const UPDATE_PROTOCOL = 6", source)
         self.assertIn("nextManifest.eraseAll !== false", source)
         self.assertIn("nextManifest.compress !== false", source)
         self.assertIn("requestPort({ filters: [{ usbVendorId: 0x303a }] })", source)

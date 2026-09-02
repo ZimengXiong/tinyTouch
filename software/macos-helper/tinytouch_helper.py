@@ -372,7 +372,7 @@ class AuthenticatedEvent(NamedTuple):
 
 
 def parse_event(line: str, pairing_key: bytes) -> AuthenticatedEvent | None:
-    """Parse and authenticate one protocol-v5-compatible HID event."""
+    """Parse and authenticate one HID event frame."""
     if not isinstance(line, str) or len(line.encode("utf-8", "replace")) > MAX_SERIAL_LINE_BYTES:
         return None
     parts = line.strip().split()

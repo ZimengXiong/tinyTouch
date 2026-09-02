@@ -1,6 +1,6 @@
 {
   "version": "0.8.2",
-  "protocol": 5,
+  "protocol": 6,
   "secureVersion": 0,
   "flashSize": "4MB",
   "eraseAll": false,

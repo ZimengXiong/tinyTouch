@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-PROTOCOL = 5
+PROTOCOL = 6
 SECURE_VERSION = 0
 FLASH_SIZE = 4 * 1024 * 1024
 
