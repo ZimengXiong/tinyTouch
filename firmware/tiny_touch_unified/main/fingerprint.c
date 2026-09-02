@@ -494,6 +494,17 @@ bool fingerprint_background_pause(void) {
   return true;
 }
 
+bool fingerprint_prepare_for_restart(void) {
+  if (!fp_take(2000)) return false;
+  uint8_t confirm = 0xff;
+  bool ok = fp_command(0x3d, NULL, 0, &confirm, NULL, NULL, 1000) &&
+            confirm == 0x00;
+  set_sensor_ready(false);
+  fp_give();
+  if (ok) vTaskDelay(pdMS_TO_TICKS(200));
+  return ok;
+}
+
 int fingerprint_count(void) {
   if (!fp_take(2000)) return -1;
   uint8_t confirm = 0xff;

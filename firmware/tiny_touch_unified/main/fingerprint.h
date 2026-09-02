@@ -20,6 +20,7 @@ bool fingerprint_authorize_prompted(void (*prompt)(void));
 bool fingerprint_authorize_update_prompted(void (*prompt)(void));
 bool fingerprint_background_pause(void);
 void fingerprint_background_resume(void);
+bool fingerprint_prepare_for_restart(void);
 int fingerprint_count(void);
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message));
 bool fingerprint_delete(uint16_t slot);
