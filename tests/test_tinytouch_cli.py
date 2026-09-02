@@ -546,6 +546,32 @@ class PackagingTests(unittest.TestCase):
             ROOT / "software" / "macos-helper" / "tinytouch_keychain.py"
         ).read_text())
 
+    def test_uninstall_preserves_support_data_and_keychain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support = Path(directory) / "support"
+            generation = support / "cli-generation"
+            generation.mkdir(parents=True)
+            executable = generation / "tinytouch"
+            executable.write_text("executable")
+            command = Path(directory) / "bin" / "tinytouch"
+            command.parent.mkdir()
+            command.symlink_to(executable)
+            state = support / "state-TT-DEVICE.json"
+            state.write_text("{}")
+            with (
+                mock.patch.object(cli, "SUPPORT_DIR", support),
+                mock.patch.object(cli, "CLI_INSTALL_PATH", command),
+                mock.patch.object(cli, "remove_helper"),
+                mock.patch.object(cli.shutil, "which", return_value=str(command)),
+                mock.patch.object(cli, "keychain_delete") as keychain_delete,
+                mock.patch.object(cli, "say"),
+            ):
+                cli.command_uninstall(cli.parser().parse_args(["uninstall"]))
+            self.assertFalse(command.exists())
+            self.assertTrue(executable.exists())
+            self.assertTrue(state.exists())
+            keychain_delete.assert_not_called()
+
 
 class ParserTests(unittest.TestCase):
     def test_setup_mode(self):

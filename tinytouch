@@ -2889,6 +2889,30 @@ def command_logs(args: argparse.Namespace) -> None:
         say("\n".join(lines[-args.lines :]))
 
 
+def command_uninstall(_args: argparse.Namespace) -> None:
+    """Remove executable service components while preserving user data."""
+    remove_helper()
+    removed_commands: list[Path] = []
+    candidates = {CLI_INSTALL_PATH}
+    discovered = shutil.which("tinytouch")
+    if discovered:
+        candidates.add(Path(discovered))
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(SUPPORT_DIR.resolve())
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if candidate.is_symlink():
+            candidate.unlink()
+            removed_commands.append(candidate)
+    say("tinyTouch background service removed.")
+    if removed_commands:
+        say("Command links removed: " + ", ".join(str(path) for path in removed_commands))
+    say(f"Passwords, pairing keys, settings, and rollback generations remain in {SUPPORT_DIR}.")
+    say("Delete those only after confirming that you no longer need recovery or migration.")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="tinytouch", description=__doc__)
     result.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
@@ -3026,6 +3050,12 @@ def parser() -> argparse.ArgumentParser:
     logs.add_argument("--lines", type=int, default=40)
     logs.set_defaults(func=command_logs)
 
+    uninstall = sub.add_parser(
+        "uninstall", help="remove the CLI service while preserving credentials and settings"
+    )
+    add_verbose_option(uninstall)
+    uninstall.set_defaults(func=command_uninstall)
+
     flash_local = sub.add_parser("flash-local", help="flash a local firmware binary over OTA (developer command)")
     add_verbose_option(flash_local)
     flash_local.add_argument("binary", help="path to tiny_touch_unified.bin")
@@ -3068,7 +3098,7 @@ def main() -> int:
         return 1
     args = parser().parse_args()
     VERBOSE = args.verbose
-    if args.command != "update":
+    if args.command not in {"update", "uninstall"}:
         schedule_auto_update()
     device_commands = {
         "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
