@@ -246,6 +246,39 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertLess(touch.index("usb_runtime_service_reconnect()"),
                         touch.index("fingerprint_service_health()"))
 
+    def test_piv_parser_rejects_ambiguous_or_replayable_authentication(self):
+        source = (MAIN / "piv.c").read_text()
+        verify = source.split("static bool handle_verify", 1)[1].split(
+            "static bool handle_general_authenticate", 1
+        )[0]
+        authenticate = source.split("static bool handle_general_authenticate", 1)[1].split(
+            "void piv_init", 1
+        )[0]
+        parser = source.split("static bool parse_dynamic_auth", 1)[1].split(
+            "static int piv_rng", 1
+        )[0]
+
+        self.assertIn("data_len != sizeof(expected_pin)", verify)
+        self.assertIn("memcmp(data, expected_pin", verify)
+        self.assertIn("apdu[2] == 0xff && apdu_len == 4", verify)
+        self.assertIn("saw_challenge && saw_empty_response", parser)
+        self.assertIn("outer_off + outer_len != data_len", authenticate)
+        self.assertLess(authenticate.index("pin_verified_until = 0"),
+                        authenticate.index("parse_dynamic_auth"))
+        self.assertIn("required > response_cap", authenticate)
+
+    def test_piv_transport_rejects_unsupported_cla_and_stale_responses(self):
+        source = (MAIN / "piv.c").read_text()
+        dispatch = source.split("static bool piv_handle_apdu_locked", 1)[1].split(
+            "bool piv_handle_apdu", 1
+        )[0]
+        wrapper = source.split("bool piv_handle_apdu", 1)[1]
+
+        self.assertIn("cla != 0x00 && cla != 0x10", dispatch)
+        self.assertIn("(cla & 0x10) && ins != 0x87", dispatch)
+        self.assertIn("if (ins != 0xc0)", dispatch)
+        self.assertIn("if (!apdu || !response || response_cap < 2)", wrapper)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]
