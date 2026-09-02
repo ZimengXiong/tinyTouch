@@ -47,6 +47,7 @@ static SemaphoreHandle_t cdc_write_mutex;
 static int64_t config_authorized_until;
 static int64_t update_authorized_until;
 static int64_t update_last_activity;
+static bool update_sensor_paused;
 static char update_token[33];
 static const char *update_last_reason = "none";
 
@@ -153,6 +154,10 @@ static void send_line(const char *line) {
   config_console_send_line(line);
 }
 
+static void send_touch_prompt(void) {
+  send_line("PROMPT TOUCH");
+}
+
 static bool config_authorized(void) {
   return esp_timer_get_time() < config_authorized_until;
 }
@@ -256,6 +261,12 @@ static bool append_firmware_chunk(char *arguments, size_t *next_offset) {
 static void clear_update_session(void) {
   update_token[0] = '\0';
   update_last_activity = 0;
+}
+
+static void resume_update_sensor(void) {
+  if (!update_sensor_paused) return;
+  fingerprint_background_resume();
+  update_sensor_paused = false;
 }
 
 static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
@@ -415,8 +426,7 @@ static void handle_command(void) {
     } else if (count == 0) {
       send_line("ERR CONFIG_UNLOCK fingerprint");
     } else {
-      send_line("PROMPT TOUCH");
-      if (fingerprint_authorize_once()) {
+      if (fingerprint_authorize_prompted(send_touch_prompt)) {
         authorize_config();
         send_line("OK CONFIG_UNLOCK fingerprint seconds=120");
       } else {
@@ -433,8 +443,8 @@ static void handle_command(void) {
     } else if (count == 0) {
       send_line("ERR UPDATE_UNLOCK fingerprint_required");
     } else {
-      send_line("PROMPT TOUCH");
-      if (fingerprint_authorize_once()) {
+      if (fingerprint_authorize_update_prompted(send_touch_prompt)) {
+        update_sensor_paused = true;
         update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
         send_line("OK UPDATE_UNLOCK seconds=30");
       } else {
@@ -545,8 +555,7 @@ static void handle_command(void) {
     if (ok) ok = device_config_set_fingerprint_profile_views(0);
     send_line(ok ? "OK DELETE_ALL" : "ERR DELETE_ALL");
   } else if (strcmp(command, "PAIRING_MODE") == 0) {
-    send_line("PROMPT TOUCH");
-    if (fingerprint_authorize_once()) {
+    if (fingerprint_authorize_prompted(send_touch_prompt)) {
       piv_set_pairing_mode(true);
       send_line("OK PAIRING_MODE seconds=120");
     } else {
@@ -576,12 +585,16 @@ static void handle_command(void) {
       send_line("ERR UPDATE_LOCKED run=UPDATE_UNLOCK");
       return;
     }
-    bool ok = begin_firmware_update(command + 13);
+    bool sensor_quiet = fingerprint_background_pause();
+    update_sensor_paused = sensor_quiet;
+    bool ok = sensor_quiet && begin_firmware_update(command + 13);
     if (ok) {
       update_authorized_until = 0;
       update_last_reason = "none";
     } else {
       update_last_reason = "begin_failed";
+      update_authorized_until = 0;
+      resume_update_sensor();
     }
     send_line(ok ? "OK UPDATE_BEGIN next=0" : "ERR UPDATE_BEGIN");
   } else if (strncmp(command, "UPDATE_CHUNK ", 13) == 0) {
@@ -621,6 +634,7 @@ static void handle_command(void) {
     firmware_update_abort();
     update_last_reason = "host_abort";
     clear_update_session();
+    resume_update_sensor();
     send_line("OK UPDATE_ABORT");
   } else if (strncmp(command, "UPDATE_COMMIT ", 14) == 0) {
     if (!valid_update_token(command + 14)) {
@@ -636,6 +650,7 @@ static void handle_command(void) {
                (unsigned)firmware_update_commit_stack_free());
       send_line(line);
     } else {
+      resume_update_sensor();
       snprintf(line, sizeof(response_line), "ERR UPDATE_COMMIT active=0 error=%s",
                firmware_update_last_error());
       send_line(line);
@@ -686,12 +701,18 @@ static void console_task(void *arg) {
   (void)arg;
   char buffer[128];
   while (true) {
+    if (!update_token[0] && update_sensor_paused &&
+        esp_timer_get_time() >= update_authorized_until) {
+      update_authorized_until = 0;
+      resume_update_sensor();
+    }
     if (update_token[0] && esp_timer_get_time() - update_last_activity > 30LL * 1000000LL) {
       if (firmware_update_active()) {
         firmware_update_abort();
         update_last_reason = "timeout";
       }
       clear_update_session();
+      resume_update_sensor();
     }
     bool had_activity = false;
     while (tud_cdc_available()) {

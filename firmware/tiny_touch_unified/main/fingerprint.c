@@ -30,6 +30,7 @@ static const uint32_t RECOVERY_INTERVAL_MS = 5000;
 static uint8_t current_led = 0xff;
 static SemaphoreHandle_t fp_mutex;
 static bool sensor_ready;
+static bool background_paused;
 static uint8_t consecutive_transport_failures;
 static TickType_t last_recovery_attempt;
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -39,6 +40,19 @@ static bool sensor_ready_snapshot(void) {
   bool ready = sensor_ready;
   portEXIT_CRITICAL(&sensor_state_lock);
   return ready;
+}
+
+static bool background_paused_snapshot(void) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  bool paused = background_paused;
+  portEXIT_CRITICAL(&sensor_state_lock);
+  return paused;
+}
+
+static void set_background_paused(bool paused) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  background_paused = paused;
+  portEXIT_CRITICAL(&sensor_state_lock);
 }
 
 static void set_sensor_ready(bool ready) {
@@ -234,7 +248,12 @@ static void show_result(bool ok) {
 }
 
 void fingerprint_led_idle(void) {
+  if (background_paused_snapshot()) return;
   if (!fp_take(1000)) return;
+  if (background_paused_snapshot()) {
+    fp_give();
+    return;
+  }
   set_aura(FP_LED_BLUE);
   fp_give();
 }
@@ -319,7 +338,12 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
 
 fingerprint_match_t fingerprint_authorize_poll_match(void) {
   fingerprint_match_t no_match = {0};
+  if (background_paused_snapshot()) return no_match;
   if (!fp_take(0)) return no_match;
+  if (background_paused_snapshot()) {
+    fp_give();
+    return no_match;
+  }
   uint8_t confirm = 0xff;
   if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
     fp_give();
@@ -380,10 +404,14 @@ bool fingerprint_is_ready(void) {
 }
 
 void fingerprint_service_health(void) {
-  if (sensor_ready_snapshot()) return;
+  if (sensor_ready_snapshot() || background_paused_snapshot()) return;
   TickType_t now = xTaskGetTickCount();
   if ((TickType_t)(now - last_recovery_attempt) < pdMS_TO_TICKS(RECOVERY_INTERVAL_MS) ||
       !fp_take(0)) {
+    return;
+  }
+  if (background_paused_snapshot()) {
+    fp_give();
     return;
   }
   last_recovery_attempt = now;
@@ -400,8 +428,7 @@ void fingerprint_service_health(void) {
   }
 }
 
-bool fingerprint_authorize_once(void) {
-  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+static bool fingerprint_authorize_locked(void) {
   uint8_t confirm = 0xff;
   ESP_LOGI(TAG, "finger present hint=%d", finger_present());
   set_aura(FP_LED_BLUE);
@@ -419,13 +446,52 @@ bool fingerprint_authorize_once(void) {
   if (!got_image) {
     ESP_LOGW(TAG, "gen image failed confirm=0x%02x", confirm);
     show_result(false);
-    fp_give();
     return false;
   }
 
-  bool ok = fingerprint_match_captured(false).slot != 0;
+  return fingerprint_match_captured(false).slot != 0;
+}
+
+bool fingerprint_authorize_once(void) {
+  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  bool ok = fingerprint_authorize_locked();
   fp_give();
   return ok;
+}
+
+bool fingerprint_authorize_prompted(void (*prompt)(void)) {
+  // Own the sensor before prompting. Otherwise the higher-priority background
+  // authentication task can capture the prompted touch first.
+  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  if (prompt) prompt();
+  bool ok = fingerprint_authorize_locked();
+  fp_give();
+  return ok;
+}
+
+bool fingerprint_authorize_update_prompted(void (*prompt)(void)) {
+  // Keep the sensor bus quiet after authorization. The OTA restart must not
+  // truncate a background UART command and leave the sensor parser wedged.
+  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  if (prompt) prompt();
+  bool ok = fingerprint_authorize_locked();
+  if (ok) set_background_paused(true);
+  fp_give();
+  return ok;
+}
+
+void fingerprint_background_resume(void) {
+  set_background_paused(false);
+}
+
+bool fingerprint_background_pause(void) {
+  set_background_paused(true);
+  if (!fp_take(2000)) {
+    set_background_paused(false);
+    return false;
+  }
+  fp_give();
+  return true;
 }
 
 int fingerprint_count(void) {

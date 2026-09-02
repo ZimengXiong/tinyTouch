@@ -148,6 +148,37 @@ class FirmwareInvariantTests(unittest.TestCase):
         )[0]
         self.assertIn("fp_response_checksum_valid(response, expected)", command)
 
+    def test_explicit_fingerprint_prompt_owns_sensor_first(self):
+        fingerprint = (MAIN / "fingerprint.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        prompted = fingerprint.split(
+            "bool fingerprint_authorize_prompted", 1
+        )[1].split("int fingerprint_count", 1)[0]
+
+        self.assertLess(prompted.index("fp_take("), prompted.index("prompt()"))
+        self.assertIn("fingerprint_authorize_prompted(send_touch_prompt)", console)
+        self.assertEqual(
+            2, console.count("fingerprint_authorize_prompted(send_touch_prompt)")
+        )
+        self.assertIn(
+            "fingerprint_authorize_update_prompted(send_touch_prompt)", console
+        )
+
+    def test_ota_restart_quiesces_background_sensor_uart(self):
+        fingerprint = (MAIN / "fingerprint.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        update_auth = fingerprint.split(
+            "bool fingerprint_authorize_update_prompted", 1
+        )[1].split("void fingerprint_background_resume", 1)[0]
+
+        self.assertLess(
+            update_auth.index("set_background_paused(true)"),
+            update_auth.index("fp_give()"),
+        )
+        self.assertIn("background_paused_snapshot()", fingerprint)
+        self.assertIn("fingerprint_background_pause()", console)
+        self.assertIn("resume_update_sensor()", console)
+
     def test_suspended_touch_does_not_require_sensor_interrupt(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         availability = source.split(
