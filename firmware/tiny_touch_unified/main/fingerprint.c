@@ -399,10 +399,32 @@ static bool fingerprint_authorize_locked(void) {
   return fingerprint_match_captured(false).slot != 0;
 }
 
+static bool wait_finger_absent_for_authorization(void) {
+  unsigned absent_samples = 0;
+  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+  while (xTaskGetTickCount() < deadline) {
+    uint8_t confirm = 0xff;
+    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500) && confirm == 0x02) {
+      if (++absent_samples >= 3) return true;
+    } else {
+      absent_samples = 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(80));
+  }
+  return false;
+}
+
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   // Own the sensor before prompting. Otherwise the higher-priority background
   // authentication task can capture the prompted touch first.
   if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  // Discard a stale image state before showing a touch prompt. Without this,
+  // a sensor that reports a leftover image can reject AUTH before the user has
+  // a chance to touch it.
+  if (!wait_finger_absent_for_authorization()) {
+    fp_give();
+    return false;
+  }
   if (prompt) prompt();
   bool ok = fingerprint_authorize_locked();
   fp_give();
