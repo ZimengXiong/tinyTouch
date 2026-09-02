@@ -1169,7 +1169,10 @@ def launch_agent_contents(python: Path) -> bytes:
         "ExitTimeOut": 5,
         "StandardOutPath": str(HELPER_LOG_PATH),
         "StandardErrorPath": str(HELPER_ERROR_LOG_PATH),
-        "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "2"},
+        "EnvironmentVariables": {
+            "TINYTOUCH_SERVICE_SCHEMA": "2",
+            "TINYTOUCH_DIAGNOSTIC_LOG": str(HELPER_LOG_PATH),
+        },
     }
     return plistlib.dumps(payload, sort_keys=False)
 

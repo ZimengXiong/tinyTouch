@@ -431,17 +431,27 @@ def handle_event(
     if state is not None:
         seen_nonces = state.setdefault("seen_nonces", [])
         if nonce in seen_nonces:
-            print("replayed event nonce", file=sys.stderr)
+            diagnostic("protocol.event_rejected", level="warning", reason="replayed_nonce")
             return None
     selected_password = (password.get(fingerprint_slot) or password.get(0)) \
         if isinstance(password, dict) else password
     if not selected_password:
-        print(f"no password configured for fingerprint {fingerprint_slot}", file=sys.stderr)
+        diagnostic(
+            "protocol.event_rejected",
+            level="warning",
+            reason="password_missing",
+            fingerprint_slot=fingerprint_slot,
+        )
         return None
     try:
         wire_password = translate_password(selected_password, keyboard_map)
     except (UnicodeError, ValueError) as exc:
-        print(f"password cannot be typed safely: {exc}", file=sys.stderr)
+        diagnostic(
+            "protocol.event_rejected",
+            level="warning",
+            reason="keyboard_layout_unrepresentable",
+            detail=str(exc),
+        )
         return None
     iv_hex, ct_hex = encrypt_password(pairing_key, nonce, wire_password)
     if key_id is None:
@@ -473,8 +483,12 @@ def resynchronize_event(line: str, device_id: str = "") -> str:
     marker = max(markers)
     if marker <= 0:
         return line
-    print(f"{device_id}: discarded truncated event before offset {marker}",
-          file=sys.stderr, flush=True)
+    diagnostic(
+        "protocol.truncated_prefix_discarded",
+        level="warning",
+        device_id=device_id,
+        offset=marker,
+    )
     return line[marker:]
 
 
@@ -789,7 +803,11 @@ def run(port: str | None, once: bool) -> None:
                 serve_port(port, once)
                 return
             except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
-                print(f"serial reconnect after error: {exc}", file=sys.stderr, flush=True)
+                diagnostic(
+                    "worker.reconnect",
+                    level="warning",
+                    error_type=type(exc).__name__,
+                )
                 time.sleep(1)
     if once:
         raise SystemExit("--once requires --port when multiple-device mode is active")

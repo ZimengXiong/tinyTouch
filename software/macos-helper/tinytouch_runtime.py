@@ -8,6 +8,7 @@ import os
 import random
 import secrets
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from typing import BinaryIO, Callable, Iterable
 
 LEASE_SCHEMA = 1
 MAX_LEASE_SECONDS = 6 * 60 * 60
+MAX_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
+_DIAGNOSTIC_LOCK = threading.Lock()
 
 
 class LeaseBusyError(RuntimeError):
@@ -250,4 +253,26 @@ def diagnostic(event: str, *, level: str = "info", **fields: object) -> None:
         "event": event,
         **fields,
     }
-    print(json.dumps(record, sort_keys=True, separators=(",", ":")), flush=True)
+    line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    configured_path = os.environ.get("TINYTOUCH_DIAGNOSTIC_LOG")
+    if not configured_path:
+        print(line, end="", flush=True)
+        return
+    path = Path(configured_path)
+    with _DIAGNOSTIC_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path.stat().st_size + len(line.encode("utf-8")) > MAX_DIAGNOSTIC_BYTES:
+                older = path.with_suffix(path.suffix + ".2")
+                previous = path.with_suffix(path.suffix + ".1")
+                older.unlink(missing_ok=True)
+                if previous.exists():
+                    os.replace(previous, older)
+                os.replace(path, previous)
+        except FileNotFoundError:
+            pass
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(descriptor, line.encode("utf-8"))
+        finally:
+            os.close(descriptor)

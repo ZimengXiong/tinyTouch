@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "software" / "macos-helper"))
@@ -16,7 +17,9 @@ from tinytouch_runtime import (  # noqa: E402
     LeaseRecord,
     SerialFrameDecoder,
     atomic_write_json,
+    diagnostic,
 )
+import tinytouch_runtime as runtime  # noqa: E402
 
 
 class DurableStateTests(unittest.TestCase):
@@ -113,6 +116,22 @@ class StreamDecoderTests(unittest.TestCase):
         decoder.feed(b"partial")
         self.assertTrue(decoder.discard_partial())
         self.assertFalse(decoder.discard_partial())
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_structured_log_rotation_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "helper.log"
+            with (
+                mock.patch.dict("os.environ", {"TINYTOUCH_DIAGNOSTIC_LOG": str(path)}),
+                mock.patch.object(runtime, "MAX_DIAGNOSTIC_BYTES", 100),
+            ):
+                for sequence in range(5):
+                    diagnostic("test.event", sequence=sequence, payload="x" * 40)
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.with_suffix(".log.1").is_file())
+            self.assertLessEqual(path.stat().st_size, 150)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":
