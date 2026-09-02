@@ -35,15 +35,15 @@ def main() -> None:
     output.mkdir(parents=True)
     manifest = validate_release(release, args.commit)
     copy_once(release / "release-manifest.json", output / "release-manifest.json")
-    for kind in ("factory", "recovery"):
+    for kind in ("factory",):
         layout = manifest["firmware"][kind]
         for metadata in [*layout["images"], layout["fullImage"]]:
             copy_once(release / kind / metadata["file"], output / metadata["file"])
-    for metadata in (manifest["ota"], manifest["migration"]["otaState"], *manifest["cli"].values()):
+    for metadata in (manifest["ota"], *manifest["cli"].values()):
         copy_once(release / metadata["file"], output / metadata["file"])
 
     with tarfile.open(output / "tinytouch-firmware.tar.gz", "w:gz") as archive:
-        for name in ("factory", "recovery", "release-manifest.json"):
+        for name in ("factory", "release-manifest.json"):
             archive.add(release / name, arcname=name, recursive=True)
 
     lines = [

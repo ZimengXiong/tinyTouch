@@ -22,4 +22,4 @@ npm run build
 
 You can find the generated site in `.vitepress/dist`.
 
-Release automation writes verified factory firmware, recovery firmware, CLI packages, and release metadata into `public/`. The native Flash page loads those assets directly.
+Release automation writes one verified factory firmware image, CLI packages, and release metadata into `public/`. The Flash page uses that image for both normal installation and erase-and-reinstall recovery.

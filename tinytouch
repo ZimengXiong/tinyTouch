@@ -1,179 +1,68 @@
 #!/usr/bin/env python3
-"""tinyTouch pre-production setup and support utility."""
+"""Small, live-configuration CLI for protocol-6 tinyTouch firmware."""
 
 from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
-import filecmp
-import fcntl
 import getpass
-import glob
 import hashlib
-import io
 import json
 import os
 import platform
 import plistlib
 import re
 import secrets
-import shlex
-import shutil
 import ssl
-import struct
 import subprocess
 import sys
-import termios
-import tempfile
 import time
-import tarfile
-import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import certifi
-
 
 FROZEN = bool(getattr(sys, "frozen", False))
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", ROOT))
 VERSION_FILE = BUNDLE_ROOT / "VERSION"
 CLI_VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.exists() else "development"
-UNIFIED_FIRMWARE_PROJECT = ROOT / "firmware" / "tiny_touch_unified"
 HELPER = ROOT / "software" / "macos-helper" / "tinytouch_helper.py"
 REQUIREMENTS = ROOT / "software" / "macos-helper" / "requirements.txt"
 VENV = ROOT / ".venv"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.tinytouch.helper.plist"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
-FIRMWARE_LOCK = SUPPORT_DIR / "firmware-update.lock"
-HELPER_LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
-HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
-HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
-HELPER_SUSPEND_PATH = SUPPORT_DIR / "helper-suspend"
-HELPER_SUSPEND_ACK_PATH = SUPPORT_DIR / "helper-suspend-ack"
-HELPER_MIGRATION_PATH = SUPPORT_DIR / "helper-service-migration.json"
-INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
+LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
-ACCOUNT = "tinyTouch"
-DEFAULT_DEVICE_ACCOUNT = "B8F862FB478C"
-CLI_INSTALL_DIR = Path.home() / ".local" / "bin"
-CLI_INSTALL_PATH = CLI_INSTALL_DIR / "tinytouch"
-VERBOSE = False
-HELPER_SUSPENDED = False
-DEFAULT_SITE_ORIGIN = "https://tinytouch.alpacaengineer.ing"
-TRUSTED_SITE_ORIGINS = {DEFAULT_SITE_ORIGIN, "https://docs.tinytouch.dev"}
-SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", DEFAULT_SITE_ORIGIN).rstrip("/")
-if SITE_ORIGIN not in TRUSTED_SITE_ORIGINS:
-    SITE_ORIGIN = DEFAULT_SITE_ORIGIN
+CURRENT_PROTOCOL = 6
+RELEASE_CHANNEL_URL = "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
+SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", "https://tinytouch.alpacaengineer.ing").rstrip("/")
 FACTORY_FLASH_URL = f"{SITE_ORIGIN}/flash/"
-SUPPORT_EMAIL = "tinytouch@alpacaengineer.ing"
-CURRENT_UPDATE_PROTOCOL = 5
-RELEASE_CHANNEL_URL = (
-    "https://raw.githubusercontent.com/ZimengXiong/TinyTouch/main/channels/batch-0.json"
-)
-TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+TLS = ssl.create_default_context(cafile=certifi.where())
+VERBOSE = False
 
 HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
-if not FROZEN and str(HELPER_MODULE_DIR) not in sys.path:
+if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
+from tinytouch_runtime import ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes  # type: ignore  # noqa: E402
 
-from tinytouch_runtime import (  # type: ignore  # noqa: E402
-    ForegroundLease,
-    LeaseBusyError,
-    LeaseProtocolError,
-    atomic_write_bytes,
-    atomic_write_json,
-)
-
-HELPER_LEASE: ForegroundLease | None = None
+HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
+HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
+_lease: ForegroundLease | None = None
 
 
 class ToolError(RuntimeError):
-    pass
+    """An actionable error that can be shown directly to the user."""
 
 
-class SupportError(ToolError):
-    pass
-
-
-class SerialResponseTimeout(ToolError):
-    """The device never returned a terminal response for the command."""
-
-
-@contextlib.contextmanager
-def firmware_transaction():
-    """Prevent two host processes from updating the same USB device at once."""
-    handle = None
-    try:
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        handle = FIRMWARE_LOCK.open("a+b")
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        if handle is not None:
-            handle.close()
-        raise ToolError(
-            "Another tinyTouch firmware operation is already running. "
-            "Wait for it to finish, then try again."
-        ) from exc
-    except OSError as exc:
-        if handle is not None:
-            handle.close()
-        raise ToolError("Could not create the tinyTouch firmware update lock.") from exc
-    try:
-        yield
-    finally:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-
-
-def _keychain_backend():
-    # Security.framework only exists on macOS. Import it only when a Keychain
-    # operation is actually requested so parser/package tests remain portable
-    # and normal CLI errors are translated instead of failing at import time.
-    import tinytouch_keychain  # type: ignore
-
-    return tinytouch_keychain
+class SerialTimeout(ToolError):
+    """The device did not return a terminal response."""
 
 
 def say(message: str = "") -> None:
     print(message, flush=True)
-
-
-def progress(message: str) -> None:
-    if sys.stdout.isatty():
-        sys.stdout.write("\r" + message + "\033[K")
-        sys.stdout.flush()
-        return
-    say(message)
-
-
-def progress_done(message: str = "") -> None:
-    if sys.stdout.isatty():
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-    if message:
-        say(message)
-
-
-def show_startup_mark() -> None:
-    if not VERBOSE or not sys.stdout.isatty():
-        return
-    # Mechanically rasterized from https://alpacaengineer.ing/assets/alpaca.svg
-    # (source SHA-256 fe0152b54901fbb7f5baa54363e17d1ed0831d1883806aacc5aa305979522eda).
-    say("⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣰⣷⣼⣇⡀⠀")
-    say("⠀⠀⠀⠀⢀⣀⣀⡀⠀⠀⣿⣿⡟⠟⢡⡄")
-    say("⠀⠀⠀⣤⣿⣯⣽⢿⣤⠀⣿⣿⣿⡟⠋⠀")
-    say("⠀⣰⣟⡛⢛⡛⢛⣛⢛⣻⣿⣿⣿⡇⠀⠀")
-    say("⠸⣿⣿⣷⣿⣿⣾⣿⣾⣿⣿⣿⣿⡇⠀⠀")
-    say("⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠃⠀⠀")
-    say("⠀⢸⣿⣿⣿⡿⠉⠉⣿⣿⡏⣿⠁⠀⠀⠀")
-    say("⠀⠀⢸⡇⣿⡇⠀⠀⢸⣿⢸⡇⠀⠀⠀⠀")
-    say("          tinyTouch")
-    say()
 
 
 def verbose(message: str) -> None:
@@ -181,955 +70,162 @@ def verbose(message: str) -> None:
         say(f"[verbose] {message}")
 
 
-def step(number: int, total: int, title: str) -> None:
-    verbose(f"step {number} of {total}: {title}")
-
-
-def download_bytes(url: str, *, timeout: float = 10.0, max_bytes: int = 256 * 1024 * 1024) -> bytes:
-    verbose(f"download: {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": f"tinytouch/{CLI_VERSION}"})
+def run(command: list[str], **kwargs):
+    verbose("run: " + " ".join(command))
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=TLS_CONTEXT) as response:
-            length = response.headers.get("Content-Length")
-            if length:
-                try:
-                    if int(length) > max_bytes:
-                        raise ToolError("The tinyTouch update download is unexpectedly large.")
-                except ValueError:
-                    pass
-            payload = response.read(max_bytes + 1)
-            if len(payload) > max_bytes:
-                raise ToolError("The tinyTouch update download is unexpectedly large.")
-            return payload
-    except (OSError, urllib.error.URLError) as exc:
-        verbose(f"download failed: {exc!r}")
-        raise ToolError("Could not reach the tinyTouch update service. Check your connection and try again.") from exc
-
-
-def release_manifest() -> dict:
-    local_directory = os.environ.get("TINYTOUCH_LOCAL_RELEASE_DIR")
-    try:
-        if local_directory:
-            manifest = json.loads(
-                (Path(local_directory).expanduser() / "release-manifest.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-        else:
-            channel = json.loads(download_bytes(RELEASE_CHANNEL_URL, max_bytes=64 * 1024).decode("utf-8"))
-            if not isinstance(channel, dict):
-                raise ValueError("invalid channel document")
-            manifest_url = channel.get("manifest")
-            if not isinstance(manifest_url, str) or not manifest_url.startswith(
-                "https://github.com/ZimengXiong/TinyTouch/releases/download/"
-            ):
-                raise ValueError("invalid channel manifest URL")
-            manifest = json.loads(download_bytes(manifest_url, max_bytes=512 * 1024).decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise SupportError("The tinyTouch update manifest is invalid.") from exc
-    if not isinstance(manifest, dict):
-        raise SupportError("The tinyTouch update manifest is invalid.")
-    if not isinstance(manifest.get("version"), str) or not isinstance(manifest.get("firmware"), dict):
-        raise SupportError("The tinyTouch update manifest is incomplete.")
-    if not local_directory and (
-        not isinstance(manifest.get("protocol"), int)
-        or isinstance(manifest.get("protocol"), bool)
-        or manifest["protocol"] != CURRENT_UPDATE_PROTOCOL
-        or not isinstance(manifest.get("build"), str)
-        or re.fullmatch(r"[0-9a-f]{12}", manifest["build"]) is None
-    ):
-        raise SupportError("The tinyTouch update manifest has invalid compatibility metadata.")
-    return manifest
-
-
-def release_base_url(manifest: dict) -> str:
-    version = manifest.get("version")
-    if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z._-]+", version):
-        raise SupportError("The tinyTouch update manifest has an invalid version.")
-    return f"https://github.com/ZimengXiong/TinyTouch/releases/download/v{version}"
-
-
-def verified_release_asset(metadata: dict, manifest: dict) -> bytes:
-    name = metadata.get("file")
-    expected = metadata.get("sha256")
-    size = metadata.get("size")
-    if (
-        not isinstance(name, str)
-        or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None
-        or not isinstance(expected, str)
-        or re.fullmatch(r"[0-9a-f]{64}", expected) is None
-        or not isinstance(size, int)
-        or isinstance(size, bool)
-        or size <= 0
-        or size > 256 * 1024 * 1024
-    ):
-        raise SupportError("The tinyTouch update manifest has invalid asset metadata.")
-    local_directory = os.environ.get("TINYTOUCH_LOCAL_RELEASE_DIR")
-    if local_directory:
-        try:
-            payload = (Path(local_directory).expanduser() / name).read_bytes()
-        except OSError as exc:
-            raise SupportError(f"Local release asset is missing: {name}") from exc
-    else:
-        payload = download_bytes(
-            f"{release_base_url(manifest)}/{name}?sha256={expected}", timeout=30.0,
-            max_bytes=size,
-        )
-    if len(payload) != size or hashlib.sha256(payload).hexdigest() != expected:
-        raise SupportError(f"{name} failed its integrity check. Nothing was installed.")
-    return payload
-
-
-def git_short_sha() -> str:
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=True,
-        )
-        return proc.stdout.strip()
-    except Exception:
-        return "development"
-
-
-def _update_installed_cli_unlocked(manifest: dict, *, announce: bool) -> bool:
-    if not FROZEN:
-        return False
-    machine = platform.machine()
-    if machine == "x86_64" and sys.platform == "darwin":
-        translated = subprocess.run(
-            ["/usr/sbin/sysctl", "-in", "sysctl.proc_translated"],
-            check=False, text=True, capture_output=True,
-        )
-        if translated.stdout.strip() == "1":
-            machine = "arm64"
-    architecture = {"arm64": "macos-arm64", "x86_64": "macos-x86_64"}.get(machine)
-    if architecture is None:
-        raise ToolError(f"This Mac architecture is not supported: {platform.machine()}.")
-    metadata = manifest.get("cli", {}).get(architecture)
-    if not isinstance(metadata, dict):
-        raise ToolError("This release does not include a CLI update.")
-    expected_sha = metadata.get("sha256")
-    if not isinstance(expected_sha, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None:
-        raise SupportError("The CLI update has invalid checksum metadata.")
-    bundle = SUPPORT_DIR / f"cli-{expected_sha[:16]}"
-    executable = bundle / "tinytouch"
-    marker = SUPPORT_DIR / "installed-cli-sha256"
-    try:
-        if (
-            marker.read_text(encoding="ascii").strip() == expected_sha
-            and executable.is_file()
-            and CLI_INSTALL_PATH.is_symlink()
-            and CLI_INSTALL_PATH.resolve() == executable.resolve()
-        ):
-            return False
-    except OSError:
-        pass
-    if metadata.get("format") != "tar.gz":
-        raise SupportError("The CLI update has an unsupported package format.")
-    if announce:
-        say("Downloading CLI...")
-    payload = verified_release_asset(metadata, manifest)
-    if announce:
-        say("Installing CLI...")
-    if not bundle.exists():
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="tinytouch-cli-", dir=SUPPORT_DIR) as directory:
-            staging = Path(directory)
-            try:
-                with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
-                    archive.extractall(staging, filter="data")
-            except (tarfile.TarError, OSError, ValueError) as exc:
-                raise SupportError("The CLI update package could not be unpacked safely.") from exc
-            extracted = staging / "tinytouch"
-            executable = extracted / "tinytouch"
-            if not executable.is_file() or not (extracted / "_internal").is_dir():
-                raise SupportError("The CLI update package is incomplete.")
-            extracted.replace(bundle)
-    executable = bundle / "tinytouch"
-    CLI_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = CLI_INSTALL_PATH.with_suffix(".update")
-    temporary.unlink(missing_ok=True)
-    temporary.symlink_to(executable)
-    temporary.replace(CLI_INSTALL_PATH)
-    marker.write_text(expected_sha + "\n", encoding="ascii")
-    # If a helper is installed, pin its next launch to this immutable generation
-    # instead of the mutable ~/.local/bin/tinytouch symlink. launchd retains an
-    # in-memory job definition, so leave a migration marker for the re-executed
-    # CLI to boot out and bootstrap the new definition.
-    if LAUNCH_AGENT.exists():
-        atomic_write_json(
-            HELPER_MIGRATION_PATH,
-            {
-                "schema": 1,
-                "target_service_schema": 2,
-                "target_cli_sha256": expected_sha,
-                "started_at": int(time.time()),
-            },
-        )
-        atomic_write_bytes(
-            LAUNCH_AGENT,
-            launch_agent_contents(Path(sys.executable)),
-            mode=0o644,
-        )
-    # Keep the active generation plus one rollback generation. Failed staging
-    # directories are temporary and disappear automatically.
-    generations = sorted(
-        (path for path in SUPPORT_DIR.glob("cli-*") if path.is_dir() and path != bundle),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for old in generations[1:]:
-        shutil.rmtree(old, ignore_errors=True)
-    if announce:
-        say("CLI updated.")
-    return True
-
-
-def update_installed_cli(manifest: dict, *, announce: bool) -> bool:
-    if not FROZEN:
-        return False
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = SUPPORT_DIR / "cli-update.lock"
-    try:
-        with lock_path.open("a+b") as lock_file:
-            flags = fcntl.LOCK_EX | (0 if announce else fcntl.LOCK_NB)
-            try:
-                fcntl.flock(lock_file.fileno(), flags)
-            except BlockingIOError:
-                if announce:
-                    raise ToolError("Another tinyTouch CLI update is already running.")
-                return False
-            try:
-                return _update_installed_cli_unlocked(manifest, announce=announce)
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    except OSError as exc:
-        if announce:
-            raise ToolError("Could not lock the tinyTouch CLI update transaction.") from exc
-        verbose(f"automatic CLI update lock unavailable: {exc}")
-        return False
-
-
-def auto_update_cli(*, force: bool = False) -> bool:
-    if not FROZEN:
-        return False
-    # Do not silently replace the executable generation behind a live Keychain
-    # helper. A foreground command can update it while the user is present.
-    if helper_job_loaded() or helper_processes_running():
-        verbose("automatic CLI update deferred while the HID helper is active")
-        return False
-    check_file = SUPPORT_DIR / "last-update-success"
-    try:
-        if not force and time.time() - check_file.stat().st_mtime < 6 * 60 * 60:
-            return False
-    except OSError:
-        pass
-    try:
-        updated = update_installed_cli(release_manifest(), announce=False)
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        check_file.touch()
-        return updated
-    except (ToolError, OSError) as exc:
-        verbose(f"automatic CLI update skipped: {exc}")
-        return False
-
-
-def schedule_auto_update() -> None:
-    if not FROZEN:
-        return
-    success_file = SUPPORT_DIR / "last-update-success"
-    attempt_file = SUPPORT_DIR / "last-update-attempt"
-    try:
-        if time.time() - success_file.stat().st_mtime < 6 * 60 * 60:
-            return
-    except OSError:
-        pass
-    try:
-        if time.time() - attempt_file.stat().st_mtime < 15 * 60:
-            return
-    except OSError:
-        pass
-    try:
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        attempt_file.touch()
-        log_dir = Path.home() / "Library" / "Logs" / "tinyTouch"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "auto-update.log"
-        with log_path.open("wb") as log, open(os.devnull, "rb") as devnull:
-            subprocess.Popen(
-                [sys.executable, "_auto_update"], stdin=devnull, stdout=log, stderr=log,
-                start_new_session=True,
-            )
-    except OSError as exc:
-        # Automatic maintenance must never break the command the user requested.
-        verbose(f"automatic CLI update could not be scheduled: {exc}")
-
-
-def wait_for_port_departure(port: str, *, wait_seconds: int = 10) -> None:
-    say("Waiting for tinyTouch to restart...")
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if port not in detect_ports():
-            return
-        time.sleep(0.1)
-    raise SupportError("tinyTouch did not restart after accepting the firmware update.")
-
-
-def install_command_if_needed() -> None:
-    """Install the frozen CLI on PATH without interrupting the requested command."""
-    if not FROZEN:
-        return
-    source = Path(sys.executable).resolve()
-    installed = False
-    if source != CLI_INSTALL_PATH.resolve():
-        CLI_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-        if (source.parent / "_internal").is_dir():
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
-            bundle = SUPPORT_DIR / f"cli-local-{digest}"
-            if not bundle.exists():
-                SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-                staging = SUPPORT_DIR / f".cli-local-{digest}"
-                if staging.exists():
-                    shutil.rmtree(staging)
-                shutil.copytree(source.parent, staging)
-                staging.replace(bundle)
-            target = bundle / source.name
-            temporary = CLI_INSTALL_PATH.with_suffix(".tmp")
-            temporary.unlink(missing_ok=True)
-            temporary.symlink_to(target)
-            temporary.replace(CLI_INSTALL_PATH)
-        elif not CLI_INSTALL_PATH.exists() or not filecmp.cmp(source, CLI_INSTALL_PATH, shallow=False):
-            # Compatibility for the old one-file pre-production CLI.
-            temporary = CLI_INSTALL_PATH.with_suffix(".tmp")
-            shutil.copy2(source, temporary)
-            temporary.chmod(0o755)
-            try:
-                os.removexattr(temporary, "com.apple.quarantine")
-            except (AttributeError, OSError):
-                pass
-            temporary.replace(CLI_INSTALL_PATH)
-        installed = True
-
-    path_added = False
-    shell_name = Path(os.environ.get("SHELL", "/bin/zsh")).name
-    if shell_name == "fish":
-        profile = Path.home() / ".config" / "fish" / "config.fish"
-        path_line = 'fish_add_path "$HOME/.local/bin" # tinyTouch\n'
-    elif shell_name == "bash":
-        profile = Path.home() / ".bash_profile"
-        path_line = 'export PATH="$HOME/.local/bin:$PATH" # tinyTouch\n'
-    else:
-        profile = Path.home() / ".zprofile"
-        path_line = 'export PATH="$HOME/.local/bin:$PATH" # tinyTouch\n'
-    existing = profile.read_text(encoding="utf-8") if profile.exists() else ""
-    if ".local/bin" not in existing:
-        profile.parent.mkdir(parents=True, exist_ok=True)
-        with profile.open("a", encoding="utf-8") as handle:
-            if existing and not existing.endswith("\n"):
-                handle.write("\n")
-            handle.write(path_line)
-        path_added = True
-    local_bin = str(CLI_INSTALL_DIR)
-    if local_bin not in os.environ.get("PATH", "").split(os.pathsep):
-        os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
-
-    if installed or path_added:
-        say("Installed command: tinytouch")
-        if path_added:
-            say("Future Terminal windows can run it from anywhere.")
-
-
-def ask(prompt: str, *, noninteractive_hint: str | None = None) -> str:
-    try:
-        return input(prompt)
-    except EOFError as exc:
-        hint = noninteractive_hint or (
-            "This step needs an answer, but Terminal input is unavailable. "
-            "Open Terminal and run the command there."
-        )
-        raise ToolError(hint) from exc
-
-
-def human_device_error(line: str) -> str:
-    translations = {
-        "ERR STATUS sensor": (
-            "The tinyTouch firmware responded, but the fingerprint sensor did not. "
-            "Check sensor power and UART wiring: sensor TX to GPIO44 and sensor RX to GPIO43."
-        ),
-        "ERR CONFIG_UNLOCK fingerprint": (
-            "The fingerprint was not recognized before the authorization window expired. "
-            "Lift your finger, run the command again, and touch with an enrolled finger."
-        ),
-        "ERR CONFIG_UNLOCK sensor": (
-            "The firmware is running, but the fingerprint sensor cannot authorize configuration. "
-            "Check 3.3 V, ground, sensor TX to GPIO44, and sensor RX to GPIO43."
-        ),
-        "ERR CONFIG_LOCKED run=CONFIG_UNLOCK": "Device configuration is locked. Authorize it with an enrolled fingerprint and try again.",
-        "ERR HID_KEY": (
-            "The ESP32-S3 could not store the HID pairing key in NVS. "
-            "Run 'tinytouch status --verbose'; factory-reset the device if NVS remains unavailable."
-        ),
-        "ERR HID_KEY_ADD": (
-            "The device could not add this Mac's HID key. Its computer list may be full, or "
-            "NVS storage may be unavailable. Run 'tinytouch computers list' and try again."
-        ),
-        "ERR HID_KEY_REMOVE": (
-            "That HID computer ID was not found, or the updated list could not be saved. "
-            "Run 'tinytouch computers list' and use the exact ID shown."
-        ),
-        "ERR PROVISION_COMMIT": (
-            "The ESP32-S3 could not validate or save the generated PIV identity. "
-            "The previous identity was preserved. Run setup again with --verbose."
-        ),
-        "ERR PROVISION_CHUNK": (
-            "The ESP32-S3 rejected part of the generated PIV identity before saving it. "
-            "The previous identity was preserved. Run setup again with --verbose."
-        ),
-        "ERR FACTORY_RESET": (
-            "Factory reset did not complete. The enrolled fingerprint may not have authorized it, "
-            "or the fingerprint sensor/NVS did not respond. Run 'tinytouch status --verbose'."
-        ),
-        "ERR UPDATE_BEGIN": (
-            "The firmware image does not fit the inactive update slot. Nothing was changed."
-        ),
-        "ERR UPDATE_UNLOCK fingerprint_required": (
-            "Enroll a fingerprint before updating firmware. Run 'tinytouch enroll'."
-        ),
-        "ERR UPDATE_UNLOCK fingerprint": (
-            "The fingerprint was not recognized. Run 'tinytouch update' again and use an enrolled finger."
-        ),
-        "ERR UPDATE_LOCKED run=UPDATE_UNLOCK": (
-            "Firmware update authorization expired. Run 'tinytouch update' again."
-        ),
-        "ERR UPDATE_SESSION": (
-            "The firmware transfer session expired. The current firmware is still active; run 'tinytouch update' again."
-        ),
-        "ERR UPDATE_CHUNK": (
-            "The firmware transfer was interrupted. The current firmware is still active."
-        ),
-        "ERR UPDATE_COMMIT": (
-            "The firmware failed validation. The current firmware is still active."
-        ),
-        "ERR CONFIRM_FIRMWARE": (
-            "The updated firmware did not pass its final health confirmation. The device will roll back automatically."
-        ),
-        "ERR DELETE_ALL": (
-            "The fingerprint sensor could not erase its enrolled fingerprints. "
-            "Check the sensor connection and run the command again."
-        ),
-        "ERR PAIRING_MODE fingerprint": (
-            "Pairing was not authorized before the fingerprint window expired. "
-            "Run 'tinytouch pair' again and touch an enrolled finger when instructed."
-        ),
-        "ERR UNKNOWN_COMMAND": (
-            "The connected firmware does not support the command sent by this CLI. "
-            f"Update the firmware at {FACTORY_FLASH_URL} and try again."
-        ),
-    }
-    if line in translations:
-        return translations[line]
-    if any(line.startswith(f"ERR {verb} ") for verb in (
-        "UPDATE_BEGIN", "UPDATE_CHUNK", "UPDATE_STATUS", "UPDATE_COMMIT",
-    )):
-        fields = dict(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)", line))
-        error = fields.get("error", "unknown").split(":", 1)[0]
-        update_errors = {
-            "image_size": "The release image does not fit the inactive firmware slot.",
-            "no_partition": "The device could not find an inactive firmware slot.",
-            "running_pending": (
-                "The running firmware still needs rollback confirmation before another update."
-            ),
-            "ota_begin": "The device could not initialize its inactive firmware slot.",
-            "sha_start": "The device could not initialize firmware integrity verification.",
-            "no_session": "The firmware transfer session is no longer active.",
-            "write_offset": (
-                "The host and device disagreed about the next firmware byte; the transfer was stopped."
-            ),
-            "write_size": "The device rejected an invalid firmware chunk size.",
-            "ota_write": "The ESP32-S3 flash write failed while writing the inactive slot.",
-            "sha_update": "The device could not continue firmware integrity verification.",
-            "commit_size": "The device received an incomplete firmware image and refused to boot it.",
-            "sha_finish": "The device could not finish firmware integrity verification.",
-            "digest_mismatch": "The received firmware did not match its expected SHA-256 digest.",
-            "commit_sync": "The device could not allocate the firmware commit synchronizer.",
-            "commit_task_create": "The device could not start its isolated firmware validator.",
-            "ota_end": "ESP-IDF rejected the completed firmware image during final validation.",
-            "set_boot": "ESP-IDF could not select the verified image as the next boot partition.",
-        }
-        explanation = update_errors.get(
-            error, f"The device reported an update failure in phase {error!r}."
-        )
-        if fields.get("active") == "0":
-            return explanation + " The current firmware remains selected; run 'tinytouch update' again."
-        return explanation + " Run 'tinytouch update --verbose' again; the current firmware remains selected."
-    if line.startswith("ERR ENROLL"):
-        return (
-            "Fingerprint enrollment did not complete. Lift your finger fully, run the command "
-            "again, and follow each touch/lift instruction."
-        )
-    if line.startswith("ERR DELETE"):
-        return (
-            "The fingerprint sensor could not delete that slot. Confirm the slot is valid, "
-            "check the sensor connection, and try again."
-        )
-    if line.startswith("ERR MODE"):
-        return (
-            "The device could not switch modes. Configuration must be fingerprint-authorized, "
-            "and HID needs a pairing key before HID mode can be selected."
-        )
-    return f"The device reported an error: {line[4:] if line.startswith('ERR ') else line}"
-
-
-def show_device_line(line: str) -> None:
-    verbose(f"device: {line}")
-    prompts = {
-        "PROMPT TOUCH": "Touch the fingerprint sensor now.",
-        "PROMPT LIFT": "Lift your finger from the sensor.",
-        "PROMPT TOUCH_AGAIN": "Place the same finger on the sensor again.",
-    }
-    if line in prompts:
-        say(f"  → {prompts[line]}")
-
-
-def run(
-    command: list[str], *, cwd: Path | None = None, capture: bool = False,
-    display: str | None = None,
-) -> str:
-    verbose(f"command: {display if display is not None else ' '.join(command)}")
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
-        )
+        return subprocess.run(command, check=True, **kwargs)
     except FileNotFoundError as exc:
-        raise ToolError(f"Required command not found: {command[0]}") from exc
+        raise ToolError(f"Required command is unavailable: {command[0]}") from exc
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip()
-        raise ToolError(f"Command failed: {' '.join(command)}" + (f"\n{detail}" if detail else "")) from exc
-    return result.stdout.strip() if capture else ""
+        detail = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        raise ToolError(detail or f"Command failed: {command[0]}") from exc
 
 
 def require_macos() -> None:
-    if sys.platform != "darwin":
-        raise ToolError("This pre-production utility currently supports macOS only.")
+    if sys.platform != "darwin" and not os.environ.get("TINYTOUCH_ALLOW_NON_MACOS"):
+        raise ToolError("tinyTouch setup is supported on macOS.")
 
 
-def choose_mode(value: str | None) -> str:
-    if value:
-        return value
-    say("Choose how tinyTouch should authenticate on this Mac:")
-    say("  1. PIV — macOS login and sudo using the native smart-card system")
-    say("  2. HID — type this Mac account's password after a fingerprint match")
-    while True:
-        answer = ask(
-            "> ",
-            noninteractive_hint=(
-                "Mode selection needs Terminal input. Run 'tinytouch setup --mode piv' "
-                "or 'tinytouch setup --mode hid'."
-            ),
-        ).strip().lower()
-        if answer in {"1", "piv"}:
-            return "piv"
-        if answer in {"2", "hid"}:
-            return "hid"
-        say("Enter 1 or 2.")
-
-
-def detect_ports() -> list[str]:
+def _keychain():
     try:
-        import serial.tools.list_ports  # type: ignore
-    except ImportError:
-        patterns = ("/dev/cu.usbmodem*", "/dev/cu.usbserial*")
-        return sorted({path for pattern in patterns for path in glob.glob(pattern)})
-    return sorted(
-        item.device
-        for item in serial.tools.list_ports.comports()
-        if item.vid == 0x303A and (
-            item.pid in {0x0009, 0x1001}
-            or (
-                item.pid == 0x4001
-                and isinstance(item.serial_number, str)
-                and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
-            )
-        )
-    )
-
-
-def choose_port(explicit: str | None, *, wait_seconds: int = 0) -> str:
-    if explicit:
-        try:
-            import serial.tools.list_ports  # type: ignore
-        except ImportError:
-            return explicit
-        item = next((item for item in serial.tools.list_ports.comports() if item.device == explicit), None)
-        if item is not None and not (
-            item.vid == 0x303A
-            and (
-                item.pid in {0x0009, 0x1001}
-                or (
-                    item.pid == 0x4001
-                    and isinstance(item.serial_number, str)
-                    and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
-                )
-            )
-        ):
-            raise ToolError(
-                f"{explicit} is not a recognized tinyTouch/ESP32-S3 update interface. "
-                "Refusing to send device or flash commands to it."
-            )
-        return explicit
-    deadline = time.monotonic() + wait_seconds
-    while True:
-        ports = detect_ports()
-        verbose(f"detected serial ports: {', '.join(ports) if ports else 'none'}")
-        if len(ports) == 1:
-            return ports[0]
-        if len(ports) > 1:
-            say("Detected serial ports:")
-            for index, port in enumerate(ports, 1):
-                say(f"  {index}. {port}")
-            answer = ask(
-                "> ",
-                noninteractive_hint=(
-                    "Multiple devices were found. Run the command again with "
-                    "--port /dev/cu.usbmodem..."
-                ),
-            ).strip()
-            try:
-                return ports[int(answer) - 1]
-            except (ValueError, IndexError):
-                raise ToolError("Invalid serial-port selection.")
-        if time.monotonic() >= deadline:
-            raise ToolError(
-                "No USB serial device was found. Connect tinyTouch with a USB data cable, "
-                "wait five seconds, and try again. If this is a blank ESP32-S3, flash the "
-                f"factory firmware first at {FACTORY_FLASH_URL}."
-            )
-        time.sleep(0.5)
-
-
-def port_usb_location(port: str) -> str | None:
-    try:
-        import serial.tools.list_ports  # type: ignore
-    except ImportError:
-        return None
-    item = next((item for item in serial.tools.list_ports.comports() if item.device == port), None)
-    return item.location if item else None
-
-
-def port_usb_serial(port: str) -> str | None:
-    try:
-        import serial.tools.list_ports  # type: ignore
-    except ImportError:
-        return None
-    item = next((item for item in serial.tools.list_ports.comports() if item.device == port), None)
-    value = item.serial_number if item else None
-    return value if isinstance(value, str) and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", value) else None
-
-
-def port_is_download_mode(port: str) -> bool:
-    try:
-        import serial.tools.list_ports  # type: ignore
-    except ImportError:
-        return False
-    item = next((item for item in serial.tools.list_ports.comports() if item.device == port), None)
-    return bool(item and item.vid == 0x303A and item.pid in {0x0009, 0x1001})
-
-
-def serial_failure_message(port: str, error: BaseException) -> str:
-    detail = str(error)
-    verbose(f"serial failure on {port}: {type(error).__name__}: {detail}")
-    lowered = detail.lower()
-    error_number = getattr(error, "errno", None)
-    if error_number == 2 or "no such file" in lowered:
-        return (
-            f"The serial device {port} disappeared. The ESP32-S3 may have rebooted or the "
-            "USB cable was disconnected. Unplug tinyTouch, reconnect it, wait five seconds, "
-            "and run the command again."
-        )
-    if error_number in {6, 19} or "device not configured" in lowered:
-        return (
-            f"macOS lost {port} while the command was running. Unplug tinyTouch, reconnect it, "
-            "wait five seconds, and run the command again."
-        )
-    if error_number in {16} or any(word in lowered for word in ("busy", "already open")):
-        return (
-            f"The serial device {port} is busy. Close Arduino Serial Monitor, ESP-IDF monitor, "
-            "browser flashing tabs, and other tinyTouch commands, then try again."
-        )
-    return (
-        f"macOS could not communicate with {port}. Unplug tinyTouch, reconnect it with a USB "
-        "data cable, and try again. Run the command with --verbose for the technical detail."
-    )
-
-
-def wait_for_download_port(
-    runtime_port: str, *, location: str | None = None, wait_seconds: int = 20
-) -> str:
-    """Wait for the same physical ESP to re-enumerate in ROM download mode."""
-    try:
-        import serial.tools.list_ports  # type: ignore
+        import tinytouch_keychain  # type: ignore
     except ImportError as exc:
-        raise ToolError("pyserial is required to follow the device into download mode.") from exc
-
-    say("Waiting for download mode...")
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        candidates = [
-            item
-            for item in serial.tools.list_ports.comports()
-            if item.vid == 0x303A and item.pid in {0x0009, 0x1001}
-        ]
-        if location:
-            at_same_location = [item for item in candidates if item.location == location]
-            if at_same_location:
-                return at_same_location[0].device
-            # Once we know the runtime USB location, never fall back to a
-            # different ESP32 just because it is the only ROM-mode candidate.
-            time.sleep(0.25)
-            continue
-        if len(candidates) == 1:
-            return candidates[0].device
-        time.sleep(0.25)
-    raise ToolError(
-        "tinyTouch could not restart its firmware updater automatically. Reconnect it with a "
-        f"USB data cable and run the command again. Contact {SUPPORT_EMAIL} if this repeats."
-    )
-
-
-def wait_for_runtime_port(
-    *, location: str | None = None, serial_number: str | None = None, wait_seconds: int = 20
-) -> str:
-    try:
-        import serial.tools.list_ports  # type: ignore
-    except ImportError as exc:
-        raise ToolError("pyserial is required to find the restarted tinyTouch.") from exc
-
-    say("Waiting for tinyTouch to reconnect...")
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        candidates = [
-            item
-            for item in serial.tools.list_ports.comports()
-            if item.vid == 0x303A and item.pid == 0x4001
-            and isinstance(item.serial_number, str)
-            and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
-        ]
-        candidate = None
-        if serial_number:
-            same_serial = [item for item in candidates if item.serial_number == serial_number]
-            if same_serial:
-                candidate = same_serial[0].device
-            # The MAC-derived USB serial is the primary identity. Never accept
-            # another board merely because macOS reused the same hub location.
-        elif location:
-            at_same_location = [item for item in candidates if item.location == location]
-            if at_same_location:
-                candidate = at_same_location[0].device
-        elif len(candidates) == 1:
-            candidate = candidates[0].device
-        if candidate:
-            try:
-                first = serial_command(candidate, "PING", timeout=1.5)
-                time.sleep(0.4)
-                second = serial_command(candidate, "PING", timeout=1.5)
-                if first[-1] == "PONG" and second[-1] == "PONG":
-                    return candidate
-            except ToolError as exc:
-                verbose(f"runtime port {candidate} is not stable yet: {exc}")
-        time.sleep(0.25)
-    raise ToolError(
-        "Flashing finished, but the normal tinyTouch USB interface did not appear. Unplug "
-        "the board, reconnect it, wait five seconds, then run 'tinytouch status'."
-    )
-
-
-def normalize_mac(value: str) -> str:
-    """Return a 12-digit uppercase MAC address or reject the value."""
-    normalized = re.sub(r"[^0-9A-Fa-f]", "", value).upper()
-    if re.fullmatch(r"[0-9A-F]{12}", normalized) is None:
-        raise SupportError(f"The ESP32-S3 reported an invalid MAC address: {value!r}.")
-    return normalized
-
-
-def runtime_serial_mac(serial_number: str) -> str:
-    if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", serial_number) is None:
-        raise SupportError("tinyTouch did not expose its expected MAC-derived USB serial number.")
-    return serial_number[3:].upper()
-
-
-def esptool_base_arguments(port: str, *, after: str = "no_reset") -> list[str]:
-    return [
-        "--chip", "esp32s3", "--port", port, "--baud", "460800",
-        "--before", "no_reset", "--after", after,
-    ]
-
-
-def read_rom_mac(esptool_module, port: str) -> str:
-    """Read the immutable chip MAC before any destructive ROM operation."""
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-        esptool_module.main([*esptool_base_arguments(port), "read_mac"])
-    text = output.getvalue()
-    match = re.search(r"\bMAC:\s*([0-9A-Fa-f:-]{12,17})\b", text, re.IGNORECASE)
-    if not match:
-        verbose(text)
-        raise SupportError("Could not read the ESP32-S3 hardware MAC in download mode.")
-    return normalize_mac(match.group(1))
-
-
-def read_rom_flash(esptool_module, port: str, address: int, size: int, destination: Path) -> bytes:
-    """Read a bounded flash region through the selected ROM interface."""
-    esptool_module.main([
-        *esptool_base_arguments(port), "read_flash", hex(address), hex(size), str(destination),
-    ])
-    try:
-        payload = destination.read_bytes()
-    except OSError as exc:
-        raise SupportError("ESP32-S3 flash readback did not produce an output file.") from exc
-    if len(payload) != size:
-        raise SupportError(
-            f"ESP32-S3 flash readback returned {len(payload)} bytes; expected {size}."
-        )
-    return payload
-
-
-def parse_partition_table(payload: bytes) -> tuple[tuple[str, int, int, int, int, int], ...]:
-    """Parse ESP-IDF partition entries needed for migration classification."""
-    entries: list[tuple[str, int, int, int, int, int]] = []
-    md5_trailer_seen = False
-    for offset in range(0, min(len(payload), 0xC00), 32):
-        record = payload[offset:offset + 32]
-        if len(record) < 32:
-            raise SupportError("The ESP32-S3 partition table is truncated.")
-        if record == b"\xFF" * 32:
-            raise SupportError("The ESP32-S3 partition table has no ESP-IDF MD5 trailer.")
-        magic = struct.unpack_from("<H", record)[0]
-        if magic == 0xEBEB:
-            if record[:16] != b"\xEB\xEB" + b"\xFF" * 14:
-                raise SupportError("The ESP32-S3 partition-table MD5 trailer is malformed.")
-            if record[16:32] != hashlib.md5(payload[:offset]).digest():
-                raise SupportError("The ESP32-S3 partition-table MD5 checksum does not match.")
-            if any(value != 0xFF for value in payload[offset + 32:]):
-                raise SupportError("The ESP32-S3 partition table has data after its terminator.")
-            md5_trailer_seen = True
-            break
-        if magic != 0x50AA:
-            raise SupportError("The ESP32-S3 contains an invalid partition-table entry.")
-        part_type, subtype, address, size = struct.unpack_from("<BBII", record, 2)
-        flags = struct.unpack_from("<I", record, 28)[0]
-        if flags != 0:
-            raise SupportError("The ESP32-S3 partition table uses unsupported partition flags.")
-        label_bytes = record[12:28].split(b"\0", 1)[0]
-        try:
-            label = label_bytes.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise SupportError("The ESP32-S3 partition table contains an invalid label.") from exc
-        entries.append((label, part_type, subtype, address, size, flags))
-    if not entries or not md5_trailer_seen:
-        raise SupportError("The ESP32-S3 partition table is empty or unreadable.")
-    return tuple(entries)
-
-
-LEGACY_SINGLE_APP_LAYOUT = (
-    ("nvs", 0x01, 0x02, 0x9000, 0x6000, 0),
-    ("phy_init", 0x01, 0x01, 0xF000, 0x1000, 0),
-    ("factory", 0x00, 0x00, 0x10000, 0x100000, 0),
-)
-CURRENT_OTA_LAYOUT = (
-    ("nvs", 0x01, 0x02, 0x9000, 0x6000, 0),
-    ("phy_init", 0x01, 0x01, 0xF000, 0x1000, 0),
-    ("ota_0", 0x00, 0x10, 0x10000, 0x100000, 0),
-    ("ota_1", 0x00, 0x11, 0x110000, 0x100000, 0),
-    ("otadata", 0x01, 0x00, 0x210000, 0x2000, 0),
-)
-
-
-def classify_partition_layout(payload: bytes) -> str:
-    entries = parse_partition_table(payload)
-    if entries == LEGACY_SINGLE_APP_LAYOUT:
-        return "legacy-single-app"
-    if entries == CURRENT_OTA_LAYOUT:
-        return "current-ota"
-    summary = ", ".join(
-        f"{label}@0x{address:x}/0x{size:x}" for label, _, _, address, size, _ in entries
-    )
-    raise SupportError(
-        "The ESP32-S3 has an unknown partition layout. Refusing to guess which flash regions "
-        f"are safe to overwrite ({summary})."
-    )
-
-
-def _keychain_operation(name: str, *arguments):
-    backend = _keychain_backend()
-    try:
-        return getattr(backend, name)(*arguments)
-    except backend.KeychainError as exc:
-        status = getattr(exc, "status", None)
-        detail = f" (macOS status {status})" if status is not None else ""
-        raise ToolError(
-            "macOS Keychain access failed" + detail + ". "
-            "Run the command from an unlocked, interactive Mac session and allow tinyTouch "
-            "Keychain access if macOS asks."
-        ) from exc
-
-
-def keychain_set(service: str, account: str, value: str) -> None:
-    _keychain_operation("set_password", service, account, value)
-
-
-def keychain_delete(service: str, account: str) -> None:
-    _keychain_operation("delete_password", service, account)
-
-
-def keychain_exists(service: str, account: str) -> bool:
-    return bool(_keychain_operation("has_password", service, account))
+        raise ToolError("The macOS Keychain helper is unavailable.") from exc
+    return tinytouch_keychain
 
 
 def keychain_get(service: str, account: str) -> str | None:
-    return _keychain_operation("get_password", service, account)
+    return _keychain().get_password(service, account)
 
 
-def pairing_account_for_port(port: str | None) -> str:
-    if not port:
-        return DEFAULT_DEVICE_ACCOUNT
+def keychain_set(service: str, account: str, value: str) -> None:
+    _keychain().set_password(service, account, value)
+
+
+def keychain_delete(service: str, account: str) -> None:
+    _keychain().delete_password(service, account)
+
+
+def keychain_exists(service: str, account: str) -> bool:
+    return keychain_get(service, account) is not None
+
+
+def notify(title: str, message: str) -> None:
+    """Show a native macOS notification; failures do not hide the text prompt."""
+    if sys.platform != "darwin":
+        return
+    subprocess.run(["osascript", "-e", f'display notification {message!r} with title {title!r}'], check=False)
+
+
+def ask(prompt: str) -> str:
     try:
-        import serial.tools.list_ports  # type: ignore
-
-        for item in serial.tools.list_ports.comports():
-            if item.device == port and item.serial_number:
-                identity = re.sub(r"[^A-Za-z0-9_.-]", "", item.serial_number).upper()
-                if identity:
-                    return identity
-    except ImportError:
-        pass
-    return re.sub(r"[^A-Za-z0-9_.-]", "", Path(port).name).upper() or DEFAULT_DEVICE_ACCOUNT
+        return input(prompt).strip()
+    except EOFError as exc:
+        raise ToolError("This action needs an interactive Terminal.") from exc
 
 
-def fingerprint_password_account(account: str, slot: int) -> str:
-    return f"{account}:fingerprint:{slot}"
+def choose_mode(value: str | None) -> str:
+    if value in {"hid", "piv"}:
+        return value
+    answer = ask("Choose mode: [h] HID or [p] PIV: ").lower()
+    if answer in {"h", "hid"}:
+        return "hid"
+    if answer in {"p", "piv"}:
+        return "piv"
+    raise ToolError("Choose HID or PIV.")
 
 
-def keyboard_settings_path(account: str) -> Path:
-    safe_account = re.sub(r"[^A-Za-z0-9_.-]", "", account).upper()
-    return SUPPORT_DIR / f"settings-{safe_account}.json"
+def detect_ports() -> list[str]:
+    return sorted(str(path) for path in Path("/dev").glob("cu.*") if "usb" in path.name.lower() or "TT-" in path.name)
 
 
-def helper_state_path(account: str) -> Path:
-    safe_account = re.sub(r"[^A-Za-z0-9_.-]", "", account).upper()
-    return SUPPORT_DIR / f"state-{safe_account}.json"
+def choose_port(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    ports = detect_ports()
+    if len(ports) == 1:
+        return ports[0]
+    if not ports:
+        raise ToolError("No tinyTouch USB serial device is connected.")
+    say("Several USB serial devices are connected:")
+    for index, port in enumerate(ports, 1):
+        say(f"  {index}. {port}")
+    answer = ask("Select tinyTouch: ")
+    try:
+        return ports[int(answer) - 1]
+    except (ValueError, IndexError) as exc:
+        raise ToolError("Select one of the listed devices.") from exc
 
 
-def save_keyboard_layout(account: str, layout: str) -> None:
-    atomic_write_json(keyboard_settings_path(account), {"keyboard_layout": layout})
+def is_terminal(command: str, line: str) -> bool:
+    words = command.split()
+    verb = words[0]
+    if verb == "PING":
+        return line.startswith("PONG") or line.startswith("ERR PING")
+    fields = line.split()
+    if len(fields) < 2 or fields[0] not in {"OK", "ERR"}:
+        return False
+    if fields[1] == verb:
+        return True
+    # Protocol 6 groups live writes under SET, HOST, FINGER, RESET, and OTA.
+    grouped = {"SET", "HOST", "FINGER", "RESET", "OTA"}
+    return len(words) > 1 and verb in grouped and fields[1] == words[1]
+
+
+def human_error(line: str) -> str:
+    if line.startswith("ERR "):
+        return "tinyTouch rejected the request: " + line[4:]
+    return line
+
+
+def unload_helper() -> bool:
+    global _lease
+    if _lease is not None:
+        return True
+    loaded = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if not loaded:
+        return False
+    lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
+    try:
+        lease.acquire(wait_for_ack=True)
+    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
+        raise ToolError(f"Could not pause the HID helper: {exc}") from exc
+    _lease = lease
+    return True
+
+
+def helper_loaded() -> bool:
+    try:
+        return subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except OSError:
+        return False
+
+
+def load_helper() -> None:
+    global _lease
+    if _lease is not None:
+        _lease.release()
+        _lease = None
+    if not helper_loaded():
+        run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
+
+
+def remove_helper() -> None:
+    global _lease
+    if _lease is not None:
+        _lease.release()
+        _lease = None
+    if LAUNCH_AGENT.exists():
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)], check=False)
+        LAUNCH_AGENT.unlink(missing_ok=True)
+    HELPER_SUSPEND.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK.unlink(missing_ok=True)
 
 
 def ensure_helper_environment() -> Path:
@@ -1137,2194 +233,616 @@ def ensure_helper_environment() -> Path:
         return Path(sys.executable)
     python = VENV / "bin" / "python"
     if not python.exists():
-        say("Creating helper environment...")
         run([sys.executable, "-m", "venv", str(VENV)])
-    dependencies = subprocess.run(
-        [str(python), "-c", "import serial"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if dependencies.returncode != 0:
+    probe = subprocess.run([str(python), "-c", "import serial"], check=False)
+    if probe.returncode:
         run([str(python), "-m", "pip", "install", "-q", "-r", str(REQUIREMENTS)])
     return python
 
 
-def reexec_in_environment_if_needed() -> None:
-    if FROZEN:
-        return
-    if Path(sys.prefix).resolve() == VENV.resolve():
-        return
+def install_helper() -> None:
     python = ensure_helper_environment()
-    os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
-
-
-def launch_agent_contents(python: Path) -> bytes:
-    if FROZEN:
-        installed = CLI_INSTALL_PATH.resolve()
-        executable = installed if installed.is_file() else Path(sys.executable).resolve()
-        arguments = [str(executable), "_helper"]
-    else:
-        arguments = [str(python), str(HELPER)]
-    payload = {
-        "Label": "com.tinytouch.helper",
-        "ProgramArguments": arguments,
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ProcessType": "Background",
-        "ThrottleInterval": 10,
-        "ExitTimeOut": 5,
-        "StandardOutPath": str(HELPER_LOG_PATH),
-        "StandardErrorPath": str(HELPER_ERROR_LOG_PATH),
-        "EnvironmentVariables": {
-            "TINYTOUCH_SERVICE_SCHEMA": "2",
-            "TINYTOUCH_DIAGNOSTIC_LOG": str(HELPER_LOG_PATH),
-        },
-    }
-    return plistlib.dumps(payload, sort_keys=False)
-
-
-def helper_job_loaded() -> bool:
-    result = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return result.returncode == 0
-
-
-def helper_job_status() -> dict[str, object]:
-    result = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        return {"loaded": False, "state": "not_loaded"}
-    state_match = re.search(r"^\s*state = ([A-Za-z]+)\s*$", result.stdout, re.MULTILINE)
-    pid_match = re.search(r"^\s*pid = ([0-9]+)\s*$", result.stdout, re.MULTILINE)
-    exit_match = re.search(r"^\s*last exit code = (-?[0-9]+)\s*$", result.stdout, re.MULTILINE)
-    value: dict[str, object] = {
-        "loaded": True,
-        "state": state_match.group(1) if state_match else "waiting",
-    }
-    if pid_match:
-        value["pid"] = int(pid_match.group(1))
-    if exit_match:
-        value["last_exit_code"] = int(exit_match.group(1))
-    return value
-
-
-def helper_service_schema() -> int:
-    try:
-        payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
-        environment = payload.get("EnvironmentVariables", {})
-        value = environment.get("TINYTOUCH_SERVICE_SCHEMA", "0")
-        return int(value)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return 0
-
-
-def migrate_helper_service(python: Path) -> bool:
-    """Replace a legacy launchd job through a restartable migration."""
-    if not LAUNCH_AGENT.exists():
-        HELPER_MIGRATION_PATH.unlink(missing_ok=True)
-        return False
-    if helper_service_schema() >= 2 and not HELPER_MIGRATION_PATH.exists():
-        return False
-    atomic_write_json(
-        HELPER_MIGRATION_PATH,
-        {"schema": 1, "target_service_schema": 2, "started_at": int(time.time())},
-    )
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
-    run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
-    HELPER_MIGRATION_PATH.unlink(missing_ok=True)
-    verbose("migrated HID background service to schema 2")
-    return True
-
-
-def helper_process_patterns() -> tuple[str, ...]:
-    patterns = [str(CLI_INSTALL_PATH) + " _helper", str(HELPER)]
-    if LAUNCH_AGENT.exists():
-        try:
-            payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
-            arguments = payload.get("ProgramArguments")
-            if isinstance(arguments, list) and arguments and isinstance(arguments[0], str):
-                patterns.append(arguments[0] + " _helper")
-        except (OSError, ValueError, TypeError):
-            pass
-    return tuple(dict.fromkeys(patterns))
-
-
-def helper_processes_running() -> bool:
-    return any(
-        subprocess.run(
-            ["pgrep", "-f", pattern],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode == 0
-        for pattern in helper_process_patterns()
-    )
-
-
-def unload_helper() -> bool:
-    global HELPER_LEASE
-    was_running = helper_job_loaded() or helper_processes_running()
-    if not was_running:
-        return False
-    if HELPER_LEASE is not None:
-        return True
-    lease = ForegroundLease(HELPER_SUSPEND_PATH, HELPER_SUSPEND_ACK_PATH)
-    try:
-        lease.acquire(wait_for_ack=True)
-    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
-        raise ToolError(
-            f"Could not acquire the tinyTouch device from the HID background service: {exc} "
-            "Run 'tinytouch logs --lines 100' for details."
-        ) from exc
-    HELPER_LEASE = lease
-    return was_running
-
-
-def remove_helper() -> None:
-    global HELPER_LEASE
-    if HELPER_LEASE is not None:
-        HELPER_LEASE.release()
-        HELPER_LEASE = None
-    if LAUNCH_AGENT.exists():
-        subprocess.run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    HELPER_SUSPEND_PATH.unlink(missing_ok=True)
-    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
-    LAUNCH_AGENT.unlink(missing_ok=True)
-
-
-def load_helper() -> None:
-    global HELPER_LEASE
-    if HELPER_LEASE is not None:
-        HELPER_LEASE.release()
-        HELPER_LEASE = None
-    if helper_job_loaded():
-        return
-    run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
-
-
-def install_helper(python: Path) -> None:
-    migrate_helper_service(python)
-    unload_helper()
-    if FROZEN:
-        install_command_if_needed()
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
-    HELPER_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        HELPER_LOG_DIR.chmod(0o700)
-    except OSError:
-        pass
-    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
-    if not HELPER_SUSPENDED:
-        load_helper()
-
-
-def prompt_password() -> str:
-    say("HID mode needs the password it should type after a fingerprint match.")
-    say("It will be stored only in this Mac user's Keychain, separately for this device.")
-    try:
-        first = getpass.getpass("Enter this Mac account's password: ")
-        second = getpass.getpass("Enter it again to confirm: ")
-    except EOFError as exc:
-        raise ToolError(
-            "Password entry needs an interactive Terminal. Open Terminal and run setup again."
-        ) from exc
-    if not first:
-        raise ToolError("Password cannot be empty.")
-    if len(first.encode("utf-8")) > 160:
-        raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
-    if first != second:
-        raise ToolError("Passwords did not match.")
-    return first
-
-
-def generate_piv_bundle() -> dict[str, str]:
-    common_name = re.sub(r"[^A-Za-z0-9_. -]", "", getpass.getuser()) or "user"
-    openssl = Path("/usr/bin/openssl")
-    if not openssl.exists():
-        raise ToolError("macOS OpenSSL is unavailable, so PIV keys cannot be generated.")
-    with tempfile.TemporaryDirectory(prefix="tinytouch-piv-") as temporary_name:
-        temporary = Path(temporary_name)
-        outputs: dict[str, str] = {}
-        for slot, label in (("9a", "authentication"), ("9d", "key management")):
-            key = temporary / f"key-{slot}.pem"
-            cert = temporary / f"cert-{slot}.pem"
-            run(
-                [
-                    str(openssl), "req", "-newkey", "rsa:2048", "-nodes",
-                    "-keyout", str(key), "-x509", "-sha256", "-days", "3650",
-                    "-out", str(cert), "-subj", f"/CN=tinyTouch {common_name} {label}/",
-                ],
-                capture=True,
-            )
-            outputs[f"key_{slot}"] = key.read_text(encoding="utf-8")
-            outputs[f"cert_{slot}"] = cert.read_text(encoding="utf-8")
-        return outputs
-
-
-def run_idf(arguments: list[str]) -> None:
-    if shutil.which("idf.py"):
-        run([str(ROOT / "firmware" / "check-idf-version")], capture=True)
-        run(["idf.py", *arguments], cwd=UNIFIED_FIRMWARE_PROJECT)
-        return
-    candidates = [
-        Path(os.environ.get("IDF_PATH", "")) / "export.sh" if os.environ.get("IDF_PATH") else None,
-        Path.home() / "esp" / "esp-idf" / "export.sh",
-    ]
-    export = next((path for path in candidates if path and path.exists()), None)
-    if export is None:
-        raise ToolError("idf.py is not available. Source ESP-IDF's export.sh or set IDF_PATH.")
-    checker = ROOT / "firmware" / "check-idf-version"
-    shell_command = "source {} >/dev/null && {} >/dev/null && idf.py {}".format(
-        shlex.quote(str(export)), shlex.quote(str(checker)),
-        " ".join(shlex.quote(item) for item in arguments)
-    )
-    run(
-        ["/bin/zsh", "-lc", shell_command],
-        cwd=UNIFIED_FIRMWARE_PROJECT,
-        display=f"idf.py {' '.join(arguments)}",
-    )
-
-
-def flash_piv(port: str) -> str:
-    location = port_usb_location(port)
-    download_mode = port_is_download_mode(port)
-    if not download_mode:
-        fields = status_fields(port)
-        if fields.get("firmware") == "unified":
-            # Never continue after a failed fingerprint check. BOOTLOADER is
-            # configuration-gated, so suppressing this error only turns an
-            # actionable authorization failure into a misleading reconnect
-            # timeout.
-            unlock_configuration(port)
-    # sdkconfig fixes the target to ESP32-S3. Re-running set-target here forces
-    # a full clean build on every update and delays the touch prompt.
-    run_idf(["build"])
-    if not download_mode:
-        try:
-            serial_command(port, "BOOTLOADER", timeout=3)
-        except ToolError:
-            # USB can detach before the final acknowledgment reaches the host.
-            pass
-        port = wait_for_download_port(port, location=location)
-    run_idf(["-p", port, "flash"])
-    return wait_for_runtime_port(location=location)
-
-
-def is_terminal_response(command: str, line: str) -> bool:
-    verb = command.split()[0] if command else ""
-    if verb == "PING":
-        return line == "PONG" or line.startswith("ERR PING")
-    parts = line.split()
-    if len(parts) >= 2 and parts[0] in {"OK", "ERR"} and parts[1] == verb:
-        return True
-    if len(parts) < 2 or parts[0] != "ERR":
-        return False
-    # Some device errors describe the gate or session rather than repeating the
-    # requested verb. Keep that grammar explicit so stale errors from unrelated
-    # commands cannot satisfy a new request.
-    related_errors = {
-        "UPDATE_BEGIN": {"UPDATE_LOCKED", "UPDATE_SESSION"},
-        "UPDATE_CHUNK": {"UPDATE_SESSION"},
-        "UPDATE_STATUS": {"UPDATE_SESSION"},
-        "UPDATE_COMMIT": {"UPDATE_SESSION"},
-        "UPDATE_ABORT": {"UPDATE_SESSION"},
-        "MODE": {"CONFIG_LOCKED"},
-        "SETTING": {"CONFIG_LOCKED"},
-        "HID_KEY": {"CONFIG_LOCKED"},
-        "HID_KEY_ADD": {"CONFIG_LOCKED"},
-        "HID_KEY_REMOVE": {"CONFIG_LOCKED"},
-        "ENROLL": {"CONFIG_LOCKED"},
-        "PROFILE_COMPLETE": {"CONFIG_LOCKED"},
-        "DELETE": {"CONFIG_LOCKED"},
-        "DELETE_ALL": {"CONFIG_LOCKED"},
-        "PROVISION_BEGIN": {"CONFIG_LOCKED"},
-        "PROVISION_CHUNK": {"CONFIG_LOCKED"},
-        "PROVISION_COMMIT": {"CONFIG_LOCKED"},
-        "BOOTLOADER": {"CONFIG_LOCKED"},
+    arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
+    payload = {
+        "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
+        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Background",
+        "StandardOutPath": str(LOG_DIR / "helper.log"),
+        "StandardErrorPath": str(LOG_DIR / "helper.err"),
+        "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},
     }
-    return parts[1] in related_errors.get(verb, set()) or parts[1] in {
-        "LINE_TOO_LONG", "UNKNOWN_COMMAND",
-    }
+    unload_helper()
+    atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
+    load_helper()
+    if not helper_loaded():
+        raise ToolError("The HID helper did not load.")
 
 
 def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
     try:
         import serial  # type: ignore
     except ImportError as exc:
-        raise ToolError("pyserial is required. Run 'tinytouch setup' or install requirements.txt.") from exc
-
-    was_loaded = False if HELPER_SUSPENDED else unload_helper()
+        raise ToolError("pyserial is required. Run setup again.") from exc
+    was_loaded = unload_helper()
     lines: list[str] = []
-    terminal = False
     try:
-        try:
-            with serial.Serial(port, 115200, timeout=0.25, write_timeout=2) as device:
-                time.sleep(0.4)
-                device.reset_input_buffer()
-                device.write((command + "\n").encode("ascii"))
-                device.flush()
-                deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    raw = device.readline()
-                    if not raw:
-                        continue
-                    line = raw.decode("utf-8", "replace").strip()
-                    if not line:
-                        continue
+        with serial.Serial(port, 115200, timeout=0.25, write_timeout=2) as device:
+            time.sleep(0.2)
+            device.reset_input_buffer()
+            device.write((command + "\n").encode("ascii"))
+            device.flush()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                raw = device.readline()
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", "replace").strip()
+                if line:
                     lines.append(line)
-                    show_device_line(line)
-                    if is_terminal_response(command, line):
-                        terminal = True
+                    verbose("device: " + line)
+                    if is_terminal(command, line):
                         break
-        except (OSError, serial.SerialException, termios.error) as exc:
-            raise ToolError(serial_failure_message(port, exc)) from exc
+    except Exception as exc:
+        raise ToolError(f"Could not communicate with tinyTouch on {port}: {exc}") from exc
     finally:
         if was_loaded:
             load_helper()
-    if not terminal:
-        if port_is_download_mode(port):
-            raise ToolError(
-                "The ESP32-S3 is in firmware download mode, so the tinyTouch application is not "
-                f"running. Flash it at {FACTORY_FLASH_URL}, then unplug and reconnect it."
-            )
-        raise SerialResponseTimeout(
-            "A serial device was found, but it did not return a complete tinyTouch response "
-            "within the timeout. Async device events were ignored while waiting for the "
-            "command acknowledgement. Unplug and reconnect the device if this repeats."
-        )
+    if not lines or not is_terminal(command, lines[-1]):
+        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
     if lines[-1].startswith("ERR "):
-        raise ToolError(human_device_error(lines[-1]))
+        raise ToolError(human_error(lines[-1]))
     return lines
 
 
-def serial_exchange(device, command: str, *, timeout: float = 5.0) -> list[str]:
-    device.write((command + "\n").encode("ascii"))
-    device.flush()
-    lines: list[str] = []
-    terminal = False
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        raw = device.readline()
-        if not raw:
-            continue
-        line = raw.decode("utf-8", "replace").strip()
-        if not line:
-            continue
-        lines.append(line)
-        show_device_line(line)
-        if is_terminal_response(command, line):
-            terminal = True
-            break
-    if not terminal:
-        raise SerialResponseTimeout(
-            f"tinyTouch did not acknowledge {command.split()[0]} before the timeout."
-        )
-    if lines[-1].startswith("ERR "):
-        raise ToolError(human_device_error(lines[-1]))
-    return lines
+def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
+    line = next((item for item in reversed(lines) if item.startswith(prefix)), "")
+    if not line:
+        raise ToolError(f"tinyTouch returned no {prefix.split()[1].lower()} status.")
+    return dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
 
 
-def response_next_offset(lines: list[str], verb: str) -> int:
-    prefix = f"OK {verb}"
-    line = next((item for item in reversed(lines) if item == prefix or item.startswith(prefix + " ")), "")
-    match = re.search(r"(?:^| )next=(\d+)(?: |$)", line)
-    if not match:
-        raise ToolError(f"tinyTouch returned an invalid {verb} acknowledgement.")
-    return int(match.group(1))
+def status(port: str) -> dict[str, str]:
+    return fields_from(serial_command(port, "STATUS", timeout=4), "OK STATUS")
 
 
-def update_session_offset(device, token: str, *, attempts: int = 3) -> int:
-    last_error: BaseException | None = None
-    for attempt in range(attempts):
-        try:
-            lines = serial_exchange(device, f"UPDATE_STATUS {token}", timeout=2)
-            return response_next_offset(lines, "UPDATE_STATUS")
-        except SerialResponseTimeout as exc:
-            last_error = exc
-            if attempt + 1 < attempts:
-                time.sleep(0.1 * (attempt + 1))
-    assert last_error is not None
-    raise last_error
-
-
-def begin_update_session(device, token: str, image_size: int, expected_sha256: str) -> None:
-    command = f"UPDATE_BEGIN {token} {image_size} {expected_sha256}"
-    last_timeout: SerialResponseTimeout | None = None
-    for attempt in range(3):
-        try:
-            lines = serial_exchange(device, command, timeout=5)
-            if response_next_offset(lines, "UPDATE_BEGIN") != 0:
-                raise ToolError("tinyTouch started the firmware update at an unexpected offset.")
-            return
-        except SerialResponseTimeout as exc:
-            last_timeout = exc
-            # The BEGIN may have succeeded and only its ACK was lost. Query the
-            # in-RAM session before retrying a command that would erase/restart it.
-            try:
-                offset = update_session_offset(device, token)
-            except ToolError:
-                if attempt + 1 < 3:
-                    continue
-                raise exc
-            if offset == 0:
-                return
-            raise ToolError(f"tinyTouch reported an invalid new update offset ({offset}).")
-    assert last_timeout is not None
-    raise last_timeout
-
-
-def write_update_chunk(
-    device, token: str, offset: int, payload: bytes, total: int, *, attempts: int = 4
-) -> int:
-    encoded = base64.b64encode(payload).decode("ascii")
-    expected_next = offset + len(payload)
-    command = f"UPDATE_CHUNK {token} {offset} {encoded}"
-    for attempt in range(attempts):
-        try:
-            lines = serial_exchange(device, command, timeout=5)
-            acknowledged = response_next_offset(lines, "UPDATE_CHUNK")
-        except SerialResponseTimeout:
-            acknowledged = update_session_offset(device, token)
-        if acknowledged == expected_next:
-            return acknowledged
-        if acknowledged == offset and attempt + 1 < attempts:
-            # The device did not consume this chunk. Retrying the same offset is
-            # safe because firmware only accepts offset == written_size.
-            time.sleep(0.08 * (attempt + 1))
-            continue
-        raise ToolError(
-            "tinyTouch firmware transfer lost synchronization "
-            f"(host={offset}, device={acknowledged}, expected={expected_next}, total={total})."
-        )
-    raise ToolError("tinyTouch could not accept a firmware chunk after repeated retries.")
-
-
-def install_ota_firmware(
-    port: str, image: bytes, expected_sha256: str, *, chunk_size: int = 360
-) -> str:
-    commit_sent = False
+def protocol6(device: dict[str, str]) -> None:
+    if device.get("firmware") != "unified":
+        raise ToolError(f"This is not unified tinyTouch firmware. Flash it at {FACTORY_FLASH_URL}.")
     try:
-        import serial  # type: ignore
+        protocol = int(device.get("protocol", "0"))
+    except ValueError as exc:
+        raise ToolError("The device reported an invalid protocol version.") from exc
+    if protocol != CURRENT_PROTOCOL:
+        raise ToolError("This CLI requires protocol 6. Use the ROM flasher to upgrade this device.")
+
+
+def sensor_ready(device: dict[str, str]) -> None:
+    if device.get("sensor") not in {"ready", "ok"}:
+        raise ToolError("The fingerprint sensor is not ready. Resolve that before setup.")
+
+
+def unlock(port: str) -> None:
+    serial_command(port, "AUTH", timeout=15)
+
+
+def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
+    current = status(port)
+    for key, value in expected.items():
+        if current.get(key) != value:
+            raise ToolError(f"Live verification failed: {key} is {current.get(key)!r}, expected {value!r}.")
+    return current
+
+
+def device_account(port: str) -> str:
+    try:
+        import serial.tools.list_ports  # type: ignore
     except ImportError as exc:
-        raise ToolError("The CLI is missing its serial support. Run the installer again.") from exc
-
-    location = port_usb_location(port)
-    serial_number = port_usb_serial(port)
-    say("Touch the sensor to authorize the update. Do not press BOOT.")
-    serial_command(port, "UPDATE_UNLOCK", timeout=15)
-    token = secrets.token_hex(16)
-    try:
-        with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
-            time.sleep(0.4)
-            device.reset_input_buffer()
-            say("Starting firmware write...")
-            begin_update_session(device, token, len(image), expected_sha256)
-            try:
-                total = len(image)
-                for offset in range(0, total, chunk_size):
-                    payload = image[offset:offset + chunk_size]
-                    expected_next = write_update_chunk(device, token, offset, payload, total)
-                    percent = expected_next * 100 // total
-                    progress(f"Writing firmware... {percent}% ({expected_next}/{total})")
-                progress_done("Firmware written.")
-                say("Committing update...")
-                commit_sent = True
-                try:
-                    serial_exchange(device, f"UPDATE_COMMIT {token}", timeout=8)
-                except SerialResponseTimeout as exc:
-                    # COMMIT intentionally restarts USB. A lost final ACK is
-                    # ambiguous; only the post-reconnect build/slot proof can
-                    # decide whether it succeeded.
-                    verbose(f"update commit ACK lost during restart: {exc}")
-            except (Exception, KeyboardInterrupt):
-                progress_done()
-                if not commit_sent:
-                    try:
-                        serial_exchange(device, f"UPDATE_ABORT {token}", timeout=2)
-                    except Exception:
-                        pass
-                raise
-    except (OSError, serial.SerialException, termios.error) as exc:
-        # A successful commit restarts USB and can close the port before macOS
-        # delivers the final acknowledgment.
-        if not commit_sent:
-            raise ToolError(serial_failure_message(port, exc)) from exc
-        verbose(f"update port closed during restart: {exc}")
-    try:
-        wait_for_port_departure(port)
-    except SupportError as exc:
-        # macOS can miss a fast detach/re-enumeration. Identity + STATUS after
-        # reconnect are authoritative, not whether a path visibly disappeared.
-        verbose(str(exc))
-    time.sleep(0.25)
-    return wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
-    )
+        raise ToolError("pyserial is required to identify this tinyTouch device.") from exc
+    for candidate in serial.tools.list_ports.comports():
+        if candidate.device != port:
+            continue
+        serial_number = re.sub(r"[^A-Za-z0-9_.-]", "", candidate.serial_number or "").upper()
+        if serial_number:
+            return serial_number
+    raise ToolError("tinyTouch did not expose a stable USB serial identity.")
 
 
-def migrate_partition_layout(
-    port: str, manifest: dict, *, allow_uncorrelated_download: bool = False
-) -> str:
-    try:
-        import esptool  # type: ignore
-    except ImportError as exc:
-        raise ToolError("The CLI is missing its firmware migration support. Run the installer again.") from exc
-
-    factory = manifest.get("firmware", {}).get("factory", {})
-    images = factory.get("images", [])
-    required = {item.get("file"): item for item in images if isinstance(item, dict)}
-    names = (
-        "bootloader.bin", "partition-table.bin", "tiny_touch_unified.bin", "ota_data_initial.bin"
-    )
-    if any(name not in required for name in names):
-        raise ToolError("The release is missing a firmware migration image.")
-
-    location = port_usb_location(port)
-    serial_number = port_usb_serial(port)
-    # Stage and verify every byte before asking the running device to enter ROM
-    # mode. Network/manifest failures must leave the application running.
-    say("Downloading and verifying migration firmware...")
-    payloads = {name: verified_release_asset(required[name], manifest) for name in names}
-    if len(payloads["tiny_touch_unified.bin"]) > 0x100000:
-        raise SupportError("The migration application does not fit the 1 MiB OTA slot.")
-    if classify_partition_layout(payloads["partition-table.bin"]) != "current-ota":
-        raise SupportError("The release does not contain the expected tinyTouch OTA layout.")
-    if port_is_download_mode(port):
-        if not allow_uncorrelated_download:
-            raise ToolError(
-                "The board is already in generic ESP32-S3 download mode, so its tinyTouch "
-                "identity cannot be proven automatically. Re-run with an explicit --port "
-                "after disconnecting other ESP32 boards, or use the recovery flasher."
-            )
-        say("Device is already in download mode.")
-        download_port = port
-    else:
-        if not location:
-            raise ToolError(
-                "macOS did not report a stable USB location for tinyTouch. Refusing a "
-                "partition-layout migration because the ROM-mode device could not be bound "
-                "to the same physical board. Reconnect directly (not through a changing hub) "
-                "and try again."
-            )
-        if not serial_number:
-            raise ToolError(
-                "tinyTouch did not expose its MAC-derived USB serial number. Refusing to enter "
-                "download mode because the ROM device could not be matched to this board."
-            )
-        say("Touch the sensor to authorize a one-time flash. This enables later updates without BOOT.")
-        unlock_configuration(port)
-        say("Switching to download mode...")
-        try:
-            serial_command(port, "BOOTLOADER", timeout=3)
-        except ToolError as exc:
-            try:
-                download_port = wait_for_download_port(port, location=location, wait_seconds=5)
-            except ToolError:
-                raise exc
-        else:
-            download_port = wait_for_download_port(port, location=location)
-    with tempfile.TemporaryDirectory(prefix="tinytouch-update-") as directory_name:
-        directory = Path(directory_name)
-        paths = {}
-        for name, payload in payloads.items():
-            path = directory / name
-            path.write_bytes(payload)
-            paths[name] = path
-        try:
-            rom_mac = read_rom_mac(esptool, download_port)
-        except SystemExit as exc:
-            raise SupportError(
-                "Could not inspect the selected ESP32-S3 before migration. Nothing was flashed."
-            ) from exc
-        except SupportError:
-            raise
-        except Exception as exc:
-            raise SupportError(
-                "Could not inspect the selected ESP32-S3 before migration. Nothing was flashed."
-            ) from exc
-        if serial_number and rom_mac != runtime_serial_mac(serial_number):
-            raise SupportError(
-                "The ESP32-S3 in download mode is not the selected tinyTouch "
-                f"(runtime={runtime_serial_mac(serial_number)}, ROM={rom_mac}). Nothing was flashed."
-            )
-        try:
-            partition_bytes = read_rom_flash(
-                esptool, download_port, 0x8000, 0x1000,
-                directory / "existing-partitions.bin",
-            )
-        except SystemExit as exc:
-            raise SupportError(
-                "Could not read the selected ESP32-S3 partition table. Nothing was flashed."
-            ) from exc
-        except SupportError:
-            raise
-        except Exception as exc:
-            raise SupportError(
-                "Could not read the selected ESP32-S3 partition table. Nothing was flashed."
-            ) from exc
-        existing_layout = classify_partition_layout(partition_bytes)
-        verbose(f"recognized existing partition layout: {existing_layout}")
-        say("Flashing firmware...")
-
-        def flash_arguments(after: str, *segments: str) -> list[str]:
-            return [
-                *esptool_base_arguments(download_port, after=after), "write_flash",
-                "--flash_mode", "dio", "--flash_freq", "80m", "--flash_size", "4MB",
-                *segments,
-            ]
-
-        # Power-loss ordering:
-        #  1. stage a complete recovery app in ota_1 while the old layout is intact;
-        #  2. install the new table;
-        #  3. install IDF-generated blank OTA metadata (never a hand-built selector);
-        #  4. write ota_0; if interrupted, the bootloader can fall through to staged ota_1;
-        #  5. write the bootloader last and reset only after every other region is complete.
-        stage_operation = flash_arguments(
-            "no_reset", "0x110000", str(paths["tiny_touch_unified.bin"])
-        )
-        activation_operations = [
-            flash_arguments("no_reset", "0x8000", str(paths["partition-table.bin"])),
-            flash_arguments("no_reset", "0x210000", str(paths["ota_data_initial.bin"])),
-            flash_arguments("no_reset", "0x10000", str(paths["tiny_touch_unified.bin"])),
-            flash_arguments("hard_reset", "0x0", str(paths["bootloader.bin"])),
-        ]
-        output = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(sys.stdout if VERBOSE else output), \
-                 contextlib.redirect_stderr(sys.stderr if VERBOSE else output):
-                esptool.main(stage_operation)
-                staged = read_rom_flash(
-                    esptool, download_port, 0x110000,
-                    len(payloads["tiny_touch_unified.bin"]), directory / "staged-ota1.bin",
-                )
-                if hashlib.sha256(staged).digest() != hashlib.sha256(
-                    payloads["tiny_touch_unified.bin"]
-                ).digest():
-                    raise SupportError(
-                        "The staged OTA1 image failed flash readback verification. "
-                        "The partition table was not changed."
-                    )
-                for arguments in activation_operations:
-                    esptool.main(arguments)
-        except SystemExit as exc:
-            if exc.code not in {None, 0}:
-                verbose(output.getvalue())
-                raise SupportError("The firmware migration failed. Run 'tinytouch update --verbose'.") from exc
-        except SupportError:
-            raise
-        except Exception as exc:
-            verbose(output.getvalue())
-            raise SupportError(
-                "The firmware migration stopped before completion. Keep the board connected; "
-                "use the recovery flasher if it no longer boots normally."
-            ) from exc
-    return wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
-    )
-
-
-def enroll_finger_profile(port: str) -> None:
-    orientations = (
-        "center of your finger",
-        "left edge of the same finger",
-        "right edge of the same finger",
-        "fingertip of the same finger",
-    )
-    for index in range(len(orientations)):
-        say(f"Enroll {orientations[index]} ({index + 1} of {len(orientations)}).")
-        serial_command(port, f"ENROLL {index + 1}", timeout=45)
-    serial_command(port, "PROFILE_COMPLETE 4", timeout=3)
-
-
-def provision_piv_keys(port: str, bundle: dict[str, str]) -> str:
-    say("Creating this device's unique smart-card identity. This does not reflash firmware.")
-    serial_command(port, "PROVISION_BEGIN", timeout=3)
-    names = {
-        "cert_9a": "cert9a",
-        "key_9a": "key9a",
-        "cert_9d": "cert9d",
-        "key_9d": "key9d",
-    }
-    for source_name, device_name in names.items():
-        labels = {
-            "cert_9a": "authentication certificate",
-            "key_9a": "authentication private key",
-            "cert_9d": "key-management certificate",
-            "key_9d": "key-management private key",
-        }
-        say(f"  • Storing {labels[source_name]}...")
-        encoded = base64.b64encode(bundle[source_name].encode("utf-8")).decode("ascii")
-        for offset in range(0, len(encoded), 480):
-            serial_command(
-                port,
-                f"PROVISION_CHUNK {device_name} {encoded[offset:offset + 480]}",
-                timeout=3,
-            )
-    serial_command(port, "PROVISION_COMMIT", timeout=5)
-    say("  ✓ Unique PIV identity stored on tinyTouch.")
-    location = port_usb_location(port)
-    try:
-        serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        # A quick USB detach can race the final acknowledgment.
-        pass
-    # USB_RECONNECT is acknowledged before the USB detach. Do not rediscover the
-    # still-present old device node during that short interval.
-    time.sleep(1.0)
-    return wait_for_runtime_port(location=location)
-
-
-def unlock_configuration(port: str) -> None:
-    verbose("requesting fingerprint authorization")
-    serial_command(port, "CONFIG_UNLOCK", timeout=15)
-    verbose("configuration authorized for two minutes")
-
-
-def provision_hid_key(port: str, key: bytes) -> None:
-    if len(key) != 32:
-        raise ToolError("The HID pairing key must be 32 bytes.")
-    serial_command(port, f"HID_KEY {key.hex()}", timeout=3)
-    say("  ✓ A unique HID pairing key is stored on tinyTouch.")
-
-
-def hid_key_id(key: bytes) -> str:
+def host_id(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
 
 
-def hid_key_ids(port: str) -> tuple[set[str], int]:
-    lines = serial_command(port, "HID_KEY_IDS", timeout=3)
-    line = next((item for item in lines if item.startswith("OK HID_KEY_IDS ")), "")
-    fields = dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
-    ids = set() if fields.get("ids") in {None, "none"} else set(fields["ids"].split(","))
+def password_for(account: str) -> str:
+    say("HID mode types this password after a fingerprint match.")
+    say("It is stored in this Mac user's Keychain for this device.")
+    first = getpass.getpass("Password: ")
+    second = getpass.getpass("Password again: ")
+    if not first or first != second:
+        raise ToolError("Passwords must be non-empty and match.")
+    if len(first.encode()) > 160:
+        raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
+    keychain_set(PASSWORD_SERVICE, account, first)
+    return first
+
+
+def configure_hid(port: str, device: dict[str, str]) -> None:
+    account = device_account(port)
+    stored = keychain_get(PAIRING_SERVICE, account)
     try:
-        capacity = int(fields.get("capacity", "0"))
+        key = bytes.fromhex(stored) if stored else b""
     except ValueError:
-        capacity = 0
+        key = b""
+    if len(key) != 32:
+        key = secrets.token_bytes(32)
+    identifier = host_id(key)
+    registered, capacity = host_list(port)
+    if identifier not in registered:
+        if len(registered) >= capacity:
+            raise ToolError("This device has no free HID host slot. Remove an old host first.")
+        serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
+    keychain_set(PAIRING_SERVICE, account, key.hex())
+    if not keychain_exists(PASSWORD_SERVICE, account):
+        password_for(account)
+    install_helper()
+    current = status(port)
+    if current.get("hosts", "0") == "0":
+        raise ToolError("HID setup is incomplete: the device has no registered host.")
+    if not helper_loaded():
+        raise ToolError("HID setup is incomplete: the helper is not loaded.")
+    if identifier not in host_list(port)[0]:
+        raise ToolError("HID setup is incomplete: the device has no registered host.")
+
+
+def host_list(port: str) -> tuple[set[str], int]:
+    lines = serial_command(port, "HOST LIST", timeout=4)
+    line = next((item for item in lines if item.startswith("OK HOST LIST")), "")
+    data = dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
+    ids = set() if data.get("ids") in {None, "none"} else {
+        value.lower() for value in data["ids"].split(",")
+    }
+    try:
+        capacity = int(data.get("capacity", "8"))
+    except ValueError as exc:
+        raise ToolError("The device returned an invalid HID host capacity.") from exc
     return ids, capacity
 
 
-def firmware_protocol(status: dict[str, str]) -> int:
-    raw = status.get("protocol")
-    if raw is None:
-        raise SupportError(
-            "tinyTouch did not report a firmware protocol version. Refusing to guess a "
-            "legacy protocol for an update-critical operation."
-        )
-    try:
-        protocol = int(raw)
-    except ValueError:
-        raise SupportError(f"tinyTouch reported an invalid firmware protocol: {raw!r}.") from None
-    if protocol < 1 or protocol > CURRENT_UPDATE_PROTOCOL:
-        raise SupportError(
-            "tinyTouch firmware protocol "
-            f"{protocol} is not supported by this CLI (max {CURRENT_UPDATE_PROTOCOL})."
-        )
-    return protocol
-
-
-def firmware_update_chunk_size(status: dict[str, str]) -> int:
-    """Use the device-advertised OTA payload limit when the protocol supports it."""
-    protocol = firmware_protocol(status)
-    raw = status.get("update_chunk")
-    if raw is None:
-        return 360 if protocol < 4 else 3072
-    try:
-        size = int(raw)
-    except ValueError:
-        raise SupportError(f"tinyTouch reported an invalid update chunk size: {raw!r}.") from None
-    if size < 128 or size > 3072:
-        raise SupportError(f"tinyTouch reported an unsafe update chunk size: {size}.")
-    return size
-
-
-def pair_piv(requested_identity: str | None = None, port: str | None = None) -> None:
-    say("Waiting for macOS to discover tinyTouch's smart-card identity...")
-    output = ""
-    for _ in range(20):
-        try:
-            output = run(["sc_auth", "identities"], capture=True)
-        except ToolError:
-            output = ""
-        identities = []
-        for line in output.splitlines():
-            match = re.search(r"\b([0-9A-Fa-f]{40})\b\s*(.*)", line)
-            if match:
-                identities.append((match.group(1), match.group(2).strip()))
-        authentication_identities = [
-            item for item in identities if "authentication" in item[1].lower()
-        ]
-        if authentication_identities:
-            identities = authentication_identities
-        identities = list(dict.fromkeys(identities))
-        hashes = [identity_hash for identity_hash, _ in identities]
-        if hashes:
-            if requested_identity:
-                matches = [value for value in hashes if value.lower() == requested_identity.lower()]
-                if not matches:
-                    raise ToolError(
-                        f"Identity {requested_identity} is not currently available.\n{output.strip()}"
-                    )
-                identity = matches[0]
-            elif len(hashes) == 1:
-                identity = hashes[0]
-            else:
-                say("Multiple smart-card identities are available:")
-                for index, (value, label) in enumerate(identities, 1):
-                    say(f"  {index}. {value}  {label}".rstrip())
-                choice = ask(
-                    "Identity to pair [1]: ",
-                    noninteractive_hint=(
-                        "Multiple smart-card identities were found. Run 'tinytouch pair "
-                        "--identity HASH' with the identity shown above."
-                    ),
-                ).strip() or "1"
-                try:
-                    identity = hashes[int(choice) - 1]
-                except (ValueError, IndexError):
-                    raise ToolError("Invalid identity selection.") from None
-            say(f"Pairing with macOS account '{getpass.getuser()}'.")
-            if port:
-                say("Touch your enrolled finger when requested.")
-                serial_command(port, "PAIRING_MODE", timeout=15)
-            say()
-            say("macOS may show three prompts:")
-            say("  1. Terminal Password — your normal Mac password")
-            say("  2. Smart Card PIN — 111111 (six ones)")
-            say("  3. Keychain/System Password — your normal Mac password again")
-            try:
-                try:
-                    run(["sudo", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
-                except ToolError as exc:
-                    verbose(f"pairing failure: {exc}")
-                    detail = str(exc)
-                    if "6982" in detail:
-                        raise ToolError(
-                            "macOS pairing was not authorized in time. Run 'tinytouch pair' "
-                            "again, touch an enrolled finger when instructed, and use 111111 "
-                            "at the smart-card PIN prompt."
-                        ) from exc
-                    if "CryptoTokenKit" in detail:
-                        raise ToolError(
-                            "macOS lost communication with the smart card. Unplug tinyTouch, "
-                            "reconnect it, wait five seconds, and run 'tinytouch pair' again."
-                        ) from exc
-                    raise ToolError(
-                        "macOS could not pair the smart-card identity. Run the command again "
-                        "with --verbose for diagnostic details."
-                    ) from exc
-            finally:
-                if port:
-                    try:
-                        serial_command(port, "PAIRING_MODE_OFF", timeout=3)
-                    except ToolError:
-                        pass
-            say("  ✓ This macOS account is paired with tinyTouch.")
-            return
-        time.sleep(0.5)
-    raise ToolError(
-        "macOS did not discover the smart-card identity. Unplug tinyTouch, reconnect it, "
-        "wait a few seconds, and run 'tinytouch pair'."
-    )
-
-
-def install_factory_firmware(port: str) -> str:
-    if FROZEN:
-        raise ToolError(
-            "This ESP32-S3 does not have compatible unified firmware. Flash it at "
-            f"{FACTORY_FLASH_URL}, unplug and reconnect it, then run 'tinytouch setup' again."
-        )
-    ensure_helper_environment()  # provides pyserial for configuration commands
-    say("Installing the unified factory firmware (development operation)...")
-    return flash_piv(port)
-
-
-def status_fields(port: str) -> dict[str, str]:
-    lines = serial_command(port, "STATUS", timeout=3)
-    status_line = next((line for line in reversed(lines) if line.startswith("OK STATUS ")), "")
-    if not status_line:
-        raise ToolError(
-            "The device answered, but its STATUS response is not a recognized tinyTouch "
-            "response. It may be running unrelated or very old firmware."
-        )
-    fields = dict(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([^ ]+)", status_line))
-    if "mode" not in fields:
-        raise ToolError(
-            "The device returned an incomplete STATUS response without a runtime mode. "
-            "Reflash the unified firmware and try again."
-        )
-    return fields
-
-
-def require_unified_firmware(status: dict[str, str]) -> None:
-    if status.get("firmware") == "unified":
+def enroll(port: str, skip: bool) -> None:
+    current = status(port)
+    if skip:
+        say("Fingerprint enrollment skipped.")
         return
-    if status.get("mode") in {"hid", "piv"}:
-        raise ToolError(
-            "Older tinyTouch firmware was detected. It cannot provision unique keys or switch "
-            f"modes at runtime. Flash the unified firmware at {FACTORY_FLASH_URL}, unplug and "
-            "reconnect the device, then run setup again."
-        )
-    raise ToolError(
-        "The connected serial device is not reporting itself as unified tinyTouch firmware. "
-        "If this is the correct ESP32-S3, flash the factory firmware and try again."
-    )
-
-
-def require_fingerprint_sensor(status: dict[str, str]) -> None:
-    if status.get("sensor") == "ok":
+    count = int(current.get("fingerprints", "0"))
+    if count == 4:
+        say("The four-view fingerprint profile is already enrolled.")
         return
-    raise ToolError(
-        "The unified tinyTouch firmware is running, but the fingerprint sensor did not respond.\n"
-        "Check the sensor connections:\n"
-        "  1. Sensor power is 3.3 V and ground is connected.\n"
-        "  2. Sensor TX connects to ESP32-S3 GPIO44.\n"
-        "  3. Sensor RX connects to ESP32-S3 GPIO43.\n"
-        "TOUCH_OUT on GPIO2 is not required for this status check."
-    )
-
-
-def migrate_legacy_hid_credentials(
-    account: str,
-    registered_ids: set[str],
-    *,
-    single_key_device: bool,
-) -> bool:
-    """Copy a proven legacy pairing into the per-device namespace."""
-    if keychain_get(PAIRING_SERVICE, account) is not None:
-        return False
-    for legacy_account in dict.fromkeys((DEFAULT_DEVICE_ACCOUNT, ACCOUNT)):
-        if legacy_account == account:
-            continue
-        candidate_hex = keychain_get(PAIRING_SERVICE, legacy_account)
-        try:
-            candidate = bytes.fromhex(candidate_hex) if candidate_hex else None
-        except ValueError:
-            candidate = None
-        if candidate is None or len(candidate) != 32:
-            continue
-        if not single_key_device and hid_key_id(candidate) not in registered_ids:
-            continue
-        keychain_set(PAIRING_SERVICE, account, candidate.hex())
-        if not keychain_exists(PASSWORD_SERVICE, account):
-            password = keychain_get(PASSWORD_SERVICE, legacy_account)
-            if password is None and legacy_account != ACCOUNT:
-                password = keychain_get(PASSWORD_SERVICE, ACCOUNT)
-            if password is not None:
-                keychain_set(PASSWORD_SERVICE, account, password)
-                del password
-        destination_settings = keyboard_settings_path(account)
-        for source in (
-            keyboard_settings_path(legacy_account),
-            SUPPORT_DIR / "settings-legacy.json",
-        ):
-            if not destination_settings.exists() and source.is_file():
-                atomic_write_bytes(destination_settings, source.read_bytes())
-        destination_state = helper_state_path(account)
-        for source in (
-            helper_state_path(legacy_account),
-            SUPPORT_DIR / "state-legacy.json",
-        ):
-            if not destination_state.exists() and source.is_file():
-                atomic_write_bytes(destination_state, source.read_bytes())
-        verbose(f"migrated legacy HID credentials from {legacy_account} to {account}")
-        return True
-    return False
-
-
-def configure_hid_credentials(port: str, status: dict[str, str]) -> None:
-    python = ensure_helper_environment()
-    account = pairing_account_for_port(port)
-    device_has_key = status.get("hid_key") == "configured"
-    registered_ids: set[str] = set()
-    capacity = 1
-    protocol = firmware_protocol(status)
-    if protocol >= 2:
-        registered_ids, capacity = hid_key_ids(port)
-    migrated = migrate_legacy_hid_credentials(
-        account,
-        registered_ids,
-        single_key_device=protocol < 2 and device_has_key,
-    )
-    if migrated:
-        say("  ✓ Existing HID credentials migrated for this device.")
-    local_key_hex = keychain_get(PAIRING_SERVICE, account)
-    try:
-        local_key = bytes.fromhex(local_key_hex) if local_key_hex else None
-    except ValueError:
-        local_key = None
-    if local_key is not None and len(local_key) != 32:
-        local_key = None
-    local_has_password = keychain_exists(PASSWORD_SERVICE, account)
-
-    if protocol >= 2:
-        if local_key is None:
-            local_key = secrets.token_bytes(32)
-        local_id = hid_key_id(local_key)
-        if local_id not in registered_ids:
-            if capacity and len(registered_ids) >= capacity:
-                raise ToolError(
-                    f"This tinyTouch already trusts {capacity} HID computers. Remove an old "
-                    "computer with 'tinytouch computers remove HID_ID', then try again."
-                )
-            serial_command(port, f"HID_KEY_ADD {local_id} {local_key.hex()}", timeout=3)
-            say(f"  ✓ This Mac was added as HID computer {local_id}.")
-        else:
-            say(f"  ✓ This Mac is already trusted for HID ({local_id}).")
-        keychain_set(PAIRING_SERVICE, account, local_key.hex())
-    else:
-        if device_has_key and local_key is None:
-            raise ToolError(
-                "This device uses older single-computer HID firmware, and its existing key "
-                "belongs to another Mac. Update the firmware before adding this Mac; the "
-                "update preserves the existing key."
-            )
-        if not device_has_key:
-            local_key = local_key or secrets.token_bytes(32)
-            provision_hid_key(port, local_key)
-            keychain_set(PAIRING_SERVICE, account, local_key.hex())
-            say("  ✓ Matching HID key stored in this Mac user's Keychain.")
-
-    if not local_has_password:
-        password = prompt_password()
-        keychain_set(PASSWORD_SERVICE, account, password)
-        del password
-    install_helper(python)
-    say("  ✓ Background HID service installed for this Mac user.")
-
-
-def configure_unified_device(
-    args: argparse.Namespace, mode: str, port: str, status: dict[str, str],
-    *, first_step: int, total_steps: int,
-) -> None:
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    try:
-        fingerprint_count = int(status.get("fingerprints", "0"))
-    except ValueError:
-        fingerprint_count = 0
-    try:
-        fingerprint_profile = int(status.get("fingerprint_profile", "0"))
-    except ValueError:
-        fingerprint_profile = 0
-
-    local_hid_ready = False
-    if mode == "hid":
-        account = pairing_account_for_port(port)
-        local_hid_ready = False
-        local_key_hex = keychain_get(PAIRING_SERVICE, account)
-        if local_key_hex and keychain_exists(PASSWORD_SERVICE, account):
-            if firmware_protocol(status) >= 2:
-                try:
-                    registered_ids, _ = hid_key_ids(port)
-                    local_hid_ready = hid_key_id(bytes.fromhex(local_key_hex)) in registered_ids
-                except (ToolError, ValueError):
-                    local_hid_ready = False
-            else:
-                local_hid_ready = status.get("hid_key") == "configured"
-
-    changes_needed = (
-        status.get("keys") != "nvs"
-        or status.get("mode") != mode
-        or (not args.skip_enroll and fingerprint_profile != 4)
-        or (mode == "hid" and not local_hid_ready)
-    )
-    step(first_step, total_steps, "Secure this device")
-    if changes_needed:
-        unlock_configuration(port)
-    if status.get("keys") != "nvs":
-        say("Creating this device's unique keys...")
-        port = provision_piv_keys(port, generate_piv_bundle())
-        status = status_fields(port)
-        if status.get("keys") != "nvs":
-            raise ToolError("The device did not load its provisioned PIV keys.")
-
-    if mode == "hid":
-        configure_hid_credentials(port, status)
-
-    step(first_step + 1, total_steps, "Set up fingerprint")
-    if not args.skip_enroll:
-        if fingerprint_profile == 4:
-            verbose("preserving the four-view fingerprint profile")
-        else:
-            if fingerprint_count:
-                answer = ask(
-                    "Replace the existing fingerprint enrollment with four views? [y/N] ",
-                    noninteractive_hint="Run setup in a terminal to approve fingerprint replacement.",
-                )
-                if answer.lower() not in {"y", "yes"}:
-                    raise ToolError("Fingerprint enrollment was not changed.")
-            enroll_finger_profile(port)
-    else:
-        say("Fingerprint enrollment was skipped as requested.")
-
-    step(first_step + 2, total_steps, f"Finish {mode.upper()} setup")
-    if status.get("mode") != mode:
-        serial_command(port, f"MODE {mode}", timeout=3)
-        say(f"  ✓ {mode.upper()} mode enabled.")
-    if mode == "piv" and not args.no_pair:
-        pair_piv(port=port)
-    elif mode == "piv":
-        say("macOS smart-card pairing was skipped as requested.")
-    if mode == "piv" and LAUNCH_AGENT.exists():
-        # PIV is handled by macOS CCID directly. Leaving the HID helper active
-        # only keeps CDC/Keychain activity alive and can provoke authorization
-        # prompts after an update even though PIV does not need the helper.
-        remove_helper()
-    location = port_usb_location(port)
-    try:
-        serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        pass
-    time.sleep(1.0)
-    wait_for_runtime_port(location=location)
-    say(f"tinyTouch is ready in {mode.upper()} mode.")
+    if count:
+        if ask("Replace the existing fingerprint enrollment? [y/N] ").lower() not in {"y", "yes"}:
+            raise ToolError("Fingerprint enrollment was not changed.")
+    unlock(port)
+    for slot in range(1, 5):
+        say(f"Touch the sensor for view {slot} of 4.")
+        serial_command(port, f"FINGER ENROLL {slot}", timeout=45)
+    current = status(port)
+    if current.get("fingerprints") != "4":
+        raise ToolError("Live verification failed: the four-view fingerprint profile was not reported.")
 
 
 def command_setup(args: argparse.Namespace) -> None:
     require_macos()
-    say("Setting up tinyTouch...")
     mode = choose_mode(args.mode)
-    step(1, 4, "Connect tinyTouch")
     port = choose_port(args.port)
-    say(f"Found tinyTouch on {port}.")
-    if port_is_download_mode(port):
-        port = install_factory_firmware(port)
-        status = status_fields(port)
+    device = status(port)
+    protocol6(device)
+    sensor_ready(device)
+    unlock(port)
+    if mode == "hid":
+        configure_hid(port, device)
+        if device.get("mode") != "hid":
+            serial_command(port, "SET MODE HID", timeout=4)
+            device = fresh_status(port, {"mode": "hid"})
     else:
-        try:
-            status = status_fields(port)
-        except ToolError as exc:
-            raise ToolError(
-                f"tinyTouch was found on {port}, but setup could not read its status.\n"
-                f"Reason: {exc}"
-            ) from exc
-    if status.get("firmware") != "unified":
-        if FROZEN:
-            require_unified_firmware(status)
-        port = install_factory_firmware(port)
-        status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    configure_unified_device(args, mode, port, status, first_step=2, total_steps=4)
+        if device.get("mode") != "piv":
+            serial_command(port, "SET MODE PIV", timeout=4)
+            fresh_status(port, {"mode": "piv"})
+        if device.get("piv") != "ready":
+            serial_command(port, "PIV CREATE", timeout=15)
+            if status(port).get("piv") != "ready":
+                raise ToolError("Live verification failed: the PIV identity is not ready.")
+        remove_helper()
+    enroll(port, args.skip_enroll)
+    device = status(port)
+    protocol6(device)
+    sensor_ready(device)
+    device = status(port)
+    if mode == "piv" and device.get("piv") != "ready":
+        raise ToolError("PIV setup is incomplete: the identity is not ready.")
+    if mode == "piv" and not args.no_pair:
+        command_pair(args)
+    say(f"tinyTouch is ready in {mode.upper()} mode. All changes are live; no restart is required.")
 
 
 def command_mode(args: argparse.Namespace) -> None:
-    require_macos()
-    say(f"Switch tinyTouch to {args.mode.upper()} mode")
     port = choose_port(args.port)
-    say(f"Found tinyTouch on {port}.")
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    configure_unified_device(args, args.mode, port, status, first_step=1, total_steps=3)
-
-
-def command_add_computer(args: argparse.Namespace) -> None:
-    require_macos()
-    say("Add this Mac to tinyTouch")
-    step(1, 4, "Connect tinyTouch")
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    mode = status.get("mode")
-    if mode not in {"piv", "hid"}:
-        raise ToolError("tinyTouch did not report a valid active mode.")
-    say(f"Current mode: {mode.upper()}. This Mac will be added for {mode.upper()} only.")
-
-    try:
-        fingerprint_count = int(status.get("fingerprints", "0"))
-    except ValueError:
-        fingerprint_count = 0
-
-    configuration_unlocked = False
-    step(2, 4, f"Authorize {mode.upper()} setup")
-    if mode == "hid" or status.get("keys") != "nvs" or fingerprint_count == 0:
-        unlock_configuration(port)
-        configuration_unlocked = True
-    else:
-        say("Touch your enrolled finger when macOS pairing requests authorization.")
-
-    if status.get("keys") != "nvs":
-        port = provision_piv_keys(port, generate_piv_bundle())
-        status = status_fields(port)
-
-    step(3, 4, "Check fingerprint")
-    if fingerprint_count == 0:
-        if not configuration_unlocked:
-            unlock_configuration(port)
-        enroll_finger_profile(port)
-    else:
-        verbose(f"preserving {fingerprint_count} enrolled fingerprint views")
-
-    if mode == "hid":
-        step(4, 4, "Add HID access for this Mac")
-        configure_hid_credentials(port, status)
-    else:
-        step(4, 4, "Pair PIV with this Mac")
-        pair_piv(port=port)
-    say()
-    say(f"This Mac is ready for {mode.upper()}. The device remains in {mode.upper()} mode.")
-
-
-def command_computers(args: argparse.Namespace) -> None:
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    if firmware_protocol(status) < 2:
-        raise ToolError("Update tinyTouch firmware to manage more than one HID computer.")
-    registered_ids, capacity = hid_key_ids(port)
-    account = pairing_account_for_port(port)
-    local_key_hex = keychain_get(PAIRING_SERVICE, account)
-    local_id = None
-    if local_key_hex:
-        try:
-            local_id = hid_key_id(bytes.fromhex(local_key_hex))
-        except ValueError:
-            pass
-    if args.action == "list":
-        say(f"HID computers ({len(registered_ids)} of {capacity}):")
-        if not registered_ids:
-            say("  none")
-        for host_id in sorted(registered_ids):
-            say(f"  {host_id}" + ("  this Mac" if host_id == local_id else ""))
-        say("PIV can be paired independently on each Mac with 'tinytouch pair'.")
-        return
-    if not args.host_id:
-        raise ToolError("Specify the HID computer ID to remove. Run 'tinytouch computers list' first.")
-    host_id = args.host_id.lower()
-    if not re.fullmatch(r"[0-9a-f]{16}", host_id):
-        raise ToolError("HID computer ID must be the 16-character ID shown by 'tinytouch computers list'.")
-    if host_id not in registered_ids:
-        raise ToolError(f"HID computer {host_id} is not registered on this tinyTouch.")
-    unlock_configuration(port)
-    serial_command(port, f"HID_KEY_REMOVE {host_id}", timeout=3)
-    if host_id == local_id:
-        keychain_delete(PAIRING_SERVICE, account)
-    say(f"Removed HID computer {host_id}.")
-
-
-def command_password(args: argparse.Namespace) -> None:
-    require_macos()
-    port = choose_port(args.port)
-    require_unified_firmware(status_fields(port))
-    account = pairing_account_for_port(port)
-    password_account = (fingerprint_password_account(account, args.fingerprint)
-                        if args.fingerprint else account)
-    if args.action == "set":
-        password = prompt_password()
-        keychain_set(PASSWORD_SERVICE, password_account, password)
-        del password
-        install_helper(ensure_helper_environment())
-        label = f"fingerprint {args.fingerprint}" if args.fingerprint else "default"
-        say(f"Password updated for {label}.")
-        return
-    if args.action == "remove":
-        if not args.fingerprint:
-            raise ToolError("Specify --fingerprint to remove an override; replace the default with 'tinytouch password set'.")
-        keychain_delete(PASSWORD_SERVICE, password_account)
-        if LAUNCH_AGENT.exists() and not HELPER_SUSPENDED:
-            load_helper()
-        say(f"Password override removed for fingerprint {args.fingerprint}.")
-        return
-    say("HID passwords:")
-    say(f"  default: {'configured' if keychain_exists(PASSWORD_SERVICE, account) else 'missing'}")
-    for slot in range(1, 6):
-        state = "custom" if keychain_exists(
-            PASSWORD_SERVICE, fingerprint_password_account(account, slot)
-        ) else "default"
-        say(f"  fingerprint {slot}: {state}")
+    device = status(port)
+    protocol6(device)
+    unlock(port)
+    serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
+    # Firmware may detach and attach USB to update descriptors. It must not
+    # restart the MCU. The caller can run status again after re-enumeration.
+    fresh_status(port, {"mode": args.mode.lower()})
+    if args.mode == "piv":
+        remove_helper()
+    say(f"{args.mode.upper()} mode is active live. No restart is required.")
 
 
 def command_config(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    if args.action == "show":
-        say(f"Typing delay: {status.get('typing_delay_ms', '7')} ms")
-        say(f"Press Enter: {'on' if status.get('submit_enter', '1') == '1' else 'off'}")
-        say(f"Touch cooldown: {status.get('touch_cooldown_ms', '800')} ms")
+    device = status(port)
+    protocol6(device)
+    if args.value is None:
+        say(json.dumps(device, indent=2, sort_keys=True))
         return
-    if not args.setting or args.value is None:
-        raise ToolError("Use 'tinytouch config set SETTING VALUE'.")
-    protocol_name: str
-    protocol_value: int
-    if args.setting == "typing-delay":
-        protocol_name = "typing_delay_ms"
-        try:
-            protocol_value = int(args.value)
-        except ValueError as exc:
-            raise ToolError("Typing delay must be from 1 to 100 milliseconds.") from exc
-        if not 1 <= protocol_value <= 100:
-            raise ToolError("Typing delay must be from 1 to 100 milliseconds.")
-    elif args.setting == "enter":
-        protocol_name = "submit_enter"
-        if args.value not in {"on", "off"}:
-            raise ToolError("Enter must be 'on' or 'off'.")
-        protocol_value = 1 if args.value == "on" else 0
-    else:
-        protocol_name = "touch_cooldown_ms"
-        try:
-            protocol_value = int(args.value)
-        except ValueError as exc:
-            raise ToolError("Touch cooldown must be from 100 to 5000 milliseconds.") from exc
-        if not 100 <= protocol_value <= 5000:
-            raise ToolError("Touch cooldown must be from 100 to 5000 milliseconds.")
-    unlock_configuration(port)
-    serial_command(port, f"SETTING {protocol_name} {protocol_value}", timeout=3)
-    say("Setting updated.")
-
-
-def command_keyboard_layout(args: argparse.Namespace) -> None:
-    require_macos()
-    port = choose_port(args.port)
-    require_unified_firmware(status_fields(port))
-    account = pairing_account_for_port(port)
-    save_keyboard_layout(account, args.layout)
-    if LAUNCH_AGENT.exists() and not HELPER_SUSPENDED:
-        load_helper()
-    if args.layout == "auto":
-        say("Keyboard layout will follow macOS.")
-    else:
-        say("Keyboard layout set to US.")
-
-
-def command_status(args: argparse.Namespace) -> None:
-    ports = detect_ports()
-    say("tinyTouch status")
-    say()
-    say(f"CLI: {CLI_VERSION}")
-    if not ports and not args.port:
-        say("Device: not detected")
-        say("Connect tinyTouch with a USB data cable, then run this command again.")
-    else:
-        port = choose_port(args.port)
-        say(f"Device: connected on {port}")
-        if port_is_download_mode(port):
-            say("Firmware: ESP32-S3 download mode; the tinyTouch application is not running")
-            say(f"Action: flash the unified firmware at {FACTORY_FLASH_URL}, then reconnect it.")
-            fields = None
-        else:
-            fields = None
-        try:
-            if not port_is_download_mode(port):
-                fields = status_fields(port)
-        except ToolError as exc:
-            say(f"Device check failed: {exc}")
-        if fields is not None:
-            if fields.get("firmware") == "unified":
-                firmware_label = "unified and ready"
-            elif fields.get("mode") in {"hid", "piv"}:
-                firmware_label = "older firmware; update required"
-            else:
-                firmware_label = "incompatible"
-            sensor_ready = fields.get("sensor") == "ok"
-            version = fields.get("firmware_version", "legacy/unversioned")
-            protocol = fields.get("protocol", "1")
-            say(f"Firmware: {firmware_label} ({version}, protocol {protocol})")
-            say(f"Current mode: {fields.get('mode', 'unknown').upper()}")
-            say(f"Fingerprint sensor: {'ready' if sensor_ready else 'not responding'}")
-            say(f"Enrolled fingerprints: {fields.get('fingerprints', 'unknown')}")
-            say(
-                "PIV identity: "
-                + ("unique keys provisioned" if fields.get("keys") == "nvs" else "not configured yet")
-            )
-            say(
-                "HID pairing: "
-                + ("configured" if fields.get("hid_key") == "configured" else "not configured yet")
-            )
-            if "hid_hosts" in fields:
-                say(f"HID computers: {fields['hid_hosts']} of 8")
-            if not sensor_ready:
-                say("Action: check sensor power and UART wiring (TX to GPIO44, RX to GPIO43).")
-            if fields.get("firmware") != "unified":
-                say(f"Action: flash the unified firmware at {FACTORY_FLASH_URL}.")
-    say(f"HID background service: {'installed' if LAUNCH_AGENT.exists() else 'not installed'}")
-    if shutil.which("sc_auth"):
-        identities = subprocess.run(["sc_auth", "identities"], text=True, capture_output=True)
-        verbose("sc_auth identities output: " + (identities.stdout.strip() or "none"))
-        say(f"macOS PIV identity: {'discovered' if identities.stdout.strip() else 'not discovered'}")
-
-
-def command_test(args: argparse.Namespace) -> None:
-    say("Testing tinyTouch")
-    port = choose_port(args.port)
-    serial_command(port, "PING", timeout=3)
-    say("  ✓ USB configuration connection works.")
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    say("  ✓ Firmware and fingerprint sensor responded.")
-    mode = status["mode"]
-    python = VENV / "bin" / "python"
-    if mode == "hid" and (FROZEN or python.exists()):
-        device_account = pairing_account_for_port(port)
-        command = (
-            [str(Path(sys.executable).resolve()), "_helper", "--self-test", "--device-id", device_account]
-            if FROZEN
-            else [str(python), str(HELPER), "--self-test", "--device-id", device_account]
-        )
-        result = subprocess.run(
-            command, check=False
-        )
-        if result.returncode != 0:
-            raise ToolError(
-                "The HID background service or this device's Keychain credentials are not "
-                "ready. Run 'tinytouch setup --mode hid' again, then unplug and reconnect "
-                "tinyTouch. Use --verbose if the test still fails."
-            )
-        say("  ✓ HID background service and Keychain credentials work.")
-    elif mode == "piv":
-        if status.get("keys") != "nvs":
-            say("PIV identity is not provisioned yet; run 'tinytouch setup'.")
-        else:
-            identities = run(["sc_auth", "identities"], capture=True)
-            say(identities or "No PIV identity discovered by macOS.")
-    say("Test complete.")
+    unlock(port)
+    names = {"typing_delay_ms": "TYPE_DELAY", "submit_enter": "SUBMIT_ENTER", "touch_cooldown_ms": "COOLDOWN"}
+    device_name = names.get(args.name, args.name.upper())
+    serial_command(port, f"SET {device_name} {args.value}", timeout=4)
+    fresh_status(port, {device_name.lower(): args.value})
+    say(f"Setting {args.name}={args.value} is active live.")
 
 
 def command_enroll(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    unlock_configuration(port)
-    if args.slot:
-        say(f"Enroll fingerprint slot {args.slot}.")
-        serial_command(port, f"ENROLL {args.slot}", timeout=45)
-    else:
-        try:
-            existing = int(status.get("fingerprints", "0"))
-        except ValueError:
-            existing = 0
-        if existing:
-            answer = ask("Replace slots 1–4 with four views of one finger? [y/N] ")
-            if answer.lower() not in {"y", "yes"}:
-                raise ToolError("Fingerprint enrollment was not changed.")
-        enroll_finger_profile(port)
-    say("Fingerprint enrollment complete.")
-
-
-def running_ota_state(status: dict[str, str]) -> str | None:
-    explicit = status.get("ota_state")
-    if explicit:
-        return explicit
-    running = status.get("ota_running")
-    if running in {"ota_0", "ota_1"}:
-        key = "ota_slot0" if running == "ota_0" else "ota_slot1"
-        summary = status.get(key, "")
-        parts = summary.rsplit(":", 1)
-        if len(parts) == 2:
-            return parts[1]
-    return None
-
-
-def ota_commit_failure_detail(status: dict[str, str], expected_version: object) -> str:
-    """Explain the proven pre-selection panic signature after an ambiguous commit."""
-    target = status.get("ota_next")
-    slot_key = {"ota_0": "ota_slot0", "ota_1": "ota_slot1"}.get(target, "")
-    target_summary = status.get(slot_key, "") if slot_key else ""
-    expected_prefix = f"{target}:{expected_version}:"
-    if (
-        status.get("reset_reason") == "4"
-        and status.get("update_last_reason") == "none"
-        and status.get("update_error") == "none"
-        and status.get("ota_boot") == status.get("ota_running")
-        and target_summary.startswith(expected_prefix)
-        and target_summary.endswith(":missing")
-    ):
-        return (
-            " The running updater panicked while validating the completed image, before "
-            "it selected the new boot slot. ESP-IDF kept the previous firmware active."
-        )
-    return ""
-
-
-def _confirm_running_firmware(
-    port: str,
-    status: dict[str, str],
-    *,
-    expected_version: str | None = None,
-    expected_build: str | None = None,
-    allow_sensor_power_cycle: bool = False,
-) -> dict[str, str]:
-    """Prove runtime health, retain a pending OTA image, then prove it stayed active."""
-    require_unified_firmware(status)
-    if expected_version is not None and status.get("firmware_version") != expected_version:
-        raise SupportError(
-            f"tinyTouch booted firmware {status.get('firmware_version', 'unknown')}; "
-            f"expected {expected_version}."
-        )
-    build = status.get("build")
-    if not isinstance(build, str) or not build:
-        raise SupportError("tinyTouch did not report a firmware build identifier.")
-    if expected_build is not None and build != expected_build:
-        raise SupportError(f"tinyTouch booted build {build}; expected {expected_build}.")
-
-    protocol = firmware_protocol(status)
-    if protocol >= CURRENT_UPDATE_PROTOCOL and "ota_state" not in status:
-        raise SupportError(
-            "Protocol-5 firmware omitted its running OTA state. Refusing to confirm an "
-            "image whose rollback state cannot be proven."
-        )
-    state = running_ota_state(status)
-    sensor_ready = status.get("sensor") == "ok"
-    if not sensor_ready and not (allow_sensor_power_cycle and state == "pending"):
-        require_fingerprint_sensor(status)
-    if state in {"invalid", "aborted", "new"}:
-        raise SupportError(f"tinyTouch is running an unsafe OTA state ({state}); refusing confirmation.")
-    if state == "valid":
-        return status
-    if protocol < CURRENT_UPDATE_PROTOCOL and (state == "undefined" or state is None):
-        # Legacy protocol-3 firmware did not expose rollback state and some
-        # already-valid images have nothing to confirm. Do not require a newer
-        # CONFIRM_FIRMWARE verb unless the running image explicitly says it is
-        # pending verification. Fresh repaired firmware always reports ota_state.
-        return status
-    if state != "pending":
-        raise SupportError(f"tinyTouch reported an unknown OTA state ({state}); refusing confirmation.")
-
-    serial_command(port, f"CONFIRM_FIRMWARE {build}", timeout=3)
-    confirmed = status_fields(port)
-    require_unified_firmware(confirmed)
-    if sensor_ready:
-        require_fingerprint_sensor(confirmed)
-    if expected_version is not None and confirmed.get("firmware_version") != expected_version:
-        raise SupportError("tinyTouch did not remain on the expected firmware version.")
-    if expected_build is not None and confirmed.get("build") != expected_build:
-        raise SupportError("tinyTouch did not remain on the expected firmware build.")
-    confirmed_state = running_ota_state(confirmed)
-    if protocol >= CURRENT_UPDATE_PROTOCOL and (
-        "ota_state" not in confirmed or confirmed_state != "valid"
-    ):
-        raise SupportError(
-            "Protocol-5 firmware acknowledged confirmation without reporting a valid OTA state."
-        )
-    if protocol < CURRENT_UPDATE_PROTOCOL and confirmed_state not in {None, "valid", "undefined"}:
-        raise SupportError(
-            f"tinyTouch acknowledged confirmation but still reports OTA state {confirmed_state}."
-        )
-    return confirmed
-
-
-def recover_fingerprint_sensor_after_ota(port: str, status: dict[str, str]) -> tuple[str, dict[str, str]]:
-    """Ask for a USB power cycle when the fingerprint sensor cannot survive an ESP restart."""
-    if status.get("sensor") == "ok":
-        return port, status
-    location = port_usb_location(port)
-    serial_number = port_usb_serial(port)
-    message = (
-        "Firmware installation is complete. Unplug tinyTouch, reconnect it, wait five seconds, "
-        "then click Continue."
-    )
-    say(message)
-    try:
-        subprocess.run(
-            [
-                "osascript",
-                "-e",
-                'display dialog "' + message + '" with title "tinyTouch update" '
-                'buttons {"Continue"} default button "Continue" with icon caution',
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        ask("Press Return after reconnecting tinyTouch. ")
-    recovered_port = wait_for_runtime_port(
-        location=location, serial_number=serial_number, wait_seconds=30
-    )
-    recovered = status_fields(recovered_port)
-    require_unified_firmware(recovered)
-    require_fingerprint_sensor(recovered)
-    return recovered_port, recovered
-
-
-def command_update(args: argparse.Namespace) -> None:
-    require_macos()
-    if getattr(args, "local", False):
-        bin_path = Path(args.local if isinstance(args.local, str) and args.local != "True" else "firmware/tiny_touch_unified/build/tiny_touch_unified.bin").resolve()
-        if not bin_path.is_file():
-            say("Building local firmware...")
-            run_idf(["build"])
-        if not bin_path.is_file():
-            raise ToolError(f"Firmware binary not found: {bin_path}")
-        image = bin_path.read_bytes()
-        sha = hashlib.sha256(image).hexdigest()
-        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-        manifest = {
-            "version": version,
-            "build": git_short_sha(),
-            "ota": {"sha256": sha, "size": len(image)},
-        }
-    else:
-        manifest = release_manifest()
-        if update_installed_cli(manifest, announce=True):
-            os.execv(str(CLI_INSTALL_PATH), [str(CLI_INSTALL_PATH), *sys.argv[1:]])
-    port = choose_port(args.port)
-    if port_is_download_mode(port):
-        port = migrate_partition_layout(
-            port, manifest, allow_uncorrelated_download=bool(args.port)
-        )
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    protocol = firmware_protocol(status)
-    # Protocols through 4 were released with an unsafe first-update commit path.
-    # Bootstrap them through the authenticated software-to-ROM migration. Once
-    # protocol 5 is installed, later updates remain entirely on CDC OTA.
-    update_ready = protocol >= CURRENT_UPDATE_PROTOCOL and status.get("ota") == "ready"
-    if update_ready:
-        # A prior update may have rebooted correctly but lost the host before
-        # confirmation. Retain a healthy pending image before attempting another
-        # esp_ota_begin, which IDF intentionally rejects from an unconfirmed app.
-        status = _confirm_running_firmware(port, status)
-        if (
-            not getattr(args, "force", False)
-            and status.get("firmware_version") == manifest.get("version")
-            and status.get("build") == manifest.get("build")
-        ):
-            say("tinyTouch is up to date.")
-            return
-
-    if not update_ready:
-        port = migrate_partition_layout(port, manifest)
-        status = status_fields(port)
-        protocol = firmware_protocol(status)
-        if protocol < CURRENT_UPDATE_PROTOCOL or status.get("ota") != "ready":
-            raise SupportError("tinyTouch restarted, but its update system is not ready.")
-    else:
-        metadata = manifest.get("ota")
-        if not isinstance(metadata, dict):
-            raise ToolError("This release does not include a firmware update.")
-        if getattr(args, "local", False):
-            say(f"Flashing local firmware {bin_path.name} ({len(image)} bytes)...")
-        else:
-            say("Downloading firmware update...")
-            image = verified_release_asset(metadata, manifest)
-        chunk_size = firmware_update_chunk_size(status)
-        port = install_ota_firmware(port, image, metadata["sha256"], chunk_size=chunk_size)
-        status = status_fields(port)
-    if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
-        diagnostics = " ".join(
-            f"{name}={status[name]}"
-            for name in ("ota_running", "ota_boot", "ota_next", "ota_slot0", "ota_slot1")
-            if name in status
-        )
-        raise SupportError(
-            "tinyTouch restarted with an unexpected firmware version "
-            f"(expected {manifest.get('version')}/{manifest.get('build')}, "
-            f"got {status.get('firmware_version', 'unknown')}/{status.get('build', 'unknown')})."
-            + (f" OTA diagnostics: {diagnostics}" if diagnostics else "")
-            + ota_commit_failure_detail(status, manifest.get("version"))
-        )
-    # Leave the candidate pending for a short stability window. A crash/reset in
-    # this interval must trigger IDF rollback rather than being hidden by eager
-    # confirmation.
-    time.sleep(2)
-    status = status_fields(port)
-    status = _confirm_running_firmware(
-        port,
-        status,
-        expected_version=manifest.get("version"),
-        expected_build=manifest.get("build"),
-        allow_sensor_power_cycle=True,
-    )
-    port, status = recover_fingerprint_sensor_after_ota(port, status)
-    if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
-        raise SupportError("tinyTouch changed firmware while recovering its fingerprint sensor.")
-    say("tinyTouch is up to date.")
-
-
-def command_flash_local(args: argparse.Namespace) -> None:
-    require_macos()
-    path = Path(args.binary).resolve()
-    if not path.is_file():
-        raise ToolError(f"Firmware binary not found: {path}")
-    image = path.read_bytes()
-    expected_sha256 = hashlib.sha256(image).hexdigest()
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    protocol = firmware_protocol(status)
-    if protocol < CURRENT_UPDATE_PROTOCOL:
-        raise ToolError(
-            "This firmware generation cannot safely commit a CDC OTA image. Run "
-            "'tinytouch update' once to install the protocol-5 updater before using flash-local."
-        )
-    chunk_size = firmware_update_chunk_size(status)
-    say(f"Flashing {path.name} ({len(image)} bytes) to tinyTouch...")
-    port = install_ota_firmware(port, image, expected_sha256, chunk_size=chunk_size)
-    new_status = status_fields(port)
-    require_unified_firmware(new_status)
-    require_fingerprint_sensor(new_status)
-    # Keep local flashing subject to the same rollback contract as release OTA:
-    # the image must boot, survive a short health window, and be explicitly
-    # retained before we call it successful.
-    time.sleep(2)
-    new_status = status_fields(port)
-    new_status = _confirm_running_firmware(port, new_status)
-    say(
-        f"tinyTouch successfully updated to {new_status.get('firmware_version')} "
-        f"(build {new_status.get('build')}, running slot {new_status.get('ota_running')})!"
-    )
-
-
-def command_pair(args: argparse.Namespace) -> None:
-    require_macos()
-    say("Pair tinyTouch with this macOS account")
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    pair_piv(args.identity, port)
-    if status.get("mode") == "piv" and LAUNCH_AGENT.exists():
-        remove_helper()
-
-
-def command_keys(args: argparse.Namespace) -> None:
-    require_macos()
-    say("Rotate tinyTouch's PIV identity")
-    say("This invalidates the current smart-card pairing on every Mac.")
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    if not args.yes:
-        answer = ask(
-            "Rotate the PIV identity and invalidate existing pairings? Type 'rotate keys': ",
-            noninteractive_hint=(
-                "Key rotation requires confirmation in an interactive Terminal, or use --yes."
-            ),
-        )
-        if answer.strip().lower() != "rotate keys":
-            raise ToolError("Key rotation cancelled.")
-    unlock_configuration(port)
-    say("Generating a new unique PIV identity.")
-    port = provision_piv_keys(port, generate_piv_bundle())
-    status = status_fields(port)
-    if status.get("keys") != "nvs":
-        raise ToolError("The rotated keys were not loaded after restart.")
-    say("PIV keys rotated successfully.")
-    say("Run 'tinytouch pair' on every Mac that should continue using this device.")
-
-
-def command_factory_reset(args: argparse.Namespace) -> None:
-    require_macos()
-    say("Factory-reset tinyTouch")
-    port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    if not args.yes:
-        answer = ask(
-            "Erase all device keys, settings, and fingerprints? Type 'factory reset': ",
-            noninteractive_hint=(
-                "Factory reset requires confirmation in an interactive Terminal, or use --yes."
-            ),
-        )
-        if answer.strip().lower() != "factory reset":
-            raise ToolError("Factory reset cancelled.")
-    say("Factory reset will permanently erase device keys, settings, and fingerprints.")
-    say("Authorize the reset with an enrolled fingerprint.")
-    serial_command(port, "PAIRING_MODE", timeout=15)
-    serial_command(port, "FACTORY_RESET", timeout=10)
-    account = pairing_account_for_port(port)
-    keychain_delete(PASSWORD_SERVICE, account)
-    for slot in range(1, 6):
-        keychain_delete(PASSWORD_SERVICE, fingerprint_password_account(account, slot))
-    keychain_delete(PAIRING_SERVICE, account)
-    keyboard_settings_path(account).unlink(missing_ok=True)
-    helper_state_path(account).unlink(missing_ok=True)
-    if LAUNCH_AGENT.exists():
-        remove_helper()
-    location = port_usb_location(port)
-    try:
-        serial_command(port, "USB_RECONNECT", timeout=3)
-    except ToolError:
-        pass
-    time.sleep(1.0)
-    wait_for_runtime_port(location=location)
-    say("Factory reset complete.")
-    say("The device is now unconfigured. Run 'tinytouch setup' to use it again.")
-
-
-def command_bootloader(args: argparse.Namespace) -> None:
-    port = choose_port(args.port)
-    fields = status_fields(port)
-    require_unified_firmware(fields)
-    require_fingerprint_sensor(fields)
-    unlock_configuration(port)
-    serial_command(port, "BOOTLOADER", timeout=3)
-    say("tinyTouch entered firmware download mode.")
+    device = status(port)
+    protocol6(device)
+    sensor_ready(device)
+    unlock(port)
+    serial_command(port, f"FINGER ENROLL {args.slot}", timeout=45)
+    current = status(port)
+    if int(current.get("fingerprints", "0")) < 1:
+        raise ToolError("Live verification failed: the enrollment was not reported.")
 
 
 def command_delete(args: argparse.Namespace) -> None:
-    say("Delete enrolled fingerprint data")
-    if args.all and not args.yes:
-        answer = ask(
-            "Delete every enrolled fingerprint? Type 'delete all': ",
-            noninteractive_hint=(
-                "Deleting all fingerprints requires an interactive Terminal, or use --yes."
-            ),
-        ).strip().lower()
-        if answer != "delete all":
-            raise ToolError("Fingerprint deletion cancelled.")
-    command = "DELETE_ALL" if args.all else f"DELETE {args.slot}"
     port = choose_port(args.port)
-    status = status_fields(port)
-    require_unified_firmware(status)
-    require_fingerprint_sensor(status)
-    say("Authorize fingerprint changes with an enrolled finger.")
-    unlock_configuration(port)
-    serial_command(port, command)
-    say("All fingerprints were deleted." if args.all else f"Fingerprint slot {args.slot} was deleted.")
+    device = status(port)
+    protocol6(device)
+    unlock(port)
+    serial_command(port, f"FINGER DELETE {args.slot}", timeout=5)
+    current = status(port)
+    if int(current.get("fingerprints", "0")) < 0:
+        raise ToolError("Live verification failed after deleting the fingerprint.")
+    say(f"Fingerprint slot {args.slot} was deleted live.")
 
 
-def command_logs(args: argparse.Namespace) -> None:
-    say("tinyTouch HID background-service logs")
-    paths = [HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH]
-    for path in paths:
-        say(f"==> {path} <==")
-        if not path.exists():
-            say("(missing)")
-            continue
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        say("\n".join(lines[-args.lines :]))
-
-
-def recent_diagnostics(limit: int) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for path in (HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH):
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines[-limit:]:
+def command_computers(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    device = status(port)
+    protocol6(device)
+    registered, capacity = host_list(port)
+    if args.action == "list":
+        say(f"HID computers ({len(registered)} of {capacity}):")
+        for identifier in sorted(registered):
+            say(f"  {identifier}")
+        return
+    if args.remove:
+        identifier = args.remove.lower()
+        if identifier not in registered:
+            raise ToolError(f"HID host {args.remove} is not registered on this device.")
+        unlock(port)
+        serial_command(port, f"HOST REMOVE {identifier}", timeout=5)
+        if identifier in host_list(port)[0]:
+            raise ToolError("Live verification failed: the HID host is still registered.")
+        account = device_account(port)
+        local = keychain_get(PAIRING_SERVICE, account)
+        if local:
             try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict) and isinstance(value.get("event"), str):
-                records.append(value)
-    return records[-limit:]
+                if host_id(bytes.fromhex(local)) == identifier:
+                    keychain_delete(PAIRING_SERVICE, account)
+            except ValueError:
+                pass
+        say(f"HID host {identifier} was removed live.")
 
 
-def command_diagnostics(args: argparse.Namespace) -> None:
-    """Emit a secret-free machine-readable support snapshot."""
-    ports = []
-    try:
-        import serial.tools.list_ports  # type: ignore
-
-        for item in serial.tools.list_ports.comports():
-            if item.device in detect_ports():
-                ports.append({
-                    "port": item.device,
-                    "vid": item.vid,
-                    "pid": item.pid,
-                    "serial": item.serial_number,
-                    "location": item.location,
-                })
-    except ImportError:
-        ports = [{"port": value} for value in detect_ports()]
-    snapshot = {
-        "schema": 1,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "cli_version": CLI_VERSION,
-        "macos_version": platform.mac_ver()[0],
-        "architecture": platform.machine(),
-        "service": helper_job_status(),
-        "service_schema": helper_service_schema(),
-        "devices": ports,
-        "recent_events": recent_diagnostics(args.lines),
-    }
-    payload = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
-    if args.output:
-        destination = Path(args.output).expanduser().resolve()
-        atomic_write_bytes(destination, payload.encode("utf-8"))
-        say(f"Diagnostics written to {destination}.")
-    else:
-        say(payload.rstrip())
-
-
-def command_uninstall(_args: argparse.Namespace) -> None:
-    """Remove executable service components while preserving user data."""
-    remove_helper()
-    removed_commands: list[Path] = []
-    candidates = {CLI_INSTALL_PATH}
-    discovered = shutil.which("tinytouch")
-    if discovered:
-        candidates.add(Path(discovered))
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(SUPPORT_DIR.resolve())
-        except (FileNotFoundError, OSError, ValueError):
+def command_factory_reset(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    device = status(port)
+    protocol6(device)
+    if ask("Factory reset clears fingerprints, keys, hosts, and settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
+        raise ToolError("Factory reset cancelled.")
+    unlock(port)
+    serial_command(port, "RESET FACTORY", timeout=15)
+    cleared = status(port)
+    for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
+        if key == "piv" and key not in cleared:
             continue
-        if candidate.is_symlink():
-            candidate.unlink()
-            removed_commands.append(candidate)
-    say("tinyTouch background service removed.")
-    if removed_commands:
-        say("Command links removed: " + ", ".join(str(path) for path in removed_commands))
-    say(f"Passwords, pairing keys, settings, and rollback generations remain in {SUPPORT_DIR}.")
-    say("Delete those only after confirming that you no longer need recovery or migration.")
+        if cleared.get(key) != expected:
+            raise ToolError(f"Factory reset verification failed: {key}={cleared.get(key)!r}.")
+    remove_helper()
+    account = device_account(port)
+    keychain_delete(PAIRING_SERVICE, account)
+    keychain_delete(PASSWORD_SERVICE, account)
+    say("Factory reset completed live. The device did not restart.")
+
+
+def response_next(lines: list[str], verb: str) -> int:
+    line = next((item for item in reversed(lines) if item.startswith(f"OK {verb}")), "")
+    match = re.search(r"(?:^| )next=(\d+)(?: |$)", line)
+    if not match:
+        raise ToolError(f"The device returned an invalid {verb} response.")
+    return int(match.group(1))
+
+
+def stage_ota(port: str, image: bytes, digest: str) -> None:
+    try:
+        import serial  # type: ignore
+    except ImportError as exc:
+        raise ToolError("pyserial is required for OTA.") from exc
+    serial_command(port, "AUTH", timeout=15)
+    token = secrets.token_hex(16)
+    was_loaded = unload_helper()
+    try:
+        with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
+            lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
+            offset = response_next(lines, "OTA")
+            for start in range(offset, len(image), 360):
+                payload = base64.b64encode(image[start:start + 360]).decode()
+                command = f"OTA WRITE {token} {start} {payload}"
+                lines = serial_exchange(device, command)
+                offset = response_next(lines, "OTA")
+            commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
+    finally:
+        if was_loaded:
+            load_helper()
+    line = next((item for item in commit if item.startswith("OK OTA STAGED")), "")
+    if "power_cycle=required" not in line:
+        raise ToolError("The firmware did not confirm the OTA slot was staged safely.")
+
+
+def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
+    device.write((command + "\n").encode("ascii"))
+    device.flush()
+    lines: list[str] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = device.readline()
+        if raw:
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                lines.append(line)
+                if is_terminal(command, line):
+                    break
+    if not lines or not is_terminal(command, lines[-1]):
+        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
+    if lines[-1].startswith("ERR "):
+        raise ToolError(human_error(lines[-1]))
+    return lines
+
+
+def download(url: str) -> bytes:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": f"tinytouch/{CLI_VERSION}"})
+        with urllib.request.urlopen(request, timeout=20, context=TLS) as response:
+            return response.read()
+    except OSError as exc:
+        raise ToolError("Could not download the firmware release.") from exc
+
+
+def package_test() -> None:
+    """Check bundled imports and report the executable architecture."""
+    import certifi  # noqa: F401
+    import serial  # type: ignore  # noqa: F401
+    say(f"package ok ({platform.machine()})")
+
+
+def network_test() -> None:
+    """Check the active channel and one downloadable OTA asset."""
+    try:
+        channel = json.loads(download(RELEASE_CHANNEL_URL).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolError("release channel is not valid JSON") from exc
+    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
+    parsed_url = urlparse(manifest_url) if isinstance(manifest_url, str) else None
+    if parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ToolError("release channel has no valid manifest URL")
+    try:
+        manifest = json.loads(download(manifest_url).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolError("release manifest is not valid JSON") from exc
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
+        raise ToolError("release manifest is incomplete")
+    ota = manifest.get("ota")
+    if not isinstance(ota, dict):
+        raise ToolError("release manifest has no OTA asset")
+    filename = ota.get("file")
+    size = ota.get("size")
+    digest = str(ota.get("sha256", ""))
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or urlparse(filename).scheme
+        or urlparse(filename).netloc
+        or Path(filename).is_absolute()
+        or ".." in Path(filename).parts
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        raise ToolError("release manifest has an invalid OTA asset")
+    image = download(urljoin(manifest_url, filename))
+    if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
+        raise ToolError("release OTA asset does not match its manifest")
+    say("network ok")
+
+
+def command_update(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    device = status(port)
+    protocol6(device)
+    channel = json.loads(download(RELEASE_CHANNEL_URL).decode())
+    manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
+    if not isinstance(manifest_url, str):
+        raise ToolError("The update channel has no release manifest.")
+    manifest = json.loads(download(manifest_url).decode())
+    metadata = manifest.get("ota") if isinstance(manifest, dict) else None
+    if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
+        raise ToolError("The release manifest has no verified firmware asset.")
+    image = download(urljoin(manifest_url, str(metadata["file"])))
+    digest = hashlib.sha256(image).hexdigest()
+    if digest != metadata["sha256"]:
+        raise ToolError("The downloaded firmware digest does not match the release manifest.")
+    stage_ota(port, image, digest)
+    notify("tinyTouch update staged", "Unplug tinyTouch, reconnect it, then run tinytouch status.")
+    say("OTA firmware is staged in the inactive slot.")
+    say("Unplug tinyTouch and reconnect it once to boot the new firmware, then run 'tinytouch status'.")
+
+
+def command_rom(args: argparse.Namespace) -> None:
+    if args.port:
+        say(f"Selected device: {args.port}")
+    notify("tinyTouch ROM mode", "Unplug tinyTouch, reconnect it in download mode, and flash it.")
+    say("ROM flashing requires a physical reconnect. Unplug tinyTouch, reconnect it in download mode, and flash it.")
+    say("After flashing, unplug and reconnect tinyTouch normally.")
+
+
+def command_status(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    data = status(port)
+    say(json.dumps(data, indent=2, sort_keys=True))
+
+
+def command_test(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    status(port)
+    serial_command(port, "PING", timeout=4)
+    say("tinyTouch answered PING.")
+
+
+def command_keys(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    device = status(port)
+    protocol6(device)
+    unlock(port)
+    serial_command(port, "PIV CREATE", timeout=15)
+    if status(port).get("piv") != "ready":
+        raise ToolError("Live verification failed: the PIV identity is not ready.")
+    say("The PIV identity is active live. The device was not restarted.")
+
+
+def command_pair(_args: argparse.Namespace) -> None:
+    require_macos()
+    identities = subprocess.run(["sc_auth", "identities"], check=False, text=True, capture_output=True)
+    available = re.findall(r"\b([0-9A-Fa-f]{40})\b", identities.stdout)
+    if not available:
+        raise ToolError("macOS has not discovered a PIV identity. Select PIV mode, then try again.")
+    if len(available) > 1:
+        say("Available PIV identities:")
+        for index, identity in enumerate(available, 1):
+            say(f"  {index}. {identity}")
+        choice = ask("Identity [1]: ") or "1"
+        try:
+            identity = available[int(choice) - 1]
+        except (ValueError, IndexError) as exc:
+            raise ToolError("Invalid identity selection.") from exc
+    else:
+        identity = available[0]
+    run(["sudo", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
+    say("PIV is paired with this Mac. The device was not restarted.")
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="tinytouch", description=__doc__)
-    result.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
-    result.add_argument(
-        "--verbose", action="store_true",
-        help="show shell commands, serial protocol messages, and diagnostic details",
-    )
-    sub = result.add_subparsers(dest="command", required=True)
-
-    def add_verbose_option(command_parser: argparse.ArgumentParser) -> None:
-        command_parser.add_argument(
-            "--verbose", action="store_true", default=argparse.SUPPRESS,
-            help="show shell commands, serial protocol messages, and diagnostic details",
-        )
-
-    setup = sub.add_parser("setup", help="provision, enroll, pair, and select a mode")
-    add_verbose_option(setup)
-    setup.add_argument("--mode", choices=("hid", "piv"), help="choose a mode without the menu")
-    setup.add_argument("--port", help="use a specific /dev/cu.* device")
-    setup.add_argument("--skip-enroll", action="store_true", help="do not enroll a fingerprint")
-    setup.add_argument("--no-pair", action="store_true", help="do not pair PIV with the current Mac user")
+    parser = argparse.ArgumentParser(prog="tinytouch")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
+    sub = parser.add_subparsers(dest="command", required=True)
+    setup = sub.add_parser("setup")
+    setup.add_argument("--mode", choices=("hid", "piv"))
+    setup.add_argument("--port")
+    setup.add_argument("--skip-enroll", action="store_true")
+    setup.add_argument("--no-pair", action="store_true", help="do not run macOS PIV pairing")
     setup.set_defaults(func=command_setup)
-
-    mode = sub.add_parser("mode", help="switch runtime mode without reflashing")
-    add_verbose_option(mode)
-    mode.add_argument("mode", choices=("hid", "piv"), help="mode to activate")
-    mode.add_argument("--port", help="use a specific /dev/cu.* device")
-    mode.add_argument("--skip-enroll", action="store_true", help="do not enroll a missing fingerprint")
-    mode.add_argument("--no-pair", action="store_true", help="do not pair PIV with macOS")
+    mode = sub.add_parser("mode")
+    mode.add_argument("mode", choices=("hid", "piv"))
+    mode.add_argument("--port")
     mode.set_defaults(func=command_mode)
-
-    add_computer = sub.add_parser(
-        "add-computer", help="add this Mac to the device's current PIV or HID mode"
-    )
-    add_verbose_option(add_computer)
-    add_computer.add_argument("--port", help="use a specific /dev/cu.* device")
-    add_computer.set_defaults(func=command_add_computer)
-
-    computers = sub.add_parser("computers", help="list or remove trusted HID computers")
-    add_verbose_option(computers)
-    computers.add_argument("action", choices=("list", "remove"))
-    computers.add_argument("host_id", nargs="?", help="ID shown by 'tinytouch computers list'")
-    computers.add_argument("--port", help="use a specific /dev/cu.* device")
-    computers.set_defaults(func=command_computers)
-
-    password = sub.add_parser("password", help="manage the HID password")
-    add_verbose_option(password)
-    password.add_argument("action", choices=("set", "remove", "list"))
-    password.add_argument("--fingerprint", type=int, choices=range(1, 6),
-                          help="use a separate password for this fingerprint slot")
-    password.add_argument("--port", help="use a specific /dev/cu.* device")
-    password.set_defaults(func=command_password)
-
-    config = sub.add_parser("config", help="show or change HID behavior")
-    add_verbose_option(config)
-    config.add_argument("action", choices=("show", "set"))
-    config.add_argument("setting", nargs="?", choices=("typing-delay", "enter", "cooldown"))
+    config = sub.add_parser("config")
+    config.add_argument("name")
     config.add_argument("value", nargs="?")
-    config.add_argument("--port", help="use a specific /dev/cu.* device")
+    config.add_argument("--port")
     config.set_defaults(func=command_config)
-
-    keyboard_layout = sub.add_parser(
-        "keyboard-layout", help="choose how HID passwords map to keys"
-    )
-    add_verbose_option(keyboard_layout)
-    keyboard_layout.add_argument("layout", choices=("auto", "us"))
-    keyboard_layout.add_argument("--port", help="use a specific /dev/cu.* device")
-    keyboard_layout.set_defaults(func=command_keyboard_layout)
-
-    status = sub.add_parser("status", help="show device and host status")
-    add_verbose_option(status)
-    status.add_argument("--port", help="use a specific /dev/cu.* device")
-    status.set_defaults(func=command_status)
-
-    test = sub.add_parser("test", help="ping the device and test the HID helper")
-    add_verbose_option(test)
-    test.add_argument("--port", help="use a specific /dev/cu.* device")
-    test.set_defaults(func=command_test)
-
-    enroll = sub.add_parser("enroll", help="enroll four views of one finger")
-    add_verbose_option(enroll)
-    enroll.add_argument("--slot", type=int, choices=range(1, 6),
-                        help="advanced: replace one fingerprint slot")
-    enroll.add_argument("--port", help="use a specific /dev/cu.* device")
-    enroll.set_defaults(func=command_enroll)
-
-    update = sub.add_parser("update", help="update the CLI and firmware")
-    add_verbose_option(update)
-    update.add_argument("--force", action="store_true",
-                        help="rewrite the current release to test OTA slot switching")
-    update.add_argument("--local", nargs="?", const=True,
-                        help="flash locally built firmware binary without release")
-    update.add_argument("--port", help="use a specific /dev/cu.* device")
-    update.set_defaults(func=command_update)
-
-    pair = sub.add_parser("pair", help="pair the current Mac user with the attached PIV device")
-    add_verbose_option(pair)
-    pair.add_argument("--identity", help="40-character identity hash from 'sc_auth identities'")
-    pair.add_argument("--port", help="use a specific /dev/cu.* device")
-    pair.set_defaults(func=command_pair)
-
-    keys = sub.add_parser("keys", help="rotate customer PIV keys without rebuilding firmware")
-    add_verbose_option(keys)
-    keys.add_argument("--yes", action="store_true", help="rotate without confirmation")
-    keys.add_argument("--port", help="use a specific /dev/cu.* device")
-    keys.set_defaults(func=command_keys)
-
-    factory_reset = sub.add_parser(
-        "factory-reset", help="erase device keys, settings, and fingerprints"
-    )
-    add_verbose_option(factory_reset)
-    factory_reset.add_argument("--yes", action="store_true", help="reset without typed confirmation")
-    factory_reset.add_argument("--port", help="use a specific /dev/cu.* device")
-    factory_reset.set_defaults(func=command_factory_reset)
-
-    if not FROZEN:
-        bootloader = sub.add_parser(
-            "bootloader", help="development only: restart in firmware download mode"
-        )
-        add_verbose_option(bootloader)
-        bootloader.add_argument("--port", help="use a specific /dev/cu.* device")
-        bootloader.set_defaults(func=command_bootloader)
-
-    delete = sub.add_parser("delete", help="delete a fingerprint")
-    add_verbose_option(delete)
-    delete_group = delete.add_mutually_exclusive_group(required=True)
-    delete_group.add_argument("--slot", type=int, choices=range(1, 6))
-    delete_group.add_argument("--all", action="store_true")
-    delete.add_argument("--yes", action="store_true", help="confirm --all without prompting")
-    delete.add_argument("--port", help="use a specific /dev/cu.* device")
+    enroll_cmd = sub.add_parser("enroll")
+    enroll_cmd.add_argument("slot", type=int)
+    enroll_cmd.add_argument("--port")
+    enroll_cmd.set_defaults(func=command_enroll)
+    delete = sub.add_parser("delete")
+    delete.add_argument("slot", type=int)
+    delete.add_argument("--port")
     delete.set_defaults(func=command_delete)
-
-    logs = sub.add_parser("logs", help="show helper logs")
-    add_verbose_option(logs)
-    logs.add_argument("--lines", type=int, default=40)
-    logs.set_defaults(func=command_logs)
-
-    diagnostics = sub.add_parser(
-        "diagnostics", help="write a structured support snapshot without Keychain secrets"
-    )
-    add_verbose_option(diagnostics)
-    diagnostics.add_argument("--lines", type=int, default=100)
-    diagnostics.add_argument("--output", help="write private JSON to this path")
-    diagnostics.set_defaults(func=command_diagnostics)
-
-    uninstall = sub.add_parser(
-        "uninstall", help="remove the CLI service while preserving credentials and settings"
-    )
-    add_verbose_option(uninstall)
-    uninstall.set_defaults(func=command_uninstall)
-
-    flash_local = sub.add_parser("flash-local", help="flash a local firmware binary over OTA (developer command)")
-    add_verbose_option(flash_local)
-    flash_local.add_argument("binary", help="path to tiny_touch_unified.bin")
-    flash_local.add_argument("--port", help="use a specific /dev/cu.* device")
-    flash_local.set_defaults(func=command_flash_local)
-    return result
+    computers = sub.add_parser("computers")
+    computers.add_argument("action", choices=("list", "remove"), nargs="?", default="list")
+    computers.add_argument("host_id", nargs="?")
+    computers.add_argument("--remove", dest="remove_flag")
+    computers.add_argument("--port")
+    def normalize_computers(args: argparse.Namespace) -> None:
+        args.remove = args.remove_flag or args.host_id
+        if args.action == "list" and args.remove:
+            raise ToolError("Use 'tinytouch computers remove HOST_ID'.")
+        command_computers(args)
+    computers.set_defaults(func=normalize_computers)
+    reset = sub.add_parser("factory-reset")
+    reset.add_argument("--port")
+    reset.set_defaults(func=command_factory_reset)
+    update = sub.add_parser("update")
+    update.add_argument("--port")
+    update.set_defaults(func=command_update)
+    rom = sub.add_parser("rom", aliases=["bootloader"], help="prepare a physical ROM flash")
+    rom.add_argument("--port")
+    rom.set_defaults(func=command_rom)
+    status_cmd = sub.add_parser("status")
+    status_cmd.add_argument("--port")
+    status_cmd.set_defaults(func=command_status)
+    test = sub.add_parser("test")
+    test.add_argument("--port")
+    test.set_defaults(func=command_test)
+    keys = sub.add_parser("keys")
+    keys.add_argument("--port")
+    keys.set_defaults(func=command_keys)
+    pair = sub.add_parser("pair")
+    pair.add_argument("--port")
+    pair.set_defaults(func=command_pair)
+    return parser
 
 
 def main() -> int:
-    global VERBOSE, HELPER_SUSPENDED
-    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_helper":
-        sys.argv = ["tinytouch-helper", *sys.argv[2:]]
+    global VERBOSE
+    if len(sys.argv) > 1 and sys.argv[1] == "_package_test":
+        package_test()
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "_network_test":
+        try:
+            network_test()
+        except ToolError as exc:
+            say(f"network error: {exc}")
+            return 1
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "_helper":
         from tinytouch_helper import main as helper_main  # type: ignore
-
+        sys.argv = [str(HELPER), *sys.argv[2:]]
         helper_main()
         return 0
-    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_package_test":
-        import certifi  # type: ignore  # noqa: F401
-        import serial  # type: ignore  # noqa: F401
-        import esptool  # type: ignore  # noqa: F401
-        import tinytouch_helper  # type: ignore  # noqa: F401
-        import tinytouch_keychain  # type: ignore  # noqa: F401
-        from esptool.targets.esp32s3 import ESP32S3ROM  # type: ignore  # noqa: F401
-
-        say(f"package ok ({platform.machine()})")
-        return 0
-    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_network_test":
-        channel = json.loads(download_bytes(RELEASE_CHANNEL_URL, max_bytes=64 * 1024).decode("utf-8"))
-        if not isinstance(channel, dict) or not isinstance(channel.get("manifest"), str):
-            raise SupportError("The tinyTouch release channel is incomplete.")
-        say("network ok")
-        return 0
-    if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_auto_update":
-        auto_update_cli(force=True)
-        return 0
-    try:
-        install_command_if_needed()
-    except (ToolError, OSError) as exc:
-        print(f"tinytouch: Could not install the command-line tool: {exc}", file=sys.stderr)
-        return 1
     args = parser().parse_args()
     VERBOSE = args.verbose
-    if args.command not in {"update", "uninstall"}:
-        schedule_auto_update()
-    device_commands = {
-        "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
-        "factory-reset", "delete", "bootloader", "update", "password", "config",
-        "keyboard-layout", "flash-local",
-    }
-    helper_was_loaded = os.environ.pop("_TINYTOUCH_RESTART_HELPER", "") == "1"
     try:
-        show_startup_mark()
-        if args.command in device_commands:
-            reexec_in_environment_if_needed()
-            migrate_helper_service(Path(sys.executable).resolve())
-            helper_was_loaded = unload_helper() or helper_was_loaded
-            if helper_was_loaded:
-                os.environ["_TINYTOUCH_RESTART_HELPER"] = "1"
-            HELPER_SUSPENDED = True
-        if args.command in {"update", "flash-local", "bootloader"}:
-            with firmware_transaction():
-                args.func(args)
-        else:
-            args.func(args)
-        return 0
-    except (ToolError, OSError, KeyboardInterrupt, EOFError) as exc:
-        message = str(exc) or "cancelled"
-        print(f"tinytouch: {message}", file=sys.stderr)
-        if isinstance(exc, SupportError):
-            print(f"Contact {SUPPORT_EMAIL} if this continues.", file=sys.stderr)
+        args.func(args)
+    except KeyboardInterrupt:
+        say("Cancelled.")
+        return 130
+    except ToolError as exc:
+        say(f"Error: {exc}")
         return 1
-    finally:
-        if HELPER_SUSPENDED:
-            HELPER_SUSPENDED = False
-            helper_installing_commands = {"setup", "mode", "add-computer", "password"}
-            if LAUNCH_AGENT.exists() and (
-                helper_was_loaded or args.command in helper_installing_commands
-            ):
-                try:
-                    load_helper()
-                except ToolError as exc:
-                    print(f"tinytouch: HID background service could not restart: {exc}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

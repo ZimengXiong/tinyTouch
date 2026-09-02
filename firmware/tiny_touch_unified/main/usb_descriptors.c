@@ -8,14 +8,10 @@
 #define USB_PID 0x4001
 #define USB_BCD 0x0200
 
-#define PIV_ITF_NUM_CCID 0
-#define PIV_ITF_NUM_HID 1
-#define PIV_ITF_NUM_CDC 2
-#define PIV_ITF_NUM_TOTAL 4
-
-#define HID_ITF_NUM_HID 0
-#define HID_ITF_NUM_CDC 1
-#define HID_ITF_NUM_TOTAL 3
+#define ITF_NUM_CCID 0
+#define ITF_NUM_HID 1
+#define ITF_NUM_CDC 2
+#define ITF_NUM_TOTAL 4
 
 #define EPNUM_CCID_OUT 0x01
 #define EPNUM_CCID_IN 0x81
@@ -24,10 +20,8 @@
 #define EPNUM_CDC_OUT 0x04
 #define EPNUM_CDC_IN 0x84
 #define CCID_DESC_LEN (9 + 54 + 7 + 7)
-#define PIV_CONFIG_TOTAL_LEN \
+#define CONFIG_TOTAL_LEN \
   (TUD_CONFIG_DESC_LEN + CCID_DESC_LEN + TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
-#define HID_CONFIG_TOTAL_LEN \
-  (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
 
 uint8_t const tiny_touch_hid_report_descriptor[] = {
   TUD_HID_REPORT_DESC_KEYBOARD()
@@ -50,11 +44,13 @@ const tusb_desc_device_t tiny_touch_device_descriptor = {
   .bNumConfigurations = 0x01,
 };
 
-const uint8_t tiny_touch_piv_configuration_descriptor[] = {
-  TUD_CONFIG_DESCRIPTOR(1, PIV_ITF_NUM_TOTAL, 0, PIV_CONFIG_TOTAL_LEN,
+// The USB topology is deliberately stable for the full power session. Mode is
+// a live policy decision, not a descriptor-selection or reboot decision.
+const uint8_t tiny_touch_configuration_descriptor[] = {
+  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN,
                         TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
 
-  9, TUSB_DESC_INTERFACE, PIV_ITF_NUM_CCID, 0, 2, 0x0b, 0x00, 0x00, 0,
+  9, TUSB_DESC_INTERFACE, ITF_NUM_CCID, 0, 2, 0x0b, 0x00, 0x00, 0,
 
   54, 0x21,
   0x10, 0x01,
@@ -80,24 +76,10 @@ const uint8_t tiny_touch_piv_configuration_descriptor[] = {
 
   7, TUSB_DESC_ENDPOINT, EPNUM_CCID_OUT, TUSB_XFER_BULK, 64, 0x00, 0,
   7, TUSB_DESC_ENDPOINT, EPNUM_CCID_IN, TUSB_XFER_BULK, 64, 0x00, 0,
-  TUD_HID_DESCRIPTOR(PIV_ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
+  TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
                      sizeof(tiny_touch_hid_report_descriptor), EPNUM_HID, 8, 10),
 
-  TUD_CDC_DESCRIPTOR(PIV_ITF_NUM_CDC, 0, EPNUM_CDC_NOTIF, 8,
-                     EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
-};
-
-// HID mode does not expose a CCID interface. This prevents CryptoTokenKit and
-// other smart-card stacks from prompting about a card that HID users did not
-// configure. CDC remains available for setup and helper communication.
-const uint8_t tiny_touch_hid_configuration_descriptor[] = {
-  TUD_CONFIG_DESCRIPTOR(1, HID_ITF_NUM_TOTAL, 0, HID_CONFIG_TOTAL_LEN,
-                        TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
-
-  TUD_HID_DESCRIPTOR(HID_ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
-                     sizeof(tiny_touch_hid_report_descriptor), EPNUM_HID, 8, 10),
-
-  TUD_CDC_DESCRIPTOR(HID_ITF_NUM_CDC, 0, EPNUM_CDC_NOTIF, 8,
+  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 0, EPNUM_CDC_NOTIF, 8,
                      EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
 };
 

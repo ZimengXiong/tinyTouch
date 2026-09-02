@@ -34,7 +34,7 @@ def main() -> None:
             shutil.rmtree(destination)
         firmware = destination / "firmware"
         firmware.mkdir(parents=True)
-        layout = manifest["firmware"][kind]
+        layout = manifest["firmware"]["factory"]
         (destination / "manifest.json").write_text(
             json.dumps(layout, indent=2) + "\n", encoding="utf-8"
         )

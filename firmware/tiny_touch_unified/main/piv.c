@@ -77,7 +77,6 @@ static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
 static uint8_t user_presence_slots_used;
-static TickType_t pairing_mode_until;
 
 static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
   if (deadline == 0) return false;
@@ -86,7 +85,6 @@ static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
 }
 static const TickType_t PIN_VERIFIED_WINDOW_TICKS = pdMS_TO_TICKS(60000);
 static const TickType_t USER_PRESENCE_WINDOW_TICKS = pdMS_TO_TICKS(10000);
-static const TickType_t PAIRING_MODE_WINDOW_TICKS = pdMS_TO_TICKS(120000);
 
 static size_t encode_len(uint8_t *out, size_t len);
 static int piv_rng(void *ctx, unsigned char *out, size_t len);
@@ -125,26 +123,6 @@ static bool load_certificate_for_key(const char *pem, mbedtls_pk_context *key,
   return valid;
 }
 
-static bool validate_identity_pair(const char *certificate, const char *private_key) {
-  if (!certificate || !private_key) return false;
-  mbedtls_pk_context key;
-  mbedtls_pk_init(&key);
-  int result = mbedtls_pk_parse_key(&key, (const unsigned char *)private_key,
-                                    strlen(private_key) + 1,
-                                    NULL, 0, NULL, NULL);
-  bool valid = result == 0 && mbedtls_pk_get_type(&key) == MBEDTLS_PK_RSA &&
-               mbedtls_pk_get_bitlen(&key) == 2048 &&
-               load_certificate_for_key(certificate, &key, NULL, 0, NULL);
-  mbedtls_pk_free(&key);
-  return valid;
-}
-
-bool piv_validate_identity(const char *cert_9a, const char *key_9a,
-                           const char *cert_9d, const char *key_9d) {
-  return validate_identity_pair(cert_9a, key_9a) &&
-         validate_identity_pair(cert_9d, key_9d);
-}
-
 static bool load_nvs_string(nvs_handle_t handle, const char *name, char *out, size_t cap) {
   size_t length = cap;
   esp_err_t result = nvs_get_blob(handle, name, out, &length);
@@ -170,6 +148,76 @@ static void clear_provisioned_identity(void) {
   cert_9a_der_len = 0;
   cert_9d_der_len = 0;
   using_provisioned_keys = false;
+}
+
+static bool write_identity_part(nvs_handle_t handle, const char *name,
+                                const char *value) {
+  return nvs_set_blob(handle, name, value, strlen(value) + 1) == ESP_OK;
+}
+
+static bool create_certificate(mbedtls_pk_context *key, char *output,
+                               size_t output_size) {
+  uint8_t serial_bytes[16];
+  mbedtls_x509write_cert certificate;
+  mbedtls_x509write_crt_init(&certificate);
+  esp_fill_random(serial_bytes, sizeof(serial_bytes));
+  int result = 0;
+  mbedtls_x509write_crt_set_subject_key(&certificate, key);
+  mbedtls_x509write_crt_set_issuer_key(&certificate, key);
+  if (result == 0) result = mbedtls_x509write_crt_set_subject_name(
+      &certificate, "CN=tinyTouch PIV");
+  if (result == 0) result = mbedtls_x509write_crt_set_issuer_name(
+      &certificate, "CN=tinyTouch PIV");
+  if (result == 0) result = mbedtls_x509write_crt_set_validity(
+      &certificate, "20260101000000", "20460101000000");
+  if (result == 0) result = mbedtls_x509write_crt_set_serial_raw(
+      &certificate, serial_bytes, sizeof(serial_bytes));
+  if (result == 0) mbedtls_x509write_crt_set_md_alg(&certificate, MBEDTLS_MD_SHA256);
+  if (result == 0) result = mbedtls_x509write_crt_pem(
+      &certificate, (unsigned char *)output, output_size, piv_rng, NULL);
+  secure_wipe(serial_bytes, sizeof(serial_bytes));
+  mbedtls_x509write_crt_free(&certificate);
+  return result == 0;
+}
+
+static bool create_key_and_certificate(char *key_pem, size_t key_size,
+                                       char *certificate_pem, size_t certificate_size) {
+  mbedtls_pk_context key;
+  mbedtls_pk_init(&key);
+  int result = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+  if (result == 0) result = mbedtls_rsa_gen_key(mbedtls_pk_rsa(key), piv_rng, NULL, 2048, 65537);
+  if (result == 0) result = mbedtls_pk_write_key_pem(&key, (unsigned char *)key_pem, key_size);
+  bool ok = result == 0 && create_certificate(&key, certificate_pem, certificate_size);
+  mbedtls_pk_free(&key);
+  return ok;
+}
+
+bool piv_create_identity(void) {
+  if (piv_uses_provisioned_keys()) return false;
+  char cert_9a[sizeof(stored_cert_9a)] = {0};
+  char key_9a[sizeof(stored_key_9a)] = {0};
+  char cert_9d[sizeof(stored_cert_9d)] = {0};
+  char key_9d[sizeof(stored_key_9d)] = {0};
+  bool ok = create_key_and_certificate(key_9a, sizeof(key_9a), cert_9a, sizeof(cert_9a)) &&
+            create_key_and_certificate(key_9d, sizeof(key_9d), cert_9d, sizeof(cert_9d));
+  nvs_handle_t handle;
+  if (ok && nvs_open("piv_keys", NVS_READWRITE, &handle) == ESP_OK) {
+    ok = write_identity_part(handle, "cert9a", cert_9a) &&
+         write_identity_part(handle, "key9a", key_9a) &&
+         write_identity_part(handle, "cert9d", cert_9d) &&
+         write_identity_part(handle, "key9d", key_9d) && nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+  } else {
+    ok = false;
+  }
+  wipe_stored_identity();
+  secure_wipe(cert_9a, sizeof(cert_9a));
+  secure_wipe(key_9a, sizeof(key_9a));
+  secure_wipe(cert_9d, sizeof(cert_9d));
+  secure_wipe(key_9d, sizeof(key_9d));
+  if (!ok) return false;
+  piv_reload_keys();
+  return piv_uses_provisioned_keys();
 }
 
 bool piv_uses_provisioned_keys(void) {
@@ -534,11 +582,9 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
 
   bool user_presence_valid = deadline_active(user_presence_until,
                                              USER_PRESENCE_WINDOW_TICKS);
-  bool pairing_mode_valid = deadline_active(pairing_mode_until,
-                                            PAIRING_MODE_WINDOW_TICKS);
   uint8_t slot_bit = apdu[3] == 0x9d ? 0x02 : 0x01;
   bool slot_already_used = (user_presence_slots_used & slot_bit) != 0;
-  if ((!user_presence_valid || slot_already_used) && !pairing_mode_valid) {
+  if (!user_presence_valid || slot_already_used) {
     pin_verified_until = 0;
     if (!user_presence_valid) {
       user_presence_until = 0;
@@ -549,10 +595,8 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   // A macOS login can use 9a for authentication and then 9d to unlock the
   // login Keychain. One touch permits at most one operation in each slot; it
   // never permits repeated operations in either slot.
-  if (!pairing_mode_valid) {
-    user_presence_slots_used |= slot_bit;
-    if (user_presence_slots_used == 0x03) user_presence_until = 0;
-  }
+  user_presence_slots_used |= slot_bit;
+  if (user_presence_slots_used == 0x03) user_presence_until = 0;
 
   uint8_t sig[256];
   size_t sig_len = mbedtls_pk_get_len(key);
@@ -683,19 +727,6 @@ void piv_note_user_presence(void) {
   user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
   user_presence_slots_used = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
-}
-
-void piv_set_pairing_mode(bool enabled) {
-  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
-  pairing_mode_until = enabled ? xTaskGetTickCount() + PAIRING_MODE_WINDOW_TICKS : 0;
-  if (piv_mutex) xSemaphoreGive(piv_mutex);
-}
-
-bool piv_pairing_mode_active(void) {
-  if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
-  bool active = deadline_active(pairing_mode_until, PAIRING_MODE_WINDOW_TICKS);
-  if (piv_mutex) xSemaphoreGive(piv_mutex);
-  return active;
 }
 
 static bool piv_handle_apdu_locked(const uint8_t *apdu, size_t apdu_len,

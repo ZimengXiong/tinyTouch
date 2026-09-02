@@ -8,8 +8,6 @@
 #include "device_config.h"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "esp_system.h"
-#include "esp_task_wdt.h"
 #include "fingerprint.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -17,16 +15,12 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/md.h"
 #include "piv.h"
-#include "runtime_health.h"
 #include "usb_descriptors.h"
-#include "usb_runtime.h"
 
 static const char *TAG = "touch_hid";
 static const uint8_t ascii_to_keycode[128][2] = {HID_ASCII_TO_KEYCODE};
 static QueueHandle_t password_responses;
 static uint32_t event_counter;
-#define USB_WAKE_TIMEOUT_MS 2000
-#define SUSPENDED_SENSOR_POLL_MS 250
 
 static void secure_wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -36,8 +30,7 @@ static void secure_wipe(void *data, size_t length) {
 static bool wait_hid_ready(void) {
   TickType_t started = xTaskGetTickCount();
   while (!tud_hid_ready()) {
-    if (usb_runtime_is_suspended() ||
-        (TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(2000)) {
+    if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(2000)) {
       return false;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -317,21 +310,14 @@ done:
   return result;
 }
 
-static bool suspended_sensor_poll_available(void) {
-  return usb_runtime_can_poll_sensor();
-}
-
 typedef enum {
   AUTH_STATE_IDLE = 0,
-  AUTH_STATE_WAITING_FOR_HOST,
   AUTH_STATE_WAITING_FOR_LIFT,
 } auth_state_t;
 
 typedef struct {
   auth_state_t state;
-  fingerprint_match_t pending_match;
   TickType_t state_started;
-  TickType_t last_poll;
 } auth_runtime_t;
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
@@ -346,65 +332,23 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     success = type_dummy_pin();
     if (!success) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
   }
-  runtime_health_note_auth(success);
 }
 
 static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
   runtime->state = AUTH_STATE_WAITING_FOR_LIFT;
-  runtime->pending_match = (fingerprint_match_t){0};
   runtime->state_started = now;
-}
-
-static void service_hid_release(void) {
-  if (!tud_hid_ready() || !usb_runtime_take_release_request()) return;
-  if (!tud_hid_keyboard_report(0, 0, NULL)) {
-    ESP_LOGW(TAG, "could not send the pending HID release report");
-    usb_runtime_request_release();
-  }
-}
-
-static TickType_t sensor_poll_interval(bool present) {
-  if (usb_runtime_is_suspended()) return pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS);
-  return present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
 }
 
 static void touch_hid_task(void *arg) {
   (void)arg;
-  ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
   auth_runtime_t runtime = {
     .state = AUTH_STATE_IDLE,
-    .pending_match = {0},
     .state_started = xTaskGetTickCount(),
-    .last_poll = 0,
   };
 
   while (true) {
-    ESP_ERROR_CHECK(esp_task_wdt_reset());
-    if (usb_runtime_service_reconnect()) continue;
     TickType_t now = xTaskGetTickCount();
-    service_hid_release();
-    fingerprint_service_health();
-    if (!fingerprint_is_ready()) {
-      vTaskDelay(pdMS_TO_TICKS(50));
-      continue;
-    }
     bool present = fingerprint_present_hint();
-
-    if (runtime.state == AUTH_STATE_WAITING_FOR_HOST) {
-      if (!usb_runtime_is_suspended() && tud_hid_ready()) {
-        handle_fingerprint_match(runtime.pending_match);
-        auth_wait_for_lift(&runtime, xTaskGetTickCount());
-        vTaskDelay(pdMS_TO_TICKS(250));
-        fingerprint_led_idle();
-      } else if ((TickType_t)(now - runtime.state_started) >=
-                 pdMS_TO_TICKS(USB_WAKE_TIMEOUT_MS)) {
-        ESP_LOGW(TAG, "host did not resume after fingerprint remote wake");
-        runtime_health_note_auth(false);
-        auth_wait_for_lift(&runtime, now);
-      }
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
       if (!present && (TickType_t)(now - runtime.state_started) >=
@@ -415,40 +359,24 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    bool transport_ready = tud_hid_ready() || suspended_sensor_poll_available();
-    if (!transport_ready ||
-        (TickType_t)(now - runtime.last_poll) < sensor_poll_interval(present)) {
+    // Presence is the sole trigger for a capture. Idle operation never sends
+    // sensor commands and therefore never flashes a failure indication.
+    if (!present || !fingerprint_is_ready() || !tud_hid_ready()) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
     fingerprint_match_t match = fingerprint_authorize_poll_match();
-    runtime.last_poll = xTaskGetTickCount();
     if (match.slot == 0) {
+      auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
-    if (!usb_runtime_is_suspended()) {
-      handle_fingerprint_match(match);
-      auth_wait_for_lift(&runtime, xTaskGetTickCount());
-      vTaskDelay(pdMS_TO_TICKS(250));
-      fingerprint_led_idle();
-      continue;
-    }
-
-    // Match before requesting wake so an unrecognized touch cannot wake the
-    // host. Remote wake still requires permission from the host.
-    if (usb_runtime_request_remote_wakeup()) {
-      runtime.state = AUTH_STATE_WAITING_FOR_HOST;
-      runtime.pending_match = match;
-      runtime.state_started = xTaskGetTickCount();
-    } else {
-      ESP_LOGW(TAG, "finger matched, but USB remote wake failed");
-      runtime_health_note_auth(false);
-      auth_wait_for_lift(&runtime, xTaskGetTickCount());
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
+    handle_fingerprint_match(match);
+    auth_wait_for_lift(&runtime, xTaskGetTickCount());
+    vTaskDelay(pdMS_TO_TICKS(250));
+    fingerprint_led_idle();
   }
 }
 
@@ -460,7 +388,6 @@ void touch_pin_hid_start(void) {
 }
 
 void touch_pin_hid_usb_attached(void) {
-  usb_runtime_on_attached();
 }
 
 bool touch_pin_hid_submit_response(const char *response) {

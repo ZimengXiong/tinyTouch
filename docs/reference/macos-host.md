@@ -62,7 +62,7 @@ and dark wake.
 
 ## Serial framing and protocol compatibility
 
-The host preserves protocol 5 messages:
+The host uses the protocol 6 event messages:
 
 - Device to host: `EV` and `EV2`.
 - Host to device: `PW` and `PW2`.
@@ -169,9 +169,8 @@ Developer ID distribution remains an optional future release step. See Apple's
 and [distribution-signing guidance](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac)
 if that distribution model is adopted later.
 
-Upgrade uses immutable generations and an atomic symlink replacement. The
-launch-agent migration has a durable marker. A crash at any migration phase
-causes the next CLI run to repeat the migration.
+Upgrade verifies the release archive before replacing the CLI. Device state is
+stored on the device and is not changed by a CLI upgrade.
 
 Run this command to remove executable service components:
 
@@ -179,8 +178,8 @@ Run this command to remove executable service components:
 tinytouch uninstall
 ```
 
-Uninstall preserves Keychain credentials, settings, nonce history, and rollback
-generations. This allows recovery or reinstall without erasing user-owned state.
+Uninstall preserves Keychain credentials, settings, and nonce history. This
+allows a host reinstall without erasing device state.
 
 ## Diagnostics
 
@@ -205,17 +204,17 @@ structured events. It does not read or export Keychain secrets.
 
 The firmware rewrite must meet these host requirements:
 
-1. Keep `protocol=5` and all existing command and terminal-response syntax.
+1. Keep `protocol=6` and the event and terminal-response syntax described above.
 2. Keep the runtime USB identity at VID `0x303a`, PID `0x4001`, with a stable
    `TT-XXXXXXXXXXXX` serial derived from the device identity.
 3. Expose CDC in both modes. Expose HID in HID mode. Expose CCID and the PIV PIN
    HID path only in PIV mode.
-4. Complete USB re-enumeration after `MODE` and `USB_RECONNECT`. Preserve the USB
+4. Complete USB re-enumeration after `SET MODE` when descriptors change. Preserve the USB
    serial across the new BSD port name.
 5. Reply to `PING` with one complete `PONG\n` frame while CDC is healthy.
 6. Emit each `EV` or `EV2` as one newline-terminated frame. Never reuse a
    16-byte event nonce. Include no more than eight `EV2` authenticators.
-7. Continue accepting `PW` and `PW2` exactly as protocol 5 defines them. Wipe
+7. Continue accepting `PW` and `PW2` exactly as defined above. Wipe
    decrypted password bytes after HID delivery.
 8. Restore CDC, HID, and CCID endpoint state after resume. A touch during
    suspend may request remote wake, but must not run PIV or password delivery
@@ -229,8 +228,7 @@ The firmware rewrite must meet these host requirements:
 11. Preserve NVS host keys, fingerprints, mode, and typing settings across
     firmware updates and USB re-enumeration.
 12. If firmware adds delivery acknowledgement, negotiate it with a new status
-    capability. A protocol-5 host that does not send or understand the extension
-    must continue to work.
+    capability. Hosts must reject a device that does not report protocol 6.
 
 Run host failure-injection tests with split frames, oversized frames, stale
 leases, CLI termination, Keychain interaction denial, port renumbering,

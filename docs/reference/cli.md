@@ -75,6 +75,6 @@ tinytouch factory-reset
 tinytouch uninstall
 ```
 
-Uninstall preserves Keychain credentials and recovery state. See the
-[macOS host architecture](/reference/macos-host) for lifecycle, migration, and
-firmware compatibility details.
+Uninstall preserves Keychain credentials and device state. See the
+[macOS host architecture](/reference/macos-host) for lifecycle and firmware
+compatibility details.

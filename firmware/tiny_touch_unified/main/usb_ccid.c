@@ -95,6 +95,11 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
       send_parameters(slot, seq);
       break;
     case 0x6f: {
+      if (device_config_mode() != DEVICE_MODE_PIV) {
+        const uint8_t unavailable[] = {0x69, 0x85};
+        send_ccid(0x80, slot, seq, 0x00, 0x00, unavailable, sizeof(unavailable));
+        break;
+      }
       size_t resp_len = sizeof(tx_buf) - 10;
       bool ok = apdu_handler &&
                 apdu_handler(msg + 10, len, tx_buf + 10, &resp_len, sizeof(tx_buf) - 10);
@@ -191,10 +196,7 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.device = &tiny_touch_device_descriptor;
   tusb_cfg.descriptor.string = tiny_touch_string_descriptors;
   tusb_cfg.descriptor.string_count = tiny_touch_string_descriptor_count;
-  tusb_cfg.descriptor.full_speed_config =
-      device_config_mode() == DEVICE_MODE_HID
-          ? tiny_touch_hid_configuration_descriptor
-          : tiny_touch_piv_configuration_descriptor;
+  tusb_cfg.descriptor.full_speed_config = tiny_touch_configuration_descriptor;
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 }

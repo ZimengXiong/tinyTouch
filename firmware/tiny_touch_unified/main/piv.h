@@ -8,11 +8,8 @@ void piv_init(void);
 void piv_reload_keys(void);
 void piv_reset_transport_state(void);
 void piv_note_user_presence(void);
-void piv_set_pairing_mode(bool enabled);
-bool piv_pairing_mode_active(void);
 bool piv_uses_provisioned_keys(void);
-bool piv_validate_identity(const char *cert_9a, const char *key_9a,
-                           const char *cert_9d, const char *key_9d);
+bool piv_create_identity(void);
 bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
                      uint8_t *response, size_t *response_len,
                      size_t response_cap);

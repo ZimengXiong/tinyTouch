@@ -55,23 +55,17 @@ jobs:
           candidate_started=$SECONDS
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified build
-          idf.py -C firmware/tiny_touch_unified \
-            -B firmware/tiny_touch_unified/build-recovery \
-            -D TINYTOUCH_RECOVERY_BUILD=ON build
           for image in \
-            firmware/tiny_touch_unified/build/tiny_touch_unified.bin \
-            firmware/tiny_touch_unified/build-recovery/tiny_touch_unified.bin; do
+            firmware/tiny_touch_unified/build/tiny_touch_unified.bin; do
             espsecure.py verify_signature --version 2 \
               --keyfile firmware/tiny_touch_unified/secure_boot_signing_key.pem "$image"
           done
           for image in \
-            firmware/tiny_touch_unified/build/bootloader/bootloader.bin \
-            firmware/tiny_touch_unified/build-recovery/bootloader/bootloader.bin; do
+            firmware/tiny_touch_unified/build/bootloader/bootloader.bin; do
             esptool.py --chip esp32s3 image_info "$image"
           done
           python packaging/assemble-release.py \
             --firmware-build firmware/tiny_touch_unified/build \
-            --recovery-build firmware/tiny_touch_unified/build-recovery \
             --build-id "${GITHUB_SHA:0:12}"
           python packaging/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
           printf 'Firmware candidate build: %ss\n' "$((SECONDS - candidate_started))" >> "$GITHUB_STEP_SUMMARY"

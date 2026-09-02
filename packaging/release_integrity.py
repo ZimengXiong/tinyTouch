@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-PROTOCOL = 5
+PROTOCOL = 6
 SECURE_VERSION = 0
 FLASH_BYTES = 4 * 1024 * 1024
 APP_DESCRIPTION_MAGIC = 0xABCD5432
@@ -28,16 +28,9 @@ EXPECTED_IMAGES = {
         0x10000: "tiny_touch_unified.bin",
         0x210000: "ota_data_initial.bin",
     },
-    "recovery": {
-        0x0: "recovery_bootloader.bin",
-        0x8000: "partition-table.bin",
-        0x10000: "tiny_touch_recovery.bin",
-        0x210000: "ota_data_initial.bin",
-    },
 }
 EXPECTED_FULL_IMAGES = {
     "factory": "tiny_touch_factory_full.bin",
-    "recovery": "tiny_touch_recovery_full.bin",
 }
 
 
@@ -116,11 +109,6 @@ def validate_app(path: Path, version: str, build: str, kind: str) -> None:
             f"embedded secure version mismatch in {path.name}")
     require(build.encode("ascii") in path.read_bytes(),
             f"build ID {build} is not embedded in {path.name}")
-    recovery_marker = b"RECOVERY COMPLETE"
-    if kind == "recovery":
-        require(recovery_marker in path.read_bytes(), "recovery binary lacks its role marker")
-    else:
-        require(recovery_marker not in path.read_bytes(), "factory binary contains recovery code")
 
 
 def asset_path(root: Path, kind: str, name: str, flat: bool) -> Path:
@@ -209,10 +197,10 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
     require(manifest.get("boards") == ["esp32s3-super-mini", "seeed-xiao-esp32s3"],
             "unexpected board compatibility list")
     firmware = manifest.get("firmware")
-    require(isinstance(firmware, dict) and set(firmware) == {"factory", "recovery"},
-            "release must contain factory and recovery layouts")
+    require(isinstance(firmware, dict) and set(firmware) == {"factory"},
+            "release must contain one factory layout")
     public: dict[str, str] = {}
-    for kind in ("factory", "recovery"):
+    for kind in ("factory",):
         for name, checksum in validate_layout(
             root, kind, firmware[kind], version, protocol, build, flat
         ).items():
@@ -220,19 +208,9 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
                 require(public[name] == checksum, f"conflicting public asset: {name}")
             public[name] = checksum
     factory_app = asset_path(root, "factory", "tiny_touch_unified.bin", flat)
-    recovery_app = asset_path(root, "recovery", "tiny_touch_recovery.bin", flat)
-    require(digest(factory_app) != digest(recovery_app),
-            "factory and recovery applications must be different binaries")
     ota = checked_asset(manifest.get("ota"), root / "tiny_touch_unified.bin",
                         "OTA image")
     require(ota["sha256"] == digest(factory_app), "OTA image differs from factory application")
-    migration = manifest.get("migration")
-    require(isinstance(migration, dict), "missing migration metadata")
-    state = checked_asset(migration.get("otaState"), root / "ota_data_initial.bin",
-                          "migration OTA state")
-    factory_state = asset_path(root, "factory", "ota_data_initial.bin", flat)
-    require(state["file"] == "ota_data_initial.bin" and state["sha256"] == digest(factory_state),
-            "migration must use ESP-IDF-generated ota_data_initial.bin")
     cli = manifest.get("cli")
     if not require_cli:
         require(cli is None, "firmware-only release unexpectedly contains CLI metadata")
