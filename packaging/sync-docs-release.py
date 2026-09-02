@@ -28,10 +28,7 @@ def main() -> None:
     manifest = validate_release(release, args.commit, flat=True)
 
     flash_root = public / "flash"
-    recovery = flash_root / "recovery"
-    if recovery.exists():
-        shutil.rmtree(recovery)
-    for kind in ("factory",):
+    for kind in ("factory", "recovery"):
         destination = flash_root / kind
         if destination.exists():
             shutil.rmtree(destination)

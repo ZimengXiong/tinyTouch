@@ -144,7 +144,11 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertEqual(
                 json.loads((public / "release.json").read_text()), release_manifest
             )
-            self.assertFalse((public / "flash" / "recovery").exists())
+            self.assertTrue((public / "flash" / "recovery" / "manifest.json").is_file())
+            self.assertEqual(
+                json.loads((public / "flash" / "recovery" / "manifest.json").read_text()),
+                release_manifest["firmware"]["factory"],
+            )
             self.assertTrue((public / "cli" / "tinytouch-macos-arm64.tar.gz").is_file())
             (output / "unexpected.bin").write_bytes(b"unexpected")
             with self.assertRaisesRegex(integrity.IntegrityError, "published asset set mismatch"):

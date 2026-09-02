@@ -7,6 +7,7 @@ on:
       - channels/**
       - docs/public/cli/**
       - docs/public/flash/factory/**
+      - docs/public/flash/recovery/**
       - docs/public/release.json
 
 concurrency:

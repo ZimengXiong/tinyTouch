@@ -45,11 +45,17 @@ class ProtocolSixTests(unittest.TestCase):
     def test_hid_add_is_live_and_does_not_provision_piv(self):
         key = bytes(range(32))
         commands = []
+        identifier = cli.host_id(key)
+        registered = set()
 
         def exchange(_port, command, **_kwargs):
             commands.append(command)
             if command == "HOST LIST":
-                return ["OK HOST LIST ids=none capacity=8"]
+                ids = ",".join(sorted(registered)) or "none"
+                return [f"OK HOST LIST ids={ids} capacity=8"]
+            if command.startswith("HOST ADD "):
+                registered.add(identifier)
+                return ["OK HOST ADD"]
             if command == "STATUS":
                 return ["OK STATUS protocol=6 firmware=unified mode=piv sensor=ready hosts=1"]
             return ["OK AUTH"]
@@ -66,7 +72,7 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.configure_hid("/dev/cu.TT-1234", {"mode": "piv", "hosts": "0"})
 
-        self.assertIn(f"HOST ADD {cli.host_id(key)} {key.hex()}", commands)
+        self.assertIn(f"HOST ADD {identifier} {key.hex()}", commands)
         self.assertNotIn("PROVISION_BEGIN", " ".join(commands))
         self.assertNotIn("HOST ADD", " ".join(command for command in commands if command == "HOST LIST"))
 
@@ -94,6 +100,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "serial_command", side_effect=lambda _p, command, **_k: calls.append(command) or ["OK RESET FACTORY"]),
             mock.patch.object(cli, "remove_helper"),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "keychain_delete"),
         ):
             cli.command_factory_reset(args)
@@ -141,8 +148,8 @@ class ProtocolSixTests(unittest.TestCase):
                 if words[:2] == ["OTA", "BEGIN"]:
                     self.responses.append(b"OK OTA BEGIN next=0\n")
                 elif words[:2] == ["OTA", "WRITE"]:
-                    offset = int(words[2])
-                    size = len(base64.b64decode(words[3]))
+                    offset = int(words[3])
+                    size = len(base64.b64decode(words[4]))
                     self.responses.append(f"OK OTA WRITE next={offset + size}\n".encode())
                 elif words[:2] == ["OTA", "COMMIT"]:
                     self.responses.append(b"OK OTA STAGED power_cycle=required\n")
