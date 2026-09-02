@@ -308,7 +308,6 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
       - name: Build and deploy documentation
-        working-directory: docs
         run: |
           npx --yes vercel@59.1.3 pull --yes --environment=production --token "$VERCEL_TOKEN"
           npx --yes vercel@59.1.3 build --prod --token "$VERCEL_TOKEN"
