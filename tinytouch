@@ -414,7 +414,17 @@ def sensor_ready(device: dict[str, str]) -> None:
 
 
 def unlock(port: str) -> None:
-    serial_command(port, "AUTH", timeout=15)
+    deadline = time.monotonic() + 6.0
+    while True:
+        try:
+            serial_command(port, "AUTH", timeout=15)
+            return
+        except ToolError as exc:
+            if "USB serial port became unavailable while this command was starting" not in str(exc):
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
 
 
 def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
