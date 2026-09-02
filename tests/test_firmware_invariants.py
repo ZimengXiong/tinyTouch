@@ -338,6 +338,17 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("if (slot != 0)", handler)
         self.assertIn("len != msg_len - 10", handler)
 
+    def test_ota_validation_worker_is_watchdog_supervised(self):
+        source = (MAIN / "firmware_update.c").read_text()
+        worker = source.split("static void firmware_update_commit_task", 1)[1].split(
+            "bool firmware_update_commit", 1
+        )[0]
+
+        self.assertIn("esp_task_wdt_add(NULL)", worker)
+        self.assertIn("esp_task_wdt_delete(NULL)", worker)
+        self.assertLess(worker.index("esp_task_wdt_add(NULL)"),
+                        worker.index("esp_ota_end"))
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]
