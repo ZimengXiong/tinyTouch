@@ -9,11 +9,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import serial
 import serial.tools.list_ports
@@ -22,6 +24,13 @@ try:
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from tinytouch_keychain import KeychainError, get_password, has_password, set_password
+from tinytouch_runtime import (
+    BackoffPolicy,
+    LeaseObserver,
+    SerialFrameDecoder,
+    atomic_write_json,
+    diagnostic,
+)
 
 
 SERVICE = "tinyTouch"
@@ -38,6 +47,9 @@ MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
 KEYCHAIN_RETRY_SECONDS = 60.0
+MAX_EVENT_AUTHENTICATORS = 8
+MAX_COUNTER = (1 << 64) - 1
+MAX_SCORE = (1 << 31) - 1
 
 # macOS virtual key codes for the physical keys used by TinyUSB's US ASCII map.
 _MAC_KEYCODES = {
@@ -315,12 +327,7 @@ def load_state(device_id: str | None = None) -> dict:
 
 
 def save_state(state: dict, device_id: str | None = None) -> None:
-    path = state_path(device_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(state, f, separators=(",", ":"))
-    tmp.replace(path)
+    atomic_write_json(state_path(device_id), state)
 
 
 def remember_nonce(state: dict, nonce: str, device_id: str | None = None) -> None:
@@ -340,6 +347,61 @@ def valid_hex(value: str, byte_len: int) -> bool:
     return True
 
 
+class AuthenticatedEvent(NamedTuple):
+    version: int
+    nonce: str
+    counter: int
+    slot: int
+    score: int
+    authenticator: str
+    key_id: str | None
+
+
+def parse_event(line: str, pairing_key: bytes) -> AuthenticatedEvent | None:
+    """Parse and authenticate one protocol-v5-compatible HID event."""
+    if not isinstance(line, str) or len(line.encode("utf-8", "replace")) > MAX_SERIAL_LINE_BYTES:
+        return None
+    parts = line.strip().split()
+    if not parts or parts[0] not in {"EV", "EV2"}:
+        return None
+    version = 1 if parts[0] == "EV" else 2
+    if version == 1 and len(parts) != 6:
+        return None
+    if version == 2 and not 6 <= len(parts) <= 5 + MAX_EVENT_AUTHENTICATORS:
+        return None
+    nonce, counter_text, slot_text, score_text = parts[1:5]
+    if not valid_hex(nonce, 16):
+        diagnostic("protocol.event_rejected", level="warning", reason="invalid_nonce")
+        return None
+    if not all(re.fullmatch(r"[0-9]+", item) for item in (counter_text, slot_text, score_text)):
+        return None
+    counter, slot, score = map(int, (counter_text, slot_text, score_text))
+    if not 0 <= counter <= MAX_COUNTER or slot not in range(1, 6) or not 0 <= score <= MAX_SCORE:
+        return None
+
+    key_id: str | None = None
+    if version == 1:
+        authenticator = parts[5].lower()
+        material = f"EV|{nonce}|{counter_text}|{slot_text}|{score_text}"
+    else:
+        key_id = hashlib.sha256(pairing_key).hexdigest()[:16]
+        authenticators: dict[str, str] = {}
+        for value in parts[5:]:
+            match = re.fullmatch(r"([0-9A-Fa-f]{16}):([0-9A-Fa-f]{64})", value)
+            if match is None or match.group(1).lower() in authenticators:
+                return None
+            authenticators[match.group(1).lower()] = match.group(2).lower()
+        authenticator = authenticators.get(key_id, "")
+        material = f"EV2|{key_id}|{nonce}|{counter_text}|{slot_text}|{score_text}"
+    if not valid_hex(authenticator, 32):
+        return None
+    expected = mac_hex(pairing_key, material)
+    if not hmac.compare_digest(expected, authenticator):
+        diagnostic("protocol.event_rejected", level="warning", reason="invalid_mac")
+        return None
+    return AuthenticatedEvent(version, nonce, counter, slot, score, authenticator, key_id)
+
+
 def handle_event(
     line: str,
     password: bytes | dict[int, bytes],
@@ -350,41 +412,12 @@ def handle_event(
     device_id: str | None = None,
     keyboard_map: dict[str, str] | None = None,
 ) -> str | None:
-    parts = line.strip().split()
-    if not parts or parts[0] not in {"EV", "EV2"}:
+    event = parse_event(line, pairing_key)
+    if event is None:
         return None
-    if parts[0] == "EV":
-        if len(parts) != 6:
-            return None
-        _, nonce, counter, slot, score, got_mac = parts
-        key_id = None
-        mac_material = f"EV|{nonce}|{counter}|{slot}|{score}"
-    else:
-        if len(parts) < 6:
-            return None
-        _, nonce, counter, slot, score, *authenticators = parts
-        key_id = hashlib.sha256(pairing_key).hexdigest()[:16]
-        prefix = f"{key_id}:"
-        match = next((item[len(prefix):] for item in authenticators
-                      if item.lower().startswith(prefix)), None)
-        if match is None:
-            return None
-        got_mac = match
-        mac_material = f"EV2|{key_id}|{nonce}|{counter}|{slot}|{score}"
-    try:
-        fingerprint_slot = int(slot)
-        fingerprint_score = int(score)
-    except ValueError:
-        return None
-    if fingerprint_slot not in range(1, 6) or fingerprint_score < 0:
-        return None
-    if not valid_hex(nonce, 16):
-        print("bad event nonce", file=sys.stderr)
-        return None
-    expected = mac_hex(pairing_key, mac_material)
-    if not hmac.compare_digest(expected, got_mac.lower()):
-        print("bad event mac", file=sys.stderr)
-        return None
+    nonce = event.nonce
+    key_id = event.key_id
+    fingerprint_slot = event.slot
     if state is not None:
         seen_nonces = state.setdefault("seen_nonces", [])
         if nonce in seen_nonces:
@@ -426,7 +459,8 @@ def resynchronize_event(line: str, device_id: str = "") -> str:
     lost. Everything before the last event marker is unrecoverable, so drop it and keep
     the intact event behind it.
     """
-    marker = line.rfind("EV ")
+    markers = [line.rfind("EV "), line.rfind("EV2 ")]
+    marker = max(markers)
     if marker <= 0:
         return line
     print(f"{device_id}: discarded truncated event before offset {marker}",

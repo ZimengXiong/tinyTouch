@@ -24,6 +24,10 @@ class SerialFramingTests(unittest.TestCase):
         for line in ("EV aabb 1 1 1 ccdd", "PONG", "OK STATUS firmware=unified", ""):
             self.assertEqual(helper.resynchronize_event(line), line)
 
+    def test_event_v2_glued_behind_truncated_data_is_recovered(self):
+        intact = f"EV2 {'ab' * 16} 5 1 1 deadbeefdeadbeef:{'cd' * 32}"
+        self.assertEqual(helper.resynchronize_event(f"EV partial{intact}"), intact)
+
 
 class HelperProtocolTests(unittest.TestCase):
     @staticmethod
@@ -138,6 +142,31 @@ class HelperProtocolTests(unittest.TestCase):
             persist_state=False,
         )
         self.assertIsNone(response)
+
+    def test_parser_rejects_duplicate_or_excess_authenticators(self):
+        key = bytes(range(32))
+        nonce = "05" * 16
+        key_id = hashlib.sha256(key).hexdigest()[:16]
+        event_mac = helper.mac_hex(key, f"EV2|{key_id}|{nonce}|1|1|1")
+        authenticator = f"{key_id}:{event_mac}"
+        self.assertIsNone(helper.parse_event(
+            f"EV2 {nonce} 1 1 1 {authenticator} {authenticator}", key
+        ))
+        extras = " ".join(f"{index:016x}:{'00' * 32}" for index in range(9))
+        self.assertIsNone(helper.parse_event(f"EV2 {nonce} 1 1 1 {extras}", key))
+
+    def test_parser_rejects_noncanonical_numbers_and_ranges(self):
+        key = bytes(range(32))
+        nonce = "06" * 16
+        for counter, slot, score in (
+            ("-1", "1", "1"),
+            (str(1 << 64), "1", "1"),
+            ("1", "0", "1"),
+            ("1", "1", str(1 << 31)),
+        ):
+            self.assertIsNone(
+                helper.parse_event(f"EV {nonce} {counter} {slot} {score} {'00' * 32}", key)
+            )
 
     def test_fingerprint_slot_selects_override_and_falls_back_to_default(self):
         key = bytes(range(32))
