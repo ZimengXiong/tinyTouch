@@ -129,9 +129,10 @@ asks the card to use the piv private key. the esp only allows that key operation
 right after a fingerprint match.
 
 macos also expects a piv pin, so the firmware has a tiny hid side path that types
-the dummy pin `000000`. that pin is not your mac password. it is just there to
-get through the macos piv prompt while the real authorization is the fingerprint
-gate around the piv key.
+a dummy pin. that pin is not your mac password. it is just there to get through
+the macos piv prompt while the real authorization is the fingerprint gate around
+the piv key. it is typed using numeric-keypad usages, which national keyboard
+layouts do not remap, so it arrives as digits whatever layout is active.
 
 this avoids typing your real password, but only works where macos accepts smart
 cards, like login and `sudo` with pam.
