@@ -54,6 +54,7 @@ HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
 _lease: ForegroundLease | None = None
 _sudo_session_ready = False
+_setup_password: bytearray | None = None
 
 
 class ToolError(RuntimeError):
@@ -84,16 +85,17 @@ def run(command: list[str], **kwargs):
         raise ToolError(detail or f"Command failed: {command[0]}") from exc
 
 
-def authorize_macos() -> None:
+def authorize_macos(*, retain_password: bool = False) -> None:
     """Authorize sudo and unlock the login Keychain from one terminal prompt."""
     global _sudo_session_ready
-    if _sudo_session_ready:
+    global _setup_password
+    if _sudo_session_ready and (not retain_password or _setup_password is not None):
         return
     cached = subprocess.run(
         ["sudo", "-n", "-v"], check=False,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    if not cached.returncode:
+    if not cached.returncode and not retain_password:
         _keychain().disable_user_interaction()
     else:
         entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
@@ -109,9 +111,14 @@ def authorize_macos() -> None:
                 ["sudo", "-S", "-p", "", "-v"], input=bytes(entered) + b"\n",
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
+            if retain_password:
+                _setup_password = bytearray(entered)
         finally:
             entered[:] = b"\x00" * len(entered)
         if validated.returncode:
+            if _setup_password is not None:
+                _setup_password[:] = b"\x00" * len(_setup_password)
+                _setup_password = None
             raise ToolError("Mac password was not accepted by sudo.")
     _sudo_session_ready = True
 
@@ -425,8 +432,19 @@ def host_id(key: bytes) -> str:
 
 
 def password_for(account: str) -> str:
+    global _setup_password
     say("HID mode types this password after a fingerprint match.")
     say("It is stored in this Mac user's Keychain for this device.")
+    if _setup_password is not None:
+        try:
+            value = _setup_password.decode("utf-8")
+            if len(_setup_password) > 160:
+                raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
+            keychain_set(PASSWORD_SERVICE, account, value)
+            return value
+        finally:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Password again: ")
     if not first or first != second:
@@ -438,7 +456,7 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
-    authorize_macos()
+    authorize_macos(retain_password=True)
     account = device_account(port)
     stored = keychain_get(PAIRING_SERVICE, account)
     try:
