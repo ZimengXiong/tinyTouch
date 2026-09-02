@@ -355,7 +355,10 @@ static void console_task(void *arg) {
         else command_overflow = true;
       }
     }
-    if (!activity) vTaskDelay(pdMS_TO_TICKS(2));
+    // The scheduler tick is 10 ms. A 2 ms conversion becomes zero and leaves
+    // this higher-priority loop ready forever, starving app_main before it can
+    // create the background fingerprint task.
+    if (!activity) vTaskDelay(1);
   }
 }
 
