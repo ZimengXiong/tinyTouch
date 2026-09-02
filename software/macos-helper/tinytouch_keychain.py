@@ -1,6 +1,7 @@
 """Small Security.framework wrapper for generic-password items."""
 
 import ctypes
+import subprocess
 
 
 _SECURITY = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
@@ -113,6 +114,23 @@ def _find(service: str, account: str, *, include_secret: bool):
 
 def get_password_bytes(service: str, account: str) -> bytearray | None:
     """Copy a secret into caller-wipeable memory."""
+    if _BACKGROUND_MODE:
+        # The login Keychain can be unlocked while denying a newly rebuilt
+        # LaunchAgent executable access through its per-process ACL. The
+        # system security tool is stable across CLI replacements and reads the
+        # same unlocked item without presenting UI.
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode == 0:
+            return bytearray(result.stdout.removesuffix(b"\n"))
+        if result.returncode != 44:
+            raise KeychainError("read", -25293)
+        return None
     status, item, length, secret = _find(service, account, include_secret=True)
     if status == _NOT_FOUND:
         return None
