@@ -6,7 +6,7 @@ cd "$project_dir"
 
 if (( $# > 0 )); then
   print "Usage: packaging/release"
-  print "Push main. GitHub Actions builds, publishes, deploys, and verifies the release."
+  print "Push main or beta/*. GitHub Actions builds, publishes, deploys, and verifies the release."
   [[ "$1" = --help || "$1" = -h ]] && exit 0
   exit 2
 fi
@@ -15,11 +15,18 @@ git diff --quiet -- && git diff --cached --quiet -- || {
   print -u2 "Tracked and staged files must be clean before releasing."
   exit 1
 }
-[[ "$(git branch --show-current)" = main ]] || {
-  print -u2 "Releases must be created from main."
+release_branch="$(git branch --show-current)"
+[[ "$release_branch" = main || "$release_branch" = beta/* ]] || {
+  print -u2 "Releases must be created from main or beta/*."
   exit 1
 }
+if [[ "$release_branch" = beta/* ]]; then
+  grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-beta([.-][0-9A-Za-z.-]+)?$' VERSION || {
+    print -u2 "Beta branch versions must use x.y.z-beta or x.y.z-beta.N."
+    exit 1
+  }
+fi
 
-git push origin main
-print "GitHub Actions is handling the release from this main-branch push."
+git push origin "$release_branch"
+print "GitHub Actions is handling the release from $release_branch."
 print "No local build tools or signing keys are used."

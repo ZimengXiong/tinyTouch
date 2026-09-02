@@ -1,8 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_run:
     workflows: ["Release candidate"]
     types: [completed]
@@ -46,14 +44,18 @@ jobs:
         run: |
           wait_started=$SECONDS
           if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
-            test "$AUTOMATIC_BRANCH" = main
+            [[ "$AUTOMATIC_BRANCH" = main || "$AUTOMATIC_BRANCH" = beta/* ]]
             test "$AUTOMATIC_EVENT" = push
+            if [[ "$AUTOMATIC_BRANCH" = beta/* ]]; then
+              grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-beta([.-][0-9A-Za-z.-]+)?$' VERSION
+            fi
             release_commit="$AUTOMATIC_COMMIT"
+            release_branch="$AUTOMATIC_BRANCH"
             release_tag="v$(tr -d '[:space:]' < VERSION)"
             run_id="$AUTOMATIC_RUN_ID"
-            current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-            if [[ "$current_main" != "$release_commit" ]]; then
-              echo "Candidate $release_commit was superseded by main $current_main."
+            current_branch="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$release_branch" --jq .object.sha)"
+            if [[ "$current_branch" != "$release_commit" ]]; then
+              echo "Candidate $release_commit was superseded by $release_branch $current_branch."
               echo "promote=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -89,6 +91,7 @@ jobs:
             release_tag="${REQUESTED_TAG:-$GITHUB_REF_NAME}"
             test "${release_tag#v}" = "$(tr -d '[:space:]' < VERSION)"
             release_commit="$(git rev-parse "$release_tag^{commit}")"
+            release_branch=main
             event_commit="$(git rev-parse HEAD^{commit})"
             test "$release_commit" = "$event_commit" || {
               echo "Tag $release_tag does not peel to the checked-out commit." >&2
@@ -119,6 +122,7 @@ jobs:
           fi
           candidate_wait=$((SECONDS - wait_started))
           echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
+          echo "RELEASE_BRANCH=$release_branch" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
           echo "CANDIDATE_WAIT_SECONDS=$candidate_wait" >> "$GITHUB_ENV"
           artifact_name="release-candidate-${release_commit}"
@@ -143,7 +147,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
             --source-digest "$RELEASE_COMMIT" \
-            --source-ref refs/heads/main \
+            --source-ref "refs/heads/$RELEASE_BRANCH" \
             --deny-self-hosted-runners
           python packaging/release_integrity.py extract "$candidate" dist/candidate
           python packaging/release_integrity.py publish dist/candidate/publish --commit "$RELEASE_COMMIT"
@@ -154,9 +158,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
-            current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-            if [[ "$current_main" != "$RELEASE_COMMIT" ]]; then
-              echo "Candidate $RELEASE_COMMIT was superseded by main $current_main after verification."
+            current_branch="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RELEASE_BRANCH" --jq .object.sha)"
+            if [[ "$current_branch" != "$RELEASE_COMMIT" ]]; then
+              echo "Candidate $RELEASE_COMMIT was superseded by $RELEASE_BRANCH $current_branch after verification."
               echo "promote=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -240,10 +244,14 @@ jobs:
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Verify stable GitHub release
+      - name: Verify published GitHub release
         if: steps.freshness.outputs.promote == 'true'
         run: |
-          base="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          if [[ "$RELEASE_TAG" == *-* && "$RELEASE_TAG" != *-prod ]]; then
+            base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
+          else
+            base="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          fi
           deadline=$((SECONDS + 120))
           while (( SECONDS < deadline )); do
             if curl -fsSL --max-time 30 \
@@ -277,3 +285,37 @@ jobs:
             echo "Candidate wait time: ${CANDIDATE_WAIT_SECONDS:-not reached}s"
             echo "Baseline: seven rebuild releases had a 233s median; their publish-only jobs had an 11s median."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-docs:
+    needs: promote
+    if: ${{ success() && !contains(github.event.workflow_run.head_branch, 'beta/') }}
+    runs-on: ubuntu-latest
+    environment: release-publishing
+    permissions:
+      contents: read
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.tag || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Build and deploy documentation
+        working-directory: docs
+        run: |
+          npx --yes vercel@59.1.3 pull --yes --environment=production --token "$VERCEL_TOKEN"
+          npx --yes vercel@59.1.3 build --prod --token "$VERCEL_TOKEN"
+          npx --yes vercel@59.1.3 deploy --prebuilt --prod --token "$VERCEL_TOKEN"
+      - name: Verify documentation
+        run: |
+          curl -fsSL --max-time 30 https://docs.tinytouch.dev/customer/setup \
+            | grep -q 'releases/latest/download/install.sh'
+          curl -fsSL --max-time 30 https://docs.tinytouch.dev/flash \
+            | grep -q '<title>Flash tinyTouch'

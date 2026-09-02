@@ -47,7 +47,10 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(result["hosts"], "1")
 
     def test_hid_add_is_live_and_does_not_provision_piv(self):
-        key = bytes(range(32))
+        computer = "test-mac"
+        key = hashlib.sha256(
+            f"tinyTouch HID pairing|TT-1234|{computer}".encode("utf-8")
+        ).digest()
         commands = []
         identifier = cli.host_id(key)
         registered = set()
@@ -65,14 +68,16 @@ class ProtocolSixTests(unittest.TestCase):
             return ["OK AUTH"]
 
         with (
+            mock.patch.object(cli, "prepare_hid_password"),
             mock.patch.object(cli, "keychain_get", return_value=None),
             mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "keychain_exists", return_value=True),
             mock.patch.object(cli, "keychain_set"),
+            mock.patch.object(cli, "password_for", return_value="test-password"),
             mock.patch.object(cli, "serial_command", side_effect=exchange),
             mock.patch.object(cli, "install_helper"),
             mock.patch.object(cli, "helper_loaded", return_value=True),
-            mock.patch.object(cli.secrets, "token_bytes", return_value=key),
+            mock.patch.object(cli.platform, "node", return_value=computer),
         ):
             cli.configure_hid("/dev/cu.TT-1234", {"mode": "piv", "hosts": "0"})
 
@@ -94,13 +99,20 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "status", return_value=device),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "sensor_ready"),
+            mock.patch.object(cli, "foreground_session", return_value=mock.MagicMock(
+                __enter__=mock.Mock(return_value=None),
+                __exit__=mock.Mock(return_value=False),
+            )),
             mock.patch.object(cli, "remove_helper", side_effect=lambda: calls.append("remove_helper")),
             mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("unlock")),
             mock.patch.object(cli, "serial_command", return_value=["OK SET MODE"]),
             mock.patch.object(cli, "fresh_status", return_value={"mode": "piv"}),
             mock.patch.object(cli, "enroll"),
+            mock.patch.object(cli, "notify"),
+            mock.patch.object(cli, "wait_for_reconnect", side_effect=RuntimeError("stop after mode change")),
         ):
-            cli.command_setup(args)
+            with self.assertRaisesRegex(RuntimeError, "stop after mode change"):
+                cli.command_setup(args)
         self.assertEqual(calls, ["remove_helper", "unlock"])
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
@@ -145,6 +157,9 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "serial_command", side_effect=lambda _p, command, **_k: calls.append(command) or ["OK SET MODE"]),
+            mock.patch.object(cli, "wait_for_reconnect", return_value=args.port),
+            mock.patch.object(cli, "fresh_status", return_value={"mode": "hid"}),
+            mock.patch.object(cli, "notify"),
         ):
             cli.command_mode(args)
         self.assertEqual(calls, ["SET MODE HID"])

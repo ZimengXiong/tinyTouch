@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 
-type ToolName = 'factory' | 'recovery'
+type ToolName = 'factory' | 'recovery' | 'beta'
 type FlashPhase = 'select' | 'connected' | 'writing' | 'reset' | 'done'
 type ManifestImage = { name: string; file: string; address: number; size: number; sha256: string }
 type Manifest = {
@@ -19,7 +19,8 @@ const FLASH_BYTES = 4 * 1024 * 1024
 const UPDATE_PROTOCOL = 6
 const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
 const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
-const RELEASE_ROOT = 'https://github.com/ZimengXiong/tinyTouch/releases/latest/download'
+const RELEASE_ROOT = '/github-releases/latest/download'
+const RELEASE_API = 'https://api.github.com/repos/ZimengXiong/tinyTouch/releases?per_page=20'
 
 const selected = ref<ToolName>('factory')
 const manifest = ref<Manifest | null>(null)
@@ -76,8 +77,18 @@ async function sha256(data: ArrayBuffer) {
 }
 
 async function loadManifest(mode: ToolName) {
-  const base = RELEASE_ROOT
-  const label = mode === 'factory' ? 'Firmware' : 'Recovery'
+  let base = RELEASE_ROOT
+  if (mode === 'beta') {
+    const releasesResponse = await fetch(RELEASE_API, { cache: 'no-store' })
+    if (!releasesResponse.ok) throw new Error('Beta releases could not be downloaded.')
+    const releases = await releasesResponse.json() as Array<{ draft: boolean; prerelease: boolean; tag_name: string }>
+    const beta = releases.find((release) =>
+      !release.draft && release.prerelease && /^v[0-9]+\.[0-9]+\.[0-9]+-beta(?:[.-][0-9A-Za-z.-]+)?$/.test(release.tag_name)
+    )
+    if (!beta) throw new Error('No beta release is available.')
+    base = `/github-releases/download/${beta.tag_name}`
+  }
+  const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Beta'
   const response = await fetch(`${base}/release-manifest.json`, { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
   const release = await response.json() as { firmware?: { factory?: Manifest } }
@@ -225,6 +236,7 @@ onMounted(async () => {
       <select id="flash-version" v-model="selected" :disabled="busy" @change="selectTool">
         <option value="factory">Factory firmware</option>
         <option value="recovery">Recovery firmware</option>
+        <option value="beta">Beta firmware</option>
       </select>
     </div>
     <div class="flash-tool-body">
