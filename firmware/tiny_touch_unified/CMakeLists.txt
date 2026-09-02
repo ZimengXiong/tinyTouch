@@ -1,20 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 
-option(TINYTOUCH_RECOVERY_BUILD "Build one-time destructive recovery firmware" OFF)
-option(TINYTOUCH_LOCAL_OTA_TEST "Bypass OTA fingerprint authorization for local testing" OFF)
-
 set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
 file(READ "${TINYTOUCH_VERSION_FILE}" TINYTOUCH_VERSION)
 string(STRIP "${TINYTOUCH_VERSION}" TINYTOUCH_VERSION)
 set(PROJECT_VER "${TINYTOUCH_VERSION}")
-
-# These releases validate the complete public OTA path. They intentionally
-# omit fingerprint authorization so repeated hardware updates are unattended.
-set(TINYTOUCH_OTA_VALIDATION_VERSIONS "0.8.1;0.8.2")
-if(TINYTOUCH_VERSION IN_LIST TINYTOUCH_OTA_VALIDATION_VERSIONS)
-  set(TINYTOUCH_OTA_VALIDATION_RELEASE ON)
-endif()
 
 if(DEFINED ENV{GITHUB_SHA} AND NOT "$ENV{GITHUB_SHA}" STREQUAL "")
   string(SUBSTRING "$ENV{GITHUB_SHA}" 0 12 TINYTOUCH_BUILD_ID)

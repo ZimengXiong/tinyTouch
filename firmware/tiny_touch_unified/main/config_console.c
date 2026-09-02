@@ -107,9 +107,10 @@ static void status(void) {
   char line[320];
   int count = fingerprint_count();
   snprintf(line, sizeof(line),
-           "OK STATUS protocol=6 firmware=%s build=%s mode=%s sensor=%s fingerprints=%d "
+           "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
            "hosts=%u ota=%s",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
+           piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            fingerprint_is_ready() ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
            (firmware_update_active() ? "writing" : "idle"));
@@ -195,11 +196,15 @@ static void factory_reset(void) {
   bool ok = fingerprint_delete_all() && nvs_flash_erase() == ESP_OK &&
             nvs_flash_init() == ESP_OK && device_config_factory_reset();
   if (ok) {
-    piv_set_pairing_mode(false);
     piv_reload_keys();
     authorized_until = 0;
   }
   reply(ok ? "OK RESET FACTORY" : "ERR RESET FACTORY");
+}
+
+static void piv_create(void) {
+  if (!require_authorized()) return;
+  reply(piv_create_identity() ? "OK PIV CREATE" : "ERR PIV CREATE");
 }
 
 static void ota_begin(char *arguments) {
@@ -251,6 +256,7 @@ static void handle_command(void) {
   else if (strncmp(command, "HOST REMOVE ", 12) == 0) host_remove(command + 12);
   else if (strcmp(command, "HOST LIST") == 0) host_list();
   else if (strncmp(command, "FINGER ", 7) == 0) fingerprint_command(command + 7);
+  else if (strcmp(command, "PIV CREATE") == 0) piv_create();
   else if (strcmp(command, "RESET FACTORY") == 0) factory_reset();
   else if (strncmp(command, "OTA BEGIN ", 10) == 0) ota_begin(command + 10);
   else if (strncmp(command, "OTA WRITE ", 10) == 0) ota_write(command + 10);

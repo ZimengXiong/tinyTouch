@@ -45,6 +45,14 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertIn("firmware_update_staged", update)
         self.assertNotIn("fingerprint_prepare_for_restart", console)
 
+    def test_piv_create_is_live_and_status_reports_readiness(self) -> None:
+        console = self.source("config_console.c")
+        piv = self.source("piv.c")
+        self.assertIn('strcmp(command, "PIV CREATE")', console)
+        self.assertIn('"piv=%s"', console)
+        self.assertIn("piv_create_identity", piv)
+        self.assertIn("piv_reload_keys()", piv)
+
     def test_fingerprint_auth_requires_presence(self) -> None:
         source = self.source("touch_pin_hid.c")
         self.assertIn("if (!present || !fingerprint_is_ready() || !tud_hid_ready())", source)
