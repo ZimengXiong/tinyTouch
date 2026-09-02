@@ -156,6 +156,26 @@ static void host_remove(const char *arguments) {
   reply(ok ? "OK HOST REMOVE" : "ERR HOST REMOVE");
 }
 
+static void host_list(void) {
+  static const char hex[] = "0123456789abcdef";
+  device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS];
+  size_t count = device_config_copy_hid_hosts(hosts);
+  char ids[DEVICE_CONFIG_MAX_HID_HOSTS * (DEVICE_CONFIG_HID_KEY_ID_SIZE * 2 + 1)] = {0};
+  size_t offset = 0;
+  for (size_t host = 0; host < count; host++) {
+    if (offset) ids[offset++] = ',';
+    for (size_t byte = 0; byte < DEVICE_CONFIG_HID_KEY_ID_SIZE; byte++) {
+      ids[offset++] = hex[hosts[host].id[byte] >> 4];
+      ids[offset++] = hex[hosts[host].id[byte] & 0x0f];
+    }
+  }
+  wipe(hosts, sizeof(hosts));
+  char line[192];
+  snprintf(line, sizeof(line), "OK HOST LIST ids=%s capacity=%u", ids,
+           (unsigned)DEVICE_CONFIG_MAX_HID_HOSTS);
+  reply(line);
+}
+
 static void fingerprint_command(char *arguments) {
   if (!require_authorized()) return;
   uint32_t slot = 0;
@@ -229,6 +249,7 @@ static void handle_command(void) {
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);
   else if (strncmp(command, "HOST ADD ", 9) == 0) host_add(command + 9);
   else if (strncmp(command, "HOST REMOVE ", 12) == 0) host_remove(command + 12);
+  else if (strcmp(command, "HOST LIST") == 0) host_list();
   else if (strncmp(command, "FINGER ", 7) == 0) fingerprint_command(command + 7);
   else if (strcmp(command, "RESET FACTORY") == 0) factory_reset();
   else if (strncmp(command, "OTA BEGIN ", 10) == 0) ota_begin(command + 10);

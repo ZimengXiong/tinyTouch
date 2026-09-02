@@ -31,6 +31,12 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn('"hid_key"', source)
         self.assertNotIn('"hid_hosts"', source)
 
+    def test_host_listing_is_read_only_and_uses_lowercase_ids(self) -> None:
+        console = self.source("config_console.c")
+        self.assertIn('strcmp(command, "HOST LIST")', console)
+        self.assertIn('"0123456789abcdef"', console)
+        self.assertIn('"OK HOST LIST ids=%s capacity=%u"', console)
+
     def test_ota_stages_without_changing_the_current_runtime(self) -> None:
         console = self.source("config_console.c")
         update = self.source("firmware_update.c")
