@@ -354,6 +354,13 @@ static void touch_hid_task(void *arg) {
   TickType_t next_recovery = 0;
 
   while (true) {
+    // Console commands such as PIV setup own the fingerprint session. Do not
+    // let background HID/PIV handling capture the same finger or type into
+    // macOS while that command is awaiting its explicit authorization.
+    if (fingerprint_prompted_authorization_active()) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
     TickType_t now = xTaskGetTickCount();
     bool present = fingerprint_present_hint();
 

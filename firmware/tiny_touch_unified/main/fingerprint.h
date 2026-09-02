@@ -15,6 +15,7 @@ bool fingerprint_present_hint(void);
 void fingerprint_led_idle(void);
 fingerprint_match_t fingerprint_authorize_poll_match(void);
 bool fingerprint_authorize_prompted(void (*prompt)(void));
+bool fingerprint_prompted_authorization_active(void);
 int fingerprint_count(void);
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message));
 bool fingerprint_delete(uint16_t slot);

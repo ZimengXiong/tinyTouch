@@ -26,6 +26,7 @@ static const uint8_t FP_LED_FUNC_STEADY = 3;
 
 static uint8_t current_led = 0xff;
 static SemaphoreHandle_t fp_mutex;
+static volatile bool prompted_authorization_active;
 static bool sensor_ready;
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -405,15 +406,23 @@ static bool clear_stale_fingerprint_image(void) {
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   // Own the sensor before prompting. Otherwise the higher-priority background
   // authentication task can capture the prompted touch first.
-  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  prompted_authorization_active = true;
+  bool ok = false;
+  if (!fp_take(FINGER_WAIT_MS + 1000)) goto done;
   if (!clear_stale_fingerprint_image()) {
     fp_give();
-    return false;
+    goto done;
   }
   if (prompt) prompt();
-  bool ok = fingerprint_authorize_locked();
+  ok = fingerprint_authorize_locked();
   fp_give();
+done:
+  prompted_authorization_active = false;
   return ok;
+}
+
+bool fingerprint_prompted_authorization_active(void) {
+  return prompted_authorization_active;
 }
 
 int fingerprint_count(void) {
