@@ -18,6 +18,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import tty
 import time
 import urllib.request
 from pathlib import Path
@@ -496,6 +497,7 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
     device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
     master, slave = pty.openpty()
     port = os.ttyname(slave)
+    tty.setraw(slave)
     state = {"mode": "piv", "hosts": set()}
     stopped = threading.Event()
 
