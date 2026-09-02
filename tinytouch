@@ -1169,6 +1169,29 @@ def helper_job_loaded() -> bool:
     return result.returncode == 0
 
 
+def helper_job_status() -> dict[str, object]:
+    result = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return {"loaded": False, "state": "not_loaded"}
+    state_match = re.search(r"^\s*state = ([A-Za-z]+)\s*$", result.stdout, re.MULTILINE)
+    pid_match = re.search(r"^\s*pid = ([0-9]+)\s*$", result.stdout, re.MULTILINE)
+    exit_match = re.search(r"^\s*last exit code = (-?[0-9]+)\s*$", result.stdout, re.MULTILINE)
+    value: dict[str, object] = {
+        "loaded": True,
+        "state": state_match.group(1) if state_match else "waiting",
+    }
+    if pid_match:
+        value["pid"] = int(pid_match.group(1))
+    if exit_match:
+        value["last_exit_code"] = int(exit_match.group(1))
+    return value
+
+
 def helper_service_schema() -> int:
     try:
         payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
@@ -2925,6 +2948,60 @@ def command_logs(args: argparse.Namespace) -> None:
         say("\n".join(lines[-args.lines :]))
 
 
+def recent_diagnostics(limit: int) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for path in (HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines[-limit:]:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("event"), str):
+                records.append(value)
+    return records[-limit:]
+
+
+def command_diagnostics(args: argparse.Namespace) -> None:
+    """Emit a secret-free machine-readable support snapshot."""
+    ports = []
+    try:
+        import serial.tools.list_ports  # type: ignore
+
+        for item in serial.tools.list_ports.comports():
+            if item.device in detect_ports():
+                ports.append({
+                    "port": item.device,
+                    "vid": item.vid,
+                    "pid": item.pid,
+                    "serial": item.serial_number,
+                    "location": item.location,
+                })
+    except ImportError:
+        ports = [{"port": value} for value in detect_ports()]
+    snapshot = {
+        "schema": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cli_version": CLI_VERSION,
+        "macos_version": platform.mac_ver()[0],
+        "architecture": platform.machine(),
+        "service": helper_job_status(),
+        "service_schema": helper_service_schema(),
+        "devices": ports,
+        "recent_events": recent_diagnostics(args.lines),
+    }
+    payload = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        destination = Path(args.output).expanduser().resolve()
+        atomic_write_bytes(destination, payload.encode("utf-8"))
+        say(f"Diagnostics written to {destination}.")
+    else:
+        say(payload.rstrip())
+
+
 def command_uninstall(_args: argparse.Namespace) -> None:
     """Remove executable service components while preserving user data."""
     remove_helper()
@@ -3085,6 +3162,14 @@ def parser() -> argparse.ArgumentParser:
     add_verbose_option(logs)
     logs.add_argument("--lines", type=int, default=40)
     logs.set_defaults(func=command_logs)
+
+    diagnostics = sub.add_parser(
+        "diagnostics", help="write a structured support snapshot without Keychain secrets"
+    )
+    add_verbose_option(diagnostics)
+    diagnostics.add_argument("--lines", type=int, default=100)
+    diagnostics.add_argument("--output", help="write private JSON to this path")
+    diagnostics.set_defaults(func=command_diagnostics)
 
     uninstall = sub.add_parser(
         "uninstall", help="remove the CLI service while preserving credentials and settings"

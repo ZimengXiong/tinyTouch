@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 import plistlib
 import tempfile
 import unittest
@@ -603,6 +604,31 @@ class PackagingTests(unittest.TestCase):
             self.assertTrue(executable.exists())
             self.assertTrue(state.exists())
             keychain_delete.assert_not_called()
+
+    def test_diagnostics_are_structured_private_and_secret_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagnostics.json"
+            args = cli.parser().parse_args([
+                "diagnostics", "--lines", "5", "--output", str(output)
+            ])
+            with (
+                mock.patch.object(cli, "detect_ports", return_value=[]),
+                mock.patch.object(cli, "helper_job_status", return_value={
+                    "loaded": True, "state": "running", "pid": 42,
+                }),
+                mock.patch.object(cli, "helper_service_schema", return_value=2),
+                mock.patch.object(cli, "recent_diagnostics", return_value=[{
+                    "event": "worker.connected", "device_id": "TT-DEVICE",
+                }]),
+                mock.patch.object(cli, "say"),
+            ):
+                cli.command_diagnostics(args)
+            snapshot = json.loads(output.read_text())
+            self.assertEqual(snapshot["schema"], 1)
+            self.assertEqual(snapshot["service"]["state"], "running")
+            self.assertEqual(snapshot["recent_events"][0]["event"], "worker.connected")
+            self.assertNotIn("password", output.read_text().lower())
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
 
 class ParserTests(unittest.TestCase):
