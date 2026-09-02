@@ -172,7 +172,20 @@ def is_terminal(command: str, line: str) -> bool:
     return len(words) > 1 and verb in grouped and fields[1] == words[1]
 
 
-def human_error(line: str) -> str:
+def human_error(line: str, *, touch_prompted: bool = False) -> str:
+    """Turn compact device failures into the next useful user action."""
+    if line == "ERR AUTH":
+        if touch_prompted:
+            return (
+                "Fingerprint authorization expired without an enrolled match. "
+                "Keep your finger off the sensor until this prompt, then touch it once "
+                "and hold it still. If the sensor turns red before you touch, run "
+                "'tinytouch status'; it must report sensor=ready."
+            )
+        return (
+            "Fingerprint authorization did not start because the sensor was busy or "
+            "unavailable. Run 'tinytouch status'; it must report sensor=ready before retrying."
+        )
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -286,9 +299,19 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
                     if line == "EVENT TOUCH" and not touch_prompted:
                         say("Touch the fingerprint sensor now.")
                         touch_prompted = True
+                    elif line == "EVENT LIFT":
+                        say("Lift your finger from the sensor.")
+                    elif line == "EVENT TOUCH_AGAIN":
+                        say("Touch the same finger again now.")
                     if is_terminal(command, line):
                         break
     except Exception as exc:
+        if "Device not configured" in str(exc):
+            raise ToolError(
+                "tinyTouch's USB serial port became unavailable while this command was starting. "
+                "No fingerprint result was recorded. Wait two seconds and run the command again; "
+                "do not unplug it unless 'tinytouch status' cannot find the device."
+            ) from exc
         raise ToolError(f"Could not communicate with tinyTouch on {port}: {exc}") from exc
     finally:
         if was_loaded:
@@ -296,7 +319,7 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
     if not lines or not is_terminal(command, lines[-1]):
         raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
     if lines[-1].startswith("ERR "):
-        raise ToolError(human_error(lines[-1]))
+        raise ToolError(human_error(lines[-1], touch_prompted=touch_prompted))
     return lines
 
 

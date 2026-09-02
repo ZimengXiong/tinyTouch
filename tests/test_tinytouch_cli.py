@@ -36,6 +36,10 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertTrue(cli.is_terminal("FINGER DELETE 1", "OK FINGER"))
         self.assertFalse(cli.is_terminal("SET MODE HID", "OK STATUS mode=hid"))
 
+    def test_auth_failure_explains_whether_touch_started(self):
+        self.assertIn("expired", cli.human_error("ERR AUTH", touch_prompted=True))
+        self.assertIn("did not start", cli.human_error("ERR AUTH"))
+
     def test_status_requires_a_terminal_status_line(self):
         with mock.patch.object(cli, "serial_command", return_value=["OK STATUS protocol=6 mode=hid sensor=ready hosts=1"]):
             result = cli.status("/dev/cu.TT-1234")
