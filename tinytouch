@@ -163,7 +163,11 @@ def notify(title: str, message: str) -> None:
     """Show a native macOS notification; failures do not hide the text prompt."""
     if sys.platform != "darwin":
         return
-    subprocess.run(["osascript", "-e", f'display notification {message!r} with title {title!r}'], check=False)
+    script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
+    subprocess.run(
+        ["osascript", "-e", script], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def ask(prompt: str) -> str:
@@ -209,6 +213,24 @@ def choose_port(explicit: str | None) -> str:
 def current_port(port: str) -> str:
     """Use the current macOS CDC node after the device re-enumerates."""
     return port if Path(port).exists() else choose_port(None)
+
+
+def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
+    """Wait for a physical disconnect followed by a USB serial reconnect."""
+    deadline = time.monotonic() + timeout
+    disconnected = False
+    while time.monotonic() < deadline:
+        ports = detect_ports()
+        if not disconnected:
+            if port not in ports:
+                disconnected = True
+                say("Device disconnected. Waiting for it to reconnect...")
+        elif port in ports:
+            return port
+        elif len(ports) == 1:
+            return ports[0]
+        time.sleep(0.1)
+    raise ToolError("Timed out waiting for tinyTouch to be unplugged and reconnected.")
 
 
 def is_terminal(command: str, line: str) -> bool:
@@ -724,11 +746,16 @@ def command_setup(args: argparse.Namespace) -> None:
             sensor_ready(device)
             device = status(port)
     if mode_changed:
-        command = f"tinytouch setup --mode {mode}"
-        notify("tinyTouch mode changed", f"Unplug and reconnect tinyTouch, then run: {command}")
+        notify("tinyTouch mode changed", "Unplug tinyTouch and reconnect it normally.")
         say(f"{mode.upper()} mode was selected.")
         say("Unplug tinyTouch and reconnect it normally.")
-        say(f"Then run '{command}' again to finish setup.")
+        say("Waiting for the device...")
+        reconnected_port = wait_for_reconnect(port)
+        say("Device reconnected. Continuing setup...")
+        resumed = argparse.Namespace(**vars(args))
+        resumed.mode = mode
+        resumed.port = reconnected_port
+        command_setup(resumed)
         return
     if piv_rescan_needed:
         device = fresh_status(port, {"piv": "ready"})
@@ -757,7 +784,11 @@ def command_mode(args: argparse.Namespace) -> None:
         remove_helper()
     notify("tinyTouch mode changed", "Unplug tinyTouch and reconnect it normally.")
     say(f"{args.mode.upper()} mode was selected.")
-    say("Unplug tinyTouch and reconnect it normally to activate the mode.")
+    say("Unplug tinyTouch and reconnect it normally.")
+    say("Waiting for the device...")
+    reconnected_port = wait_for_reconnect(port)
+    fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    say(f"{args.mode.upper()} mode is active.")
 
 
 def command_config(args: argparse.Namespace) -> None:
