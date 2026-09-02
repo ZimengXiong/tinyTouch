@@ -1,0 +1,49 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+concurrency:
+  group: production-documentation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: release-publishing
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Build and deploy documentation
+        run: |
+          npx --yes vercel@59.1.3 pull --yes --environment=production --token "$VERCEL_TOKEN"
+          npx --yes vercel@59.1.3 build --prod --token "$VERCEL_TOKEN"
+          npx --yes vercel@59.1.3 deploy --prebuilt --prod --token "$VERCEL_TOKEN"
+      - name: Verify documentation and firmware downloads
+        run: |
+          curl -fsSL --max-time 30 https://docs.tinytouch.dev/customer/setup \
+            | grep -q 'releases/latest/download/install.sh'
+          curl -fsSL --max-time 30 https://docs.tinytouch.dev/flash \
+            | grep -q '<title>Flash tinyTouch'
+          curl -fsSL --max-time 60 \
+            'https://docs.tinytouch.dev/api/github-release?file=tiny_touch_unified.bin' \
+            -o firmware.bin
+          test "$(stat -c %s firmware.bin)" -gt 100000

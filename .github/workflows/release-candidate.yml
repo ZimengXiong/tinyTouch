@@ -5,6 +5,7 @@ on:
     branches: [main, "beta/**"]
     paths-ignore:
       - channels/**
+      - docs/**
 
 concurrency:
   group: release-candidate-${{ github.ref }}
