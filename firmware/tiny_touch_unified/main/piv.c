@@ -220,8 +220,24 @@ static size_t encoded_len_size(size_t len) {
 static size_t apdu_le(const uint8_t *apdu, size_t apdu_len, size_t default_len) {
   if (apdu_len == 4) return default_len;
   if (apdu_len == 5) return apdu[4] == 0 ? 256 : apdu[4];
-  uint8_t lc = apdu[4];
-  if (apdu_len > 5 + lc) return apdu[5 + lc] == 0 ? 256 : apdu[5 + lc];
+  if (apdu[4] == 0x00) {
+    if (apdu_len == 7) {
+      size_t le = ((size_t)apdu[5] << 8) | apdu[6];
+      return le == 0 ? 65536 : le;
+    }
+    if (apdu_len < 7) return default_len;
+    size_t lc = ((size_t)apdu[5] << 8) | apdu[6];
+    size_t data_end = 7 + lc;
+    if (apdu_len == data_end + 2) {
+      size_t le = ((size_t)apdu[data_end] << 8) | apdu[data_end + 1];
+      return le == 0 ? 65536 : le;
+    }
+    return default_len;
+  }
+  size_t data_end = 5 + apdu[4];
+  if (apdu_len == data_end + 1) {
+    return apdu[data_end] == 0 ? 256 : apdu[data_end];
+  }
   return default_len;
 }
 
@@ -277,13 +293,17 @@ static bool read_lc_data(const uint8_t *apdu, size_t apdu_len,
   if (apdu[4] == 0x00) {
     if (apdu_len < 7) return false;
     size_t lc = ((size_t)apdu[5] << 8) | apdu[6];
-    if (lc > apdu_len - 7) return false;
+    size_t data_end = 7 + lc;
+    if (lc == 0 || (apdu_len != data_end && apdu_len != data_end + 2)) {
+      return false;
+    }
     *data = apdu + 7;
     *data_len = lc;
     return true;
   }
-  uint8_t lc = apdu[4];
-  if ((size_t)lc > apdu_len - 5) return false;
+  size_t lc = apdu[4];
+  size_t data_end = 5 + lc;
+  if (apdu_len != data_end && apdu_len != data_end + 1) return false;
   *data = apdu + 5;
   *data_len = lc;
   return true;

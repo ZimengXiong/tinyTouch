@@ -297,6 +297,21 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("if (ins != 0xc0)", dispatch)
         self.assertIn("if (!apdu || !response || response_cap < 2)", wrapper)
 
+    def test_piv_apdu_lengths_are_exact_for_short_and_extended_cases(self):
+        source = (MAIN / "piv.c").read_text()
+        parser = source.split("static bool read_lc_data", 1)[1].split(
+            "static bool tlv_read_len", 1
+        )[0]
+        response_length = source.split("static size_t apdu_le", 1)[1].split(
+            "static bool respond_maybe_chunked", 1
+        )[0]
+
+        self.assertIn("apdu_len != data_end && apdu_len != data_end + 2", parser)
+        self.assertIn("apdu_len != data_end && apdu_len != data_end + 1", parser)
+        self.assertIn("lc == 0", parser)
+        self.assertIn("apdu_len == data_end + 2", response_length)
+        self.assertIn("apdu_len == data_end + 1", response_length)
+
     def test_console_rejects_wrapped_numbers_and_reopened_first_setup(self):
         source = (MAIN / "config_console.c").read_text()
         parser = source.split("static bool parse_unsigned", 1)[1].split(
@@ -434,7 +449,7 @@ class FirmwareInvariantTests(unittest.TestCase):
         source = (MAIN / "piv.c").read_text()
         self.assertIn("piv_mutex", source)
         self.assertIn("data_len > sizeof(chained_apdu_data) - chained_apdu_data_len", source)
-        self.assertIn("lc > apdu_len - 7", source)
+        self.assertIn("apdu_len != data_end && apdu_len != data_end + 2", source)
 
     def test_piv_provisioning_is_all_or_nothing(self):
         source = (MAIN / "piv.c").read_text()
