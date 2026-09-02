@@ -51,6 +51,7 @@ HELPER_LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
 HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
 HELPER_SUSPEND_PATH = SUPPORT_DIR / "helper-suspend"
+HELPER_SUSPEND_ACK_PATH = SUPPORT_DIR / "helper-suspend-ack"
 INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
@@ -1188,8 +1189,10 @@ def unload_helper() -> bool:
     if not was_running:
         return False
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
     temporary = HELPER_SUSPEND_PATH.with_suffix(".tmp")
     temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
+    temporary.chmod(0o600)
     temporary.replace(HELPER_SUSPEND_PATH)
     for pattern in helper_process_patterns():
         subprocess.run(
@@ -1198,10 +1201,17 @@ def unload_helper() -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    # Keep the launchd job registered. KeepAlive restarts the helper, which sees
-    # HELPER_SUSPEND_PATH and waits without opening the serial port. If this CLI
-    # is killed, the helper detects the stale owner PID and resumes by itself.
-    time.sleep(0.4)
+    # Keep the launchd job registered. KeepAlive restarts the helper, which
+    # acknowledges the suspension before waiting without the serial port.
+    deadline = time.monotonic() + 6
+    while helper_processes_running() and not HELPER_SUSPEND_ACK_PATH.exists():
+        if time.monotonic() >= deadline:
+            HELPER_SUSPEND_PATH.unlink(missing_ok=True)
+            raise ToolError(
+                "The HID background service did not release the serial port. "
+                "Run 'tinytouch logs --lines 100' for details."
+            )
+        time.sleep(0.05)
     return was_running
 
 
@@ -1219,11 +1229,13 @@ def remove_helper() -> None:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     HELPER_SUSPEND_PATH.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
     LAUNCH_AGENT.unlink(missing_ok=True)
 
 
 def load_helper() -> None:
     HELPER_SUSPEND_PATH.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
     if helper_job_loaded():
         return
     run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])

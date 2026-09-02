@@ -30,6 +30,7 @@ PAIRING_SERVICE = "tinyTouch-pairing"
 PREFERRED_SERIAL = "B8F862FB478C"
 STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 SUSPEND_PATH = STATE_DIR / "helper-suspend"
+SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
@@ -623,14 +624,22 @@ def run(port: str | None, once: bool) -> None:
 
 def wait_for_cli_suspension() -> None:
     """Wait while a live CLI process owns the serial port suspension."""
+    SUSPEND_ACK_PATH.unlink(missing_ok=True)
     while SUSPEND_PATH.exists():
         try:
             owner_pid = int(SUSPEND_PATH.read_text(encoding="ascii").strip())
             os.kill(owner_pid, 0)
         except (OSError, ValueError):
             SUSPEND_PATH.unlink(missing_ok=True)
+            SUSPEND_ACK_PATH.unlink(missing_ok=True)
             return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = SUSPEND_ACK_PATH.with_suffix(".tmp")
+        temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
+        temporary.chmod(0o600)
+        temporary.replace(SUSPEND_ACK_PATH)
         time.sleep(0.2)
+    SUSPEND_ACK_PATH.unlink(missing_ok=True)
 
 
 def self_test(device_id: str = PREFERRED_SERIAL) -> None:

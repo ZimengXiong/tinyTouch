@@ -1,5 +1,6 @@
 import importlib.util
 import hashlib
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -191,6 +192,21 @@ class HelperProtocolTests(unittest.TestCase):
     def test_oversized_password_is_refused(self):
         with self.assertRaises(ValueError):
             helper.translate_password(b"x" * 161, None)
+
+    def test_stale_cli_suspension_is_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            suspend = Path(directory) / "suspend"
+            acknowledgement = Path(directory) / "ack"
+            suspend.write_text("999999\n")
+            acknowledgement.write_text("old\n")
+            with (
+                mock.patch.object(helper, "SUSPEND_PATH", suspend),
+                mock.patch.object(helper, "SUSPEND_ACK_PATH", acknowledgement),
+                mock.patch.object(helper.os, "kill", side_effect=ProcessLookupError),
+            ):
+                helper.wait_for_cli_suspension()
+            self.assertFalse(suspend.exists())
+            self.assertFalse(acknowledgement.exists())
 
 
 if __name__ == "__main__":
