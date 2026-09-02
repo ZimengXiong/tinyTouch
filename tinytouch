@@ -438,7 +438,14 @@ def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
 
 
 def status(port: str) -> dict[str, str]:
-    return fields_from(serial_command(port, "STATUS", timeout=4), "OK STATUS")
+    deadline = time.monotonic() + 6.0
+    while True:
+        try:
+            return fields_from(serial_command(port, "STATUS", timeout=4), "OK STATUS")
+        except ToolError as exc:
+            if "USB serial port became unavailable" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
 
 
 def protocol6(device: dict[str, str]) -> None:
