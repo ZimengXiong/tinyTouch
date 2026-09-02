@@ -122,6 +122,9 @@ class PackagingTests(unittest.TestCase):
         payload = plistlib.loads(cli.launch_agent_contents(python))
         self.assertEqual(payload["ProgramArguments"], [str(python), str(cli.HELPER)])
         self.assertTrue(payload["KeepAlive"])
+        self.assertEqual(payload["ProcessType"], "Background")
+        self.assertEqual(payload["ThrottleInterval"], 10)
+        self.assertEqual(payload["EnvironmentVariables"]["TINYTOUCH_SERVICE_SCHEMA"], "2")
         self.assertEqual(payload["StandardOutPath"], str(cli.HELPER_LOG_PATH))
         self.assertNotIn("/tmp/", payload["StandardOutPath"])
 
@@ -136,9 +139,11 @@ class PackagingTests(unittest.TestCase):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         self.assertNotIn('"bootout"', unload)
         self.assertIn("HELPER_SUSPEND_PATH", unload)
-        self.assertIn("HELPER_SUSPEND_PATH.unlink", load)
-        self.assertIn("def wait_for_cli_suspension", helper)
-        self.assertIn("os.kill(owner_pid, 0)", helper)
+        self.assertIn("ForegroundLease", unload)
+        self.assertNotIn('"pkill"', unload)
+        self.assertIn("HELPER_LEASE.release", load)
+        self.assertIn("LeaseObserver", helper)
+        self.assertIn('diagnostic("manager.resumed")', helper)
 
     def test_factory_reset_removes_all_local_device_credentials(self):
         args = SimpleNamespace(port=None, yes=True)

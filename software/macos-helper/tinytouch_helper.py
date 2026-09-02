@@ -46,7 +46,6 @@ HEARTBEAT_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
-KEYCHAIN_RETRY_SECONDS = 60.0
 MAX_EVENT_AUTHENTICATORS = 8
 MAX_COUNTER = (1 << 64) - 1
 MAX_SCORE = (1 << 31) - 1
@@ -496,7 +495,11 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     return lines, remainder
 
 
-def serve_port(port: str, once: bool = False) -> None:
+def serve_port(
+    port: str,
+    once: bool = False,
+    stop_event: threading.Event | None = None,
+) -> None:
     device_id = port_identity(port)
     password = load_passwords(device_id)
     pairing_key = pairing_keychain_get(device_id)
@@ -505,11 +508,14 @@ def serve_port(port: str, once: bool = False) -> None:
     last_port_check = 0.0
     last_received = time.monotonic()
     heartbeat_sent_at: float | None = None
-    serial_buffer = b""
+    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
         with open_serial(port) as ser:
-            print(f"helper listening on {port} ({device_id})", flush=True)
+            diagnostic("worker.connected", device_id=device_id, port=port)
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    diagnostic("worker.drained", device_id=device_id, port=port)
+                    return
                 chunk = ser.read(256)
                 if not chunk:
                     # pyserial can leave a descriptor open after macOS removes
@@ -517,10 +523,13 @@ def serve_port(port: str, once: bool = False) -> None:
                     # simply times out forever, so the manager never gets a
                     # chance to open the device again after wake.
                     now = time.monotonic()
-                    if (serial_buffer and now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS):
-                        print(f"discarded incomplete serial event from {device_id}",
-                              file=sys.stderr, flush=True)
-                        serial_buffer = b""
+                    if now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
+                        if decoder.discard_partial():
+                            diagnostic(
+                                "protocol.partial_frame_expired",
+                                level="warning",
+                                device_id=device_id,
+                            )
                     if now - last_port_check >= 1.0:
                         last_port_check = now
                         if port not in device_ports():
@@ -539,13 +548,19 @@ def serve_port(port: str, once: bool = False) -> None:
                     continue
                 last_received = time.monotonic()
                 heartbeat_sent_at = None
-                lines, serial_buffer = split_serial_lines(serial_buffer, chunk)
-                for raw in lines:
-                    line = raw.decode("utf-8", "replace").strip()
+                for raw in decoder.feed(chunk):
+                    try:
+                        line = raw.decode("ascii").strip()
+                    except UnicodeDecodeError:
+                        diagnostic(
+                            "protocol.frame_rejected",
+                            level="warning",
+                            device_id=device_id,
+                            reason="non_ascii",
+                        )
+                        continue
                     if line == "PONG":
                         continue
-                    if line:
-                        print(f"{device_id}: {line}", flush=True)
                     line = resynchronize_event(line, device_id)
                     if not (line.startswith("EV ") or line.startswith("EV2 ")):
                         continue
@@ -558,7 +573,11 @@ def serve_port(port: str, once: bool = False) -> None:
                         ser.write(reply.encode("ascii"))
                         ser.flush()
                         remember_nonce(state, line.split()[1], device_id)
-                        print(f"sent encrypted password to {device_id}", flush=True)
+                        diagnostic(
+                            "protocol.password_delivered",
+                            device_id=device_id,
+                            fingerprint_slot=int(line.split()[3]),
+                        )
                         if once:
                             return
                 time.sleep(0.01)
@@ -567,79 +586,146 @@ def serve_port(port: str, once: bool = False) -> None:
         pairing_key = b"\x00" * len(pairing_key)
 
 
+class DeviceEndpoint(NamedTuple):
+    device_id: str
+    port: str
+    location: str
+
+
+def device_endpoints() -> list[DeviceEndpoint]:
+    endpoints: list[DeviceEndpoint] = []
+    for item in serial.tools.list_ports.comports():
+        if not (
+            item.vid == 0x303A
+            and item.pid == 0x4001
+            and isinstance(item.serial_number, str)
+            and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
+        ):
+            continue
+        endpoints.append(
+            DeviceEndpoint(
+                normalize_serial(item.serial_number),
+                item.device,
+                item.location if isinstance(item.location, str) else "",
+            )
+        )
+    return sorted(endpoints, key=lambda endpoint: (endpoint.device_id, endpoint.port))
+
+
 def device_ports() -> list[str]:
-    return sorted(
-        port.device
-        for port in serial.tools.list_ports.comports()
-        if port.vid == 0x303A
-        and port.pid == 0x4001
-        and isinstance(port.serial_number, str)
-        and port.serial_number.upper().startswith("TT-")
-    )
+    return [endpoint.port for endpoint in device_endpoints()]
 
 
 def credentials_exist(device_id: str) -> bool:
     return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
 
 
+class Worker:
+    def __init__(self, endpoint: DeviceEndpoint):
+        self.endpoint = endpoint
+        self.stop_event = threading.Event()
+        self.error: BaseException | None = None
+        self.planned_stop = False
+        self.thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"tinyTouch-{endpoint.device_id}",
+        )
+
+    def _run(self) -> None:
+        try:
+            serve_port(self.endpoint.port, stop_event=self.stop_event)
+        except Exception as exc:
+            self.error = exc
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.planned_stop = True
+        self.stop_event.set()
+
+
 def run_manager() -> None:
-    workers: dict[str, threading.Thread] = {}
-    failed_attempts: dict[str, float] = {}
-    keychain_retry_after: dict[str, float] = {}
+    workers: dict[str, Worker] = {}
+    failures: dict[str, int] = {}
+    retry_after: dict[str, float] = {}
+    backoff = BackoffPolicy(initial=0.25, maximum=30.0)
+    lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
+    active_lease_nonce: str | None = None
+    diagnostic("manager.started", pid=os.getpid())
     while True:
         now = time.monotonic()
-        for port, worker in list(workers.items()):
-            if not worker.is_alive():
-                worker.join()
-                del workers[port]
-                failed_attempts[port] = now
-        for port in device_ports():
-            if port in workers:
+        lease = lease_observer.active()
+        if lease is not None:
+            for worker in workers.values():
+                worker.stop()
+            for device_id, worker in list(workers.items()):
+                if not worker.thread.is_alive():
+                    worker.thread.join()
+                    del workers[device_id]
+            if not workers:
+                lease_observer.acknowledge(lease)
+                if active_lease_nonce != lease.nonce:
+                    diagnostic("manager.suspended", owner_pid=lease.pid)
+                    active_lease_nonce = lease.nonce
+            time.sleep(0.05)
+            continue
+        if active_lease_nonce is not None:
+            diagnostic("manager.resumed")
+            active_lease_nonce = None
+
+        endpoints = {endpoint.device_id: endpoint for endpoint in device_endpoints()}
+        for device_id, worker in list(workers.items()):
+            current = endpoints.get(device_id)
+            if current is None or current.port != worker.endpoint.port:
+                worker.stop()
+            if worker.thread.is_alive():
                 continue
-            if now - failed_attempts.get(port, 0.0) < 15.0:
+            worker.thread.join()
+            del workers[device_id]
+            if worker.planned_stop:
+                retry_after[device_id] = now
                 continue
-            device_id = port_identity(port)
-            if now < keychain_retry_after.get(device_id, 0.0):
+            failures[device_id] = failures.get(device_id, 0) + 1
+            delay = backoff.delay(failures[device_id])
+            retry_after[device_id] = now + delay
+            diagnostic(
+                "worker.failed",
+                level="warning",
+                device_id=device_id,
+                error_type=type(worker.error).__name__ if worker.error else "unexpected_exit",
+                retry_seconds=round(delay, 3),
+            )
+
+        for device_id, endpoint in endpoints.items():
+            if device_id in workers or now < retry_after.get(device_id, 0.0):
                 continue
             try:
-                if not credentials_exist(device_id):
-                    continue
+                configured = credentials_exist(device_id)
             except KeychainError as exc:
-                keychain_retry_after[device_id] = now + KEYCHAIN_RETRY_SECONDS
-                print(
-                    f"Keychain access for {device_id} failed; retrying in "
-                    f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
-                    file=sys.stderr, flush=True,
+                failures[device_id] = failures.get(device_id, 0) + 1
+                delay = backoff.delay(failures[device_id])
+                retry_after[device_id] = now + delay
+                diagnostic(
+                    "keychain.unavailable",
+                    level="warning",
+                    device_id=device_id,
+                    status=getattr(exc, "status", None),
+                    retry_seconds=round(delay, 3),
                 )
                 continue
-            keychain_retry_after.pop(device_id, None)
-            worker = threading.Thread(
-                target=managed_worker,
-                args=(port, device_id, keychain_retry_after),
-                daemon=True,
-                name=f"tinyTouch-{device_id}",
-            )
-            workers[port] = worker
+            if not configured:
+                diagnostic("worker.credentials_missing", level="warning", device_id=device_id)
+                retry_after[device_id] = now + 30
+                continue
+            worker = Worker(endpoint)
+            workers[device_id] = worker
             worker.start()
-        time.sleep(1)
-
-
-def managed_worker(
-    port: str, device_id: str | None = None,
-    keychain_retry_after: dict[str, float] | None = None,
-) -> None:
-    try:
-        serve_port(port)
-    except KeychainError as exc:
-        if keychain_retry_after is not None and device_id is not None:
-            keychain_retry_after[device_id] = time.monotonic() + KEYCHAIN_RETRY_SECONDS
-        print(
-            f"worker for {port} stopped because Keychain access failed; retrying in "
-            f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
-            file=sys.stderr, flush=True,
-        )
-    except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
-        print(f"worker for {port} stopped: {exc}", file=sys.stderr, flush=True)
+            failures[device_id] = 0
+            retry_after.pop(device_id, None)
+            diagnostic("worker.started", device_id=device_id, port=endpoint.port)
+        time.sleep(0.1)
 
 
 def run(port: str | None, once: bool) -> None:
@@ -657,23 +743,14 @@ def run(port: str | None, once: bool) -> None:
 
 
 def wait_for_cli_suspension() -> None:
-    """Wait while a live CLI process owns the serial port suspension."""
-    SUSPEND_ACK_PATH.unlink(missing_ok=True)
-    while SUSPEND_PATH.exists():
-        try:
-            owner_pid = int(SUSPEND_PATH.read_text(encoding="ascii").strip())
-            os.kill(owner_pid, 0)
-        except (OSError, ValueError):
-            SUSPEND_PATH.unlink(missing_ok=True)
-            SUSPEND_ACK_PATH.unlink(missing_ok=True)
+    """Compatibility entry point; manager now observes leases continuously."""
+    observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
+    while True:
+        record = observer.active()
+        if record is None:
             return
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        temporary = SUSPEND_ACK_PATH.with_suffix(".tmp")
-        temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
-        temporary.chmod(0o600)
-        temporary.replace(SUSPEND_ACK_PATH)
+        observer.acknowledge(record)
         time.sleep(0.2)
-    SUSPEND_ACK_PATH.unlink(missing_ok=True)
 
 
 def self_test(device_id: str = PREFERRED_SERIAL) -> None:
@@ -723,6 +800,8 @@ def main() -> None:
     if args.self_test:
         self_test(args.device_id)
         return
+    failures = 0
+    backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     while True:
         try:
             wait_for_cli_suspension()
@@ -730,16 +809,16 @@ def main() -> None:
             return
         except KeyboardInterrupt:
             raise
-        except KeychainError as exc:
-            print(
-                f"Keychain access failed; retrying in {KEYCHAIN_RETRY_SECONDS:.0f} "
-                f"seconds: {exc}",
-                file=sys.stderr, flush=True,
-            )
-            time.sleep(KEYCHAIN_RETRY_SECONDS)
         except Exception as exc:
-            print(f"top-level restart after error: {exc!r}", file=sys.stderr, flush=True)
-            time.sleep(1)
+            failures += 1
+            delay = backoff.delay(failures)
+            diagnostic(
+                "manager.restart",
+                level="error",
+                error_type=type(exc).__name__,
+                retry_seconds=round(delay, 3),
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

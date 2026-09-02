@@ -78,6 +78,16 @@ HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
 if not FROZEN and str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 
+from tinytouch_runtime import (  # type: ignore  # noqa: E402
+    ForegroundLease,
+    LeaseBusyError,
+    LeaseProtocolError,
+    atomic_write_bytes,
+    atomic_write_json,
+)
+
+HELPER_LEASE: ForegroundLease | None = None
+
 
 class ToolError(RuntimeError):
     pass
@@ -1097,12 +1107,7 @@ def helper_state_path(account: str) -> Path:
 
 
 def save_keyboard_layout(account: str, layout: str) -> None:
-    destination = keyboard_settings_path(account)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"keyboard_layout": layout}, separators=(",", ":")),
-                         encoding="utf-8")
-    temporary.replace(destination)
+    atomic_write_json(keyboard_settings_path(account), {"keyboard_layout": layout})
 
 
 def ensure_helper_environment() -> Path:
@@ -1143,8 +1148,12 @@ def launch_agent_contents(python: Path) -> bytes:
         "ProgramArguments": arguments,
         "RunAtLoad": True,
         "KeepAlive": True,
+        "ProcessType": "Background",
+        "ThrottleInterval": 10,
+        "ExitTimeOut": 5,
         "StandardOutPath": str(HELPER_LOG_PATH),
         "StandardErrorPath": str(HELPER_ERROR_LOG_PATH),
+        "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "2"},
     }
     return plistlib.dumps(payload, sort_keys=False)
 
@@ -1185,37 +1194,29 @@ def helper_processes_running() -> bool:
 
 
 def unload_helper() -> bool:
+    global HELPER_LEASE
     was_running = helper_job_loaded() or helper_processes_running()
     if not was_running:
         return False
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
-    temporary = HELPER_SUSPEND_PATH.with_suffix(".tmp")
-    temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
-    temporary.chmod(0o600)
-    temporary.replace(HELPER_SUSPEND_PATH)
-    for pattern in helper_process_patterns():
-        subprocess.run(
-            ["pkill", "-TERM", "-f", pattern],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    # Keep the launchd job registered. KeepAlive restarts the helper, which
-    # acknowledges the suspension before waiting without the serial port.
-    deadline = time.monotonic() + 6
-    while helper_processes_running() and not HELPER_SUSPEND_ACK_PATH.exists():
-        if time.monotonic() >= deadline:
-            HELPER_SUSPEND_PATH.unlink(missing_ok=True)
-            raise ToolError(
-                "The HID background service did not release the serial port. "
-                "Run 'tinytouch logs --lines 100' for details."
-            )
-        time.sleep(0.05)
+    if HELPER_LEASE is not None:
+        return True
+    lease = ForegroundLease(HELPER_SUSPEND_PATH, HELPER_SUSPEND_ACK_PATH)
+    try:
+        lease.acquire(wait_for_ack=True)
+    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
+        raise ToolError(
+            f"Could not acquire the tinyTouch device from the HID background service: {exc} "
+            "Run 'tinytouch logs --lines 100' for details."
+        ) from exc
+    HELPER_LEASE = lease
     return was_running
 
 
 def remove_helper() -> None:
+    global HELPER_LEASE
+    if HELPER_LEASE is not None:
+        HELPER_LEASE.release()
+        HELPER_LEASE = None
     if LAUNCH_AGENT.exists():
         subprocess.run(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
@@ -1223,19 +1224,16 @@ def remove_helper() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    for pattern in helper_process_patterns():
-        subprocess.run(
-            ["pkill", "-TERM", "-f", pattern], check=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
     HELPER_SUSPEND_PATH.unlink(missing_ok=True)
     HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
     LAUNCH_AGENT.unlink(missing_ok=True)
 
 
 def load_helper() -> None:
-    HELPER_SUSPEND_PATH.unlink(missing_ok=True)
-    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
+    global HELPER_LEASE
+    if HELPER_LEASE is not None:
+        HELPER_LEASE.release()
+        HELPER_LEASE = None
     if helper_job_loaded():
         return
     run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
@@ -1251,7 +1249,7 @@ def install_helper(python: Path) -> None:
         HELPER_LOG_DIR.chmod(0o700)
     except OSError:
         pass
-    LAUNCH_AGENT.write_bytes(launch_agent_contents(python))
+    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
     if not HELPER_SUSPENDED:
         load_helper()
 
