@@ -29,6 +29,25 @@ class SerialFramingTests(unittest.TestCase):
         self.assertEqual(helper.resynchronize_event(f"EV partial{intact}"), intact)
 
 
+class WorkerStateMachineTests(unittest.TestCase):
+    def test_worker_failure_has_explicit_terminal_phase(self):
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.example", "1-1")
+        with mock.patch.object(helper, "serve_port", side_effect=OSError("injected")):
+            worker = helper.Worker(endpoint)
+            self.assertEqual(worker.phase, helper.WorkerPhase.CREATED)
+            worker.start()
+            worker.thread.join()
+        self.assertEqual(worker.phase, helper.WorkerPhase.FAILED)
+        self.assertIsInstance(worker.error, OSError)
+
+    def test_worker_drain_has_explicit_phase(self):
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.example", "1-1")
+        worker = helper.Worker(endpoint)
+        worker.stop()
+        self.assertEqual(worker.phase, helper.WorkerPhase.DRAINING)
+        self.assertTrue(worker.stop_event.is_set())
+
+
 class HelperProtocolTests(unittest.TestCase):
     @staticmethod
     def decrypt_response(key, nonce, response):

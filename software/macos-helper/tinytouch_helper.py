@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from enum import Enum
 import hashlib
 import hmac
 import json
@@ -637,6 +638,7 @@ class Worker:
         self.stop_event = threading.Event()
         self.error: BaseException | None = None
         self.planned_stop = False
+        self.phase = WorkerPhase.CREATED
         self.thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -648,13 +650,33 @@ class Worker:
             serve_port(self.endpoint.port, stop_event=self.stop_event)
         except Exception as exc:
             self.error = exc
+            self.phase = WorkerPhase.FAILED
+        else:
+            self.phase = WorkerPhase.STOPPED
 
     def start(self) -> None:
+        self.phase = WorkerPhase.RUNNING
         self.thread.start()
 
     def stop(self) -> None:
         self.planned_stop = True
+        self.phase = WorkerPhase.DRAINING
         self.stop_event.set()
+
+
+class WorkerPhase(Enum):
+    CREATED = "created"
+    RUNNING = "running"
+    DRAINING = "draining"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class ManagerPhase(Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    DRAINING = "draining"
+    SUSPENDED = "suspended"
 
 
 def run_manager() -> None:
@@ -664,11 +686,27 @@ def run_manager() -> None:
     backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
     active_lease_nonce: str | None = None
-    diagnostic("manager.started", pid=os.getpid())
+    phase = ManagerPhase.STARTING
+
+    def transition(target: ManagerPhase, reason: str) -> None:
+        nonlocal phase
+        if phase == target:
+            return
+        diagnostic(
+            "manager.transition",
+            previous=phase.value,
+            current=target.value,
+            reason=reason,
+        )
+        phase = target
+
+    diagnostic("manager.started", pid=os.getpid(), phase=phase.value)
+    transition(ManagerPhase.RUNNING, "startup_complete")
     while True:
         now = time.monotonic()
         lease = lease_observer.active()
         if lease is not None:
+            transition(ManagerPhase.DRAINING, "foreground_lease")
             for worker in workers.values():
                 worker.stop()
             for device_id, worker in list(workers.items()):
@@ -677,6 +715,7 @@ def run_manager() -> None:
                     del workers[device_id]
             if not workers:
                 lease_observer.acknowledge(lease)
+                transition(ManagerPhase.SUSPENDED, "workers_drained")
                 if active_lease_nonce != lease.nonce:
                     diagnostic("manager.suspended", owner_pid=lease.pid)
                     active_lease_nonce = lease.nonce
@@ -685,6 +724,7 @@ def run_manager() -> None:
         if active_lease_nonce is not None:
             diagnostic("manager.resumed")
             active_lease_nonce = None
+        transition(ManagerPhase.RUNNING, "lease_released")
 
         endpoints = {endpoint.device_id: endpoint for endpoint in device_endpoints()}
         for device_id, worker in list(workers.items()):

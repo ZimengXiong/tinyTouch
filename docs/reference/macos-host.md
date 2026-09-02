@@ -186,7 +186,7 @@ generations. This allows recovery or reinstall without erasing user-owned state.
 
 Helper logs use one JSON object per line. Event names include:
 
-- `manager.started`, `manager.suspended`, and `manager.resumed`
+- `manager.started`, `manager.transition`, `manager.suspended`, and `manager.resumed`
 - `worker.started`, `worker.connected`, `worker.failed`, and `worker.drained`
 - `keychain.unavailable`
 - `protocol.frame_rejected`, `protocol.event_rejected`, and
