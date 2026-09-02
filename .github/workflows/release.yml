@@ -285,36 +285,3 @@ jobs:
             echo "Candidate wait time: ${CANDIDATE_WAIT_SECONDS:-not reached}s"
             echo "Baseline: seven rebuild releases had a 233s median; their publish-only jobs had an 11s median."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy-docs:
-    needs: promote
-    if: ${{ success() && !contains(github.event.workflow_run.head_branch, 'beta/') }}
-    runs-on: ubuntu-latest
-    environment: release-publishing
-    permissions:
-      contents: read
-    env:
-      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.tag || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
-      - name: Build and deploy documentation
-        run: |
-          npx --yes vercel@59.1.3 pull --yes --environment=production --token "$VERCEL_TOKEN"
-          npx --yes vercel@59.1.3 build --prod --token "$VERCEL_TOKEN"
-          npx --yes vercel@59.1.3 deploy --prebuilt --prod --token "$VERCEL_TOKEN"
-      - name: Verify documentation
-        run: |
-          curl -fsSL --max-time 30 https://docs.tinytouch.dev/customer/setup \
-            | grep -q 'releases/latest/download/install.sh'
-          curl -fsSL --max-time 30 https://docs.tinytouch.dev/flash \
-            | grep -q '<title>Flash tinyTouch'
