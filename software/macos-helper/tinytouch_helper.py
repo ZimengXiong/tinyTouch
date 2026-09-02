@@ -20,10 +20,14 @@ from typing import NamedTuple
 import serial
 import serial.tools.list_ports
 try:
-    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
+    from tinytouch_keychain import (
+        KeychainError, get_password, has_password, set_background_mode, set_password,
+    )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
+    from tinytouch_keychain import (
+        KeychainError, get_password, has_password, set_background_mode, set_password,
+    )
 from tinytouch_runtime import (
     BackoffPolicy,
     LeaseObserver,
@@ -800,6 +804,7 @@ def main() -> None:
     if args.self_test:
         self_test(args.device_id)
         return
+    set_background_mode()
     failures = 0
     backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     while True:
