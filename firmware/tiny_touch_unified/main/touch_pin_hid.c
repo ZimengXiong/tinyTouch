@@ -351,6 +351,7 @@ static void touch_hid_task(void *arg) {
     .state_started = xTaskGetTickCount(),
     .presence_armed = false,
   };
+  TickType_t next_recovery = 0;
 
   while (true) {
     TickType_t now = xTaskGetTickCount();
@@ -372,7 +373,18 @@ static void touch_hid_task(void *arg) {
 
     // Presence is the sole trigger for a capture. Idle operation never sends
     // sensor commands and therefore never flashes a failure indication.
-    if (!present || !runtime.presence_armed || !fingerprint_is_ready() || !tud_hid_ready()) {
+    if (!fingerprint_is_ready()) {
+      // Recover in the background after a transient UART error. Throttle this
+      // path so a disconnected sensor cannot monopolize the task.
+      if (now >= next_recovery) {
+        next_recovery = now + pdMS_TO_TICKS(2000);
+        fingerprint_recover();
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    if (!present || !runtime.presence_armed || !tud_hid_ready()) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }

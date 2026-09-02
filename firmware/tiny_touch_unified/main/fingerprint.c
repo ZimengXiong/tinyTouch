@@ -353,6 +353,28 @@ bool fingerprint_is_ready(void) {
   return sensor_ready_snapshot();
 }
 
+bool fingerprint_recover(void) {
+  if (!fp_take(3000)) return false;
+
+  // A USB reconnect must not be required to recover one interrupted UART
+  // transaction. Flush stale bytes, reapply the known sensor baud rate, and
+  // verify the sensor in place. This does not erase state or restart either
+  // processor.
+  uart_flush_input(FP_UART);
+  uart_set_baudrate(FP_UART, 57600);
+  const uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
+  bool ok = false;
+  for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+    uint8_t confirm = 0xff;
+    ok = fp_command(0x13, params, sizeof(params), &confirm, NULL, NULL, 1200) &&
+         confirm == 0x00;
+    if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  set_sensor_ready(ok);
+  fp_give();
+  return ok;
+}
+
 static bool fingerprint_authorize_locked(void) {
   uint8_t confirm = 0xff;
   ESP_LOGI(TAG, "finger present hint=%d", finger_present());
@@ -394,6 +416,16 @@ int fingerprint_count(void) {
   size_t data_len = sizeof(data);
   bool ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
             confirm == 0x00 && data_len == sizeof(data);
+  fp_give();
+  if (ok) return ((int)data[0] << 8) | data[1];
+
+  // Status and authorization use this call first. Recover and retry once so a
+  // single dropped UART response does not leave the device offline forever.
+  if (!fingerprint_recover() || !fp_take(2000)) return -1;
+  confirm = 0xff;
+  data_len = sizeof(data);
+  ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
+       confirm == 0x00 && data_len == sizeof(data);
   fp_give();
   return ok ? ((int)data[0] << 8) | data[1] : -1;
 }
