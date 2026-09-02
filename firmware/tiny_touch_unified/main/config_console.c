@@ -649,10 +649,11 @@ static void handle_command(void) {
     send_line(factory_reset() ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
     send_line("OK USB_RECONNECT");
-    vTaskDelay(pdMS_TO_TICKS(100));
-    tud_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(500));
-    tud_connect();
+    // USB descriptors are selected during TinyUSB initialization. Restart so
+    // a persisted mode change cannot reattach the descriptor from the prior
+    // mode and expose CCID while the device is configured for HID.
+    vTaskDelay(pdMS_TO_TICKS(150));
+    esp_restart();
   } else if (strcmp(command, "REBOOT") == 0) {
     send_line("OK REBOOT");
     vTaskDelay(pdMS_TO_TICKS(100));

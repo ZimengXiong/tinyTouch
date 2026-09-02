@@ -319,6 +319,25 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("piv_uses_provisioned_keys()", commit)
         self.assertIn("wipe_stored_identity();", piv)
 
+    def test_mode_reconnect_reboots_to_select_the_persisted_descriptor(self):
+        source = (MAIN / "config_console.c").read_text()
+        reconnect = source.split('strcmp(command, "USB_RECONNECT")', 1)[1].split(
+            '} else if (strcmp(command, "REBOOT")', 1
+        )[0]
+
+        self.assertIn("esp_restart()", reconnect)
+        self.assertNotIn("tud_disconnect()", reconnect)
+        self.assertNotIn("tud_connect()", reconnect)
+
+    def test_ccid_transport_rejects_nonzero_slots_and_ambiguous_lengths(self):
+        source = (MAIN / "usb_ccid.c").read_text()
+        handler = source.split("static void handle_message", 1)[1].split(
+            "static void ccid_init", 1
+        )[0]
+
+        self.assertIn("if (slot != 0)", handler)
+        self.assertIn("len != msg_len - 10", handler)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]
