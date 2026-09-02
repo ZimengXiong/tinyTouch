@@ -384,7 +384,10 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    if (!present || !runtime.presence_armed || !tud_hid_ready()) {
+    // Fingerprint capture must not depend on macOS having polled the HID
+    // endpoint. A fresh USB connection can delay that poll until a serial
+    // command runs; wait_hid_ready() handles delivery only after a match.
+    if (!present || !runtime.presence_armed) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
