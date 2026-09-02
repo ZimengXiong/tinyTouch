@@ -145,6 +145,19 @@ class HelperProtocolTests(unittest.TestCase):
         )
         self.assertIsNone(response)
 
+    def test_nonce_replay_is_case_insensitive(self):
+        key = bytes(range(32))
+        nonce = "AB" * 16
+        event_mac = helper.mac_hex(key, f"EV|{nonce}|1|1|1")
+        response = helper.handle_event(
+            f"EV {nonce} 1 1 1 {event_mac}",
+            b"password",
+            key,
+            {"seen_nonces": [nonce.lower()]},
+            persist_state=False,
+        )
+        self.assertIsNone(response)
+
     def test_nonce_can_be_recorded_after_serial_delivery(self):
         key = bytes(range(32))
         nonce = "0c" * 16

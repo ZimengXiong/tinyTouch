@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterable
+from typing import BinaryIO, Callable
 
 
 LEASE_SCHEMA = 1

@@ -333,7 +333,7 @@ def load_state(device_id: str | None = None) -> dict:
     seen = state.get("seen_nonces", [])
     if not isinstance(seen, list):
         seen = []
-    return {"seen_nonces": [str(item) for item in seen[-MAX_SEEN_NONCES:]]}
+    return {"seen_nonces": [str(item).lower() for item in seen[-MAX_SEEN_NONCES:]]}
 
 
 def save_state(state: dict, device_id: str | None = None) -> None:
@@ -342,7 +342,7 @@ def save_state(state: dict, device_id: str | None = None) -> None:
 
 def remember_nonce(state: dict, nonce: str, device_id: str | None = None) -> None:
     seen_nonces = state.setdefault("seen_nonces", [])
-    seen_nonces.append(nonce)
+    seen_nonces.append(nonce.lower())
     state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
     save_state(state, device_id)
 
@@ -430,7 +430,7 @@ def handle_event(
     fingerprint_slot = event.slot
     if state is not None:
         seen_nonces = state.setdefault("seen_nonces", [])
-        if nonce in seen_nonces:
+        if nonce.lower() in seen_nonces:
             diagnostic("protocol.event_rejected", level="warning", reason="replayed_nonce")
             return None
     selected_password = (password.get(fingerprint_slot) or password.get(0)) \
@@ -462,7 +462,7 @@ def handle_event(
         reply = f"PW2 {key_id} {nonce} {iv_hex} {ct_hex}"
     reply_mac = mac_hex(pairing_key, reply_material)
     if state is not None and record_nonce:
-        seen_nonces.append(nonce)
+        seen_nonces.append(nonce.lower())
         state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
         if persist_state:
             save_state(state, device_id)
