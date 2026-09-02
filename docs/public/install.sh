@@ -88,17 +88,27 @@ if [ "$actual_sha256" != "$release_sha256" ]; then
   exit 1
 fi
 
+if tar -tzf "$work_dir/tinytouch.tar.gz" | \
+  grep -Eq '(^/|(^|/)\.\.(/|$)|^tinytouch/\.tinytouch\.new$)'; then
+  echo 'The tinyTouch package contains an unsafe path. Stopping.' >&2
+  exit 1
+fi
 tar -C "$work_dir" -xzf "$work_dir/tinytouch.tar.gz"
 test -x "$work_dir/tinytouch/tinytouch"
 test -d "$work_dir/tinytouch/_internal"
+find "$work_dir/tinytouch" -type f -exec sh -c '
+  for candidate do
+    if file "$candidate" | grep -q "Mach-O"; then
+      codesign --verify --strict --verbose=2 "$candidate" || exit 1
+    fi
+  done
+' sh {} +
 support_dir="$HOME/Library/Application Support/tinyTouch"
 bundle="$support_dir/cli-$(printf %.16s "$release_sha256")"
 mkdir -p "$support_dir"
 if [ ! -d "$bundle" ]; then
   mv "$work_dir/tinytouch" "$bundle"
 fi
-xattr -dr com.apple.quarantine "$bundle" 2>/dev/null || true
-
 if { [ -d "$install_dir" ] && [ -w "$install_dir" ]; } || \
    { [ ! -e "$install_dir" ] && [ -w "${install_dir%/*}" ]; }; then
   mkdir -p "$install_dir"

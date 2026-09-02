@@ -8,6 +8,8 @@ venv_python="$project_dir/.venv/bin/python"
 version="${TINYTOUCH_VERSION:-$(tr -d '[:space:]' < "$project_dir/VERSION")}"
 output="$dist_dir/tinytouch.tar.gz"
 signing_identity="${TINYTOUCH_SIGNING_IDENTITY:-}"
+release_build="${TINYTOUCH_RELEASE_BUILD:-0}"
+notary_profile="${TINYTOUCH_NOTARY_PROFILE:-}"
 
 if [[ ! -x "$venv_python" ]]; then
   python3 -m venv "$project_dir/.venv"
@@ -54,6 +56,17 @@ if [[ -z "$signing_identity" ]]; then
   signing_identity="-"
 fi
 
+if [[ "$release_build" = 1 ]]; then
+  if [[ "$signing_identity" != "Developer ID Application:"* ]]; then
+    echo "Production builds require a Developer ID Application identity." >&2
+    exit 1
+  fi
+  if [[ -z "$notary_profile" ]]; then
+    echo "Production builds require TINYTOUCH_NOTARY_PROFILE." >&2
+    exit 1
+  fi
+fi
+
 bundle="$build_dir/bin/tinytouch"
 executable="$bundle/tinytouch"
 "$executable" _package_test
@@ -71,17 +84,41 @@ if [[ "$network_ok" -ne 1 ]]; then
   echo "tinyTouch release network smoke test failed after 3 attempts" >&2
   exit 1
 fi
-# A PyInstaller one-file binary extracts its bundled Python dylib at runtime.
-# Hardened runtime library validation rejects that extracted ad-hoc-signed dylib
-# because it does not share the outer Apple Development signature's Team ID.
-# Keep this non-notarized pre-production executable signed without hardened
-# runtime; production distribution should sign nested components in an app
-# bundle before enabling hardened runtime and notarization.
-codesign --force --timestamp=none --sign "$signing_identity" "$executable"
-codesign --verify --strict --verbose=2 "$executable"
+sign_arguments=(--force --sign "$signing_identity")
+if [[ "$signing_identity" = "Developer ID Application:"* ]]; then
+  sign_arguments+=(--options runtime --timestamp)
+else
+  sign_arguments+=(--timestamp=none)
+fi
+
+# Sign nested code before the launcher. PyInstaller's onedir bundle contains the
+# Python runtime and extension modules as separate Mach-O files.
+while IFS= read -r -d '' candidate; do
+  if [[ "$candidate" != "$executable" ]] && file "$candidate" | grep -q 'Mach-O'; then
+    codesign "${sign_arguments[@]}" "$candidate"
+  fi
+done < <(find "$bundle" -type f -print0)
+codesign "${sign_arguments[@]}" "$executable"
+while IFS= read -r -d '' candidate; do
+  if file "$candidate" | grep -q 'Mach-O'; then
+    codesign --verify --strict --verbose=2 "$candidate"
+  fi
+done < <(find "$bundle" -type f -print0)
+
+if [[ "$release_build" = 1 ]]; then
+  notarization_archive="$build_dir/tinytouch-notarization.zip"
+  ditto -c -k --keepParent "$bundle" "$notarization_archive"
+  xcrun notarytool submit "$notarization_archive" \
+    --keychain-profile "$notary_profile" --wait
+  spctl --assess --type execute --verbose=2 "$executable"
+fi
 rm -f "$output"
 tar -C "$build_dir/bin" -czf "$output" tinytouch
-codesign --verify --strict --verbose=2 "$executable"
+while IFS= read -r -d '' candidate; do
+  if file "$candidate" | grep -q 'Mach-O'; then
+    codesign --verify --strict --verbose=2 "$candidate"
+  fi
+done < <(find "$bundle" -type f -print0)
 
 print "Built $output ($version)"
 print "Signed executable with: $signing_identity"
