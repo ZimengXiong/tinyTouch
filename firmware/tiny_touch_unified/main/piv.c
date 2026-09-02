@@ -79,6 +79,8 @@ static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
 static uint8_t user_presence_slots_used;
 
+#define PIV_IDENTITY_SCHEMA 2
+
 static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
   if (deadline == 0) return false;
   int32_t remaining = (int32_t)(deadline - xTaskGetTickCount());
@@ -220,7 +222,8 @@ bool piv_create_identity(void) {
     ok = write_identity_part(handle, "cert9a", stored_cert_9a) &&
          write_identity_part(handle, "key9a", stored_key_9a) &&
          write_identity_part(handle, "cert9d", stored_cert_9d) &&
-         write_identity_part(handle, "key9d", stored_key_9d) && nvs_commit(handle) == ESP_OK;
+         write_identity_part(handle, "key9d", stored_key_9d) &&
+         nvs_set_u8(handle, "schema", PIV_IDENTITY_SCHEMA) == ESP_OK && nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
   } else {
     ok = false;
@@ -657,7 +660,9 @@ void piv_init(void) {
   bool have_provisioned_material = false;
   nvs_handle_t nvs_handle;
   if (nvs_open("piv_keys", NVS_READONLY, &nvs_handle) == ESP_OK) {
-    have_provisioned_material =
+    uint8_t schema = 0;
+    have_provisioned_material = nvs_get_u8(nvs_handle, "schema", &schema) == ESP_OK &&
+      schema == PIV_IDENTITY_SCHEMA &&
       load_nvs_string(nvs_handle, "cert9a", stored_cert_9a, sizeof(stored_cert_9a)) &&
       load_nvs_string(nvs_handle, "key9a", stored_key_9a, sizeof(stored_key_9a)) &&
       load_nvs_string(nvs_handle, "cert9d", stored_cert_9d, sizeof(stored_cert_9d)) &&
