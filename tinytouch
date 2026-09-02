@@ -13,6 +13,7 @@ import platform
 import plistlib
 import pty
 import re
+import select
 import secrets
 import ssl
 import subprocess
@@ -531,6 +532,9 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
         buffered = b""
         while not stopped.is_set():
             try:
+                readable, _, _ = select.select([master], [], [], 0.1)
+                if not readable:
+                    continue
                 chunk = os.read(master, 256)
             except OSError:
                 return
@@ -554,8 +558,9 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
         say("HID setup and bridge smoke test passed.")
     finally:
         stopped.set()
-        os.close(master)
+        worker.join(timeout=1)
         os.close(slave)
+        os.close(master)
         if previous_account is None:
             os.environ.pop("TINYTOUCH_DEVICE_ACCOUNT", None)
         else:
