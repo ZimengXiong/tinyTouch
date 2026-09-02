@@ -400,24 +400,22 @@ bool fingerprint_prompted_authorization_active(void) {
 }
 
 int fingerprint_count(void) {
-  if (!fp_take(2000)) return -1;
-  uint8_t confirm = 0xff;
-  uint8_t data[2];
-  size_t data_len = sizeof(data);
-  bool ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
-            confirm == 0x00 && data_len == sizeof(data);
-  fp_give();
-  if (ok) return ((int)data[0] << 8) | data[1];
-
-  // Status and authorization use this call first. Recover and retry once so a
-  // single dropped UART response does not leave the device offline forever.
-  if (!fingerprint_recover() || !fp_take(2000)) return -1;
-  confirm = 0xff;
-  data_len = sizeof(data);
-  ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
-       confirm == 0x00 && data_len == sizeof(data);
-  fp_give();
-  return ok ? ((int)data[0] << 8) | data[1] : -1;
+  for (unsigned attempt = 0; attempt < 3; attempt++) {
+    if (fp_take(2000)) {
+      uint8_t confirm = 0xff;
+      uint8_t data[2];
+      size_t data_len = sizeof(data);
+      bool ok = fp_command(0x1d, NULL, 0, &confirm, data, &data_len, 2000) &&
+                confirm == 0x00 && data_len == sizeof(data);
+      fp_give();
+      if (ok) return ((int)data[0] << 8) | data[1];
+    }
+    if (attempt < 2) {
+      fingerprint_recover();
+      vTaskDelay(pdMS_TO_TICKS(150));
+    }
+  }
+  return -1;
 }
 
 static bool wait_capture_template(uint8_t buffer_id, uint32_t timeout_ms) {
