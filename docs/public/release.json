@@ -1,6 +1,6 @@
 {
-  "version": "0.8.1",
-  "build": "853f0ac9036e",
+  "version": "0.8.2",
+  "build": "1ddab3dfbec8",
   "protocol": 5,
   "secureVersion": 0,
   "boards": [
@@ -9,7 +9,7 @@
   ],
   "firmware": {
     "factory": {
-      "version": "0.8.1",
+      "version": "0.8.2",
       "protocol": 5,
       "secureVersion": 0,
       "flashSize": "4MB",
@@ -21,7 +21,7 @@
           "file": "bootloader.bin",
           "address": 0,
           "size": 21488,
-          "sha256": "2d8707367630d7aa2da5b09af285ba92e138708016d6b6728341e2131d8e94f5"
+          "sha256": "94e51012e446358e95bbbe9ffc07129208ad6b78f5e9c382d9b54626be849302"
         },
         {
           "name": "Partition table",
@@ -35,7 +35,7 @@
           "file": "tiny_touch_unified.bin",
           "address": 65536,
           "size": 462848,
-          "sha256": "31fb246f55304229a660e97e1fb8cbc97adb1f3a47980f33557ed47d9b412651"
+          "sha256": "6a8502a5b1c72ce1458901957c7804ac006740347bbf85f961e57282e45b4e18"
         },
         {
           "name": "OTA state",
@@ -48,11 +48,11 @@
       "fullImage": {
         "file": "tiny_touch_factory_full.bin",
         "size": 2170880,
-        "sha256": "6f5e73160f17c08d792577f2c12868223a1b87a343c6f8658807922321d624cf"
+        "sha256": "d9ee26d2b81db8500b4f3d570939a50fd688f313484074971d732052a8230f7c"
       }
     },
     "recovery": {
-      "version": "0.8.1",
+      "version": "0.8.2",
       "protocol": 5,
       "secureVersion": 0,
       "flashSize": "4MB",
@@ -64,7 +64,7 @@
           "file": "recovery_bootloader.bin",
           "address": 0,
           "size": 21488,
-          "sha256": "04628c946491f56de62339c02b679cb6ccd378e380e6d6a2ae09c9358390371b"
+          "sha256": "57a4b2a0e24c9f092602a74468934b2a829d192dc7679c9a126ab85271b8520f"
         },
         {
           "name": "Partition table",
@@ -78,7 +78,7 @@
           "file": "tiny_touch_recovery.bin",
           "address": 65536,
           "size": 462848,
-          "sha256": "3981204ddff70c52b490c6c8923faa938a5d63f8b4a8a617af0decf0844f78c7"
+          "sha256": "623e6b1bd6864c368d8df81ca3caae3566752c785338914296b7a127c21fe1bc"
         },
         {
           "name": "OTA state",
@@ -91,14 +91,14 @@
       "fullImage": {
         "file": "tiny_touch_recovery_full.bin",
         "size": 2170880,
-        "sha256": "9a31252df1b4080829af21ef162679d32efcf7fe6b31219f6d917515164a4dbc"
+        "sha256": "10275a7610f00495c144df184d915c8555183dc5e198940d2c2dcbba54c60738"
       }
     }
   },
   "ota": {
     "file": "tiny_touch_unified.bin",
     "size": 462848,
-    "sha256": "31fb246f55304229a660e97e1fb8cbc97adb1f3a47980f33557ed47d9b412651"
+    "sha256": "6a8502a5b1c72ce1458901957c7804ac006740347bbf85f961e57282e45b4e18"
   },
   "migration": {
     "otaState": {
@@ -110,14 +110,14 @@
   "cli": {
     "macos-arm64": {
       "file": "tinytouch-macos-arm64.tar.gz",
-      "size": 12302731,
-      "sha256": "8ec774309d3eff861250cac4ed158e5ad47d4ffd47c02ac3ebee8c14520cd099",
+      "size": 12303415,
+      "sha256": "87fd3ae79a97b03448b383c85c8a703247a5c33d7b3abed1973826721d341348",
       "format": "tar.gz"
     },
     "macos-x86_64": {
       "file": "tinytouch-macos-x86_64.tar.gz",
-      "size": 13148322,
-      "sha256": "e7e97f8f2d97b243900218cce3e4ba4faf4bf9859cd1332e0a2994ce33577162",
+      "size": 13149679,
+      "sha256": "d6d5d6f8ab0b122081240a13de47754cea7df2164c68b5a46934a2e5f0306fc0",
       "format": "tar.gz"
     }
   }
