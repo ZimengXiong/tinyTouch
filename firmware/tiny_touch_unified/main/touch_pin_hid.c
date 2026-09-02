@@ -22,6 +22,7 @@ static const uint8_t ascii_to_keycode[128][2] = {HID_ASCII_TO_KEYCODE};
 static QueueHandle_t password_responses;
 static uint32_t event_counter;
 static volatile bool usb_sensor_probe_pending;
+static volatile TickType_t usb_sensor_probe_at;
 
 static void secure_wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -355,15 +356,16 @@ static void touch_hid_task(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
-    if (usb_sensor_probe_pending) {
-      // The sensor can finish its own boot after the ESP32 has already
-      // started. STATUS used to provide this probe accidentally; do it here
-      // after USB attach so touch works before any CLI command.
-      vTaskDelay(pdMS_TO_TICKS(500));
-      usb_sensor_probe_pending = false;
-      (void)fingerprint_count();
-    }
     TickType_t now = xTaskGetTickCount();
+    if (usb_sensor_probe_pending && now >= usb_sensor_probe_at) {
+      // Match the helper's successful post-enumeration STATUS probe. The
+      // sensor may finish booting after USB, so retry only until it responds.
+      if (fingerprint_count() >= 0) {
+        usb_sensor_probe_pending = false;
+      } else {
+        usb_sensor_probe_at = now + pdMS_TO_TICKS(1000);
+      }
+    }
     bool present = fingerprint_present_hint();
 
     // Require an observed release before accepting the next asserted level.
@@ -425,6 +427,7 @@ void touch_pin_hid_start(void) {
 
 void touch_pin_hid_usb_attached(void) {
   usb_sensor_probe_pending = true;
+  usb_sensor_probe_at = xTaskGetTickCount() + pdMS_TO_TICKS(500);
 }
 
 bool touch_pin_hid_submit_response(const char *response) {
