@@ -717,30 +717,36 @@ def command_setup(args: argparse.Namespace) -> None:
     # opening the CDC port. Keep that port open through the entire setup.
     remove_helper()
     piv_rescan_needed = False
+    mode_changed = False
     with foreground_session(port):
         device = status(port)
         protocol6(device)
         sensor_ready(device)
-        if mode == "hid":
+        if device.get("mode") != mode:
+            unlock(port)
+            serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
+            mode_changed = True
+        elif mode == "hid":
             unlock(port)
             configure_hid(port, device)
-            if device.get("mode") != "hid":
-                serial_command(port, "SET MODE HID", timeout=4)
-                device = fresh_status(port, {"mode": "hid"})
         else:
             unlock(port)
-            if device.get("mode") != "piv":
-                serial_command(port, "SET MODE PIV", timeout=4)
-                fresh_status(port, {"mode": "piv"})
             if device.get("piv") != "ready":
                 serial_command(port, "PIV CREATE", timeout=45)
                 piv_rescan_needed = True
-        if not piv_rescan_needed:
+        if not mode_changed and not piv_rescan_needed:
             enroll(port, args.skip_enroll)
             device = status(port)
             protocol6(device)
             sensor_ready(device)
             device = status(port)
+    if mode_changed:
+        command = f"tinytouch setup --mode {mode}"
+        notify("tinyTouch mode changed", f"Unplug and reconnect tinyTouch, then run: {command}")
+        say(f"{mode.upper()} mode was selected.")
+        say("Unplug tinyTouch and reconnect it normally.")
+        say(f"Then run '{command}' again to finish setup.")
+        return
     if piv_rescan_needed:
         device = fresh_status(port, {"piv": "ready"})
         enroll(port, args.skip_enroll)
@@ -764,12 +770,11 @@ def command_mode(args: argparse.Namespace) -> None:
     protocol6(device)
     unlock(port)
     serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
-    # Firmware may detach and attach USB to update descriptors. It must not
-    # restart the MCU. The caller can run status again after re-enumeration.
-    fresh_status(port, {"mode": args.mode.lower()})
     if args.mode == "piv":
         remove_helper()
-    say(f"{args.mode.upper()} mode is active live. No restart is required.")
+    notify("tinyTouch mode changed", "Unplug tinyTouch and reconnect it normally.")
+    say(f"{args.mode.upper()} mode was selected.")
+    say("Unplug tinyTouch and reconnect it normally to activate the mode.")
 
 
 def command_config(args: argparse.Namespace) -> None:
