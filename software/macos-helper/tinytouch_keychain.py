@@ -8,6 +8,16 @@ _CORE_FOUNDATION = ctypes.CDLL(
     "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 )
 _NOT_FOUND = -25300
+_BACKGROUND_MODE = False
+
+_STATUS_NAMES = {
+    -25308: "interaction_not_allowed",
+    -25293: "authentication_failed",
+    -25300: "item_not_found",
+    -25315: "interaction_required",
+    -25320: "data_not_available",
+    -34018: "missing_entitlement",
+}
 
 _SECURITY.SecKeychainFindGenericPassword.argtypes = [
     ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
@@ -38,6 +48,8 @@ _SECURITY.SecAccessCreate.argtypes = [
 _SECURITY.SecAccessCreate.restype = ctypes.c_int32
 _SECURITY.SecKeychainItemSetAccess.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _SECURITY.SecKeychainItemSetAccess.restype = ctypes.c_int32
+_SECURITY.SecKeychainSetUserInteractionAllowed.argtypes = [ctypes.c_bool]
+_SECURITY.SecKeychainSetUserInteractionAllowed.restype = ctypes.c_int32
 _CORE_FOUNDATION.CFStringCreateWithCString.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
 ]
@@ -46,8 +58,20 @@ _CORE_FOUNDATION.CFStringCreateWithCString.restype = ctypes.c_void_p
 
 class KeychainError(RuntimeError):
     def __init__(self, operation: str, status: int):
-        super().__init__(f"Keychain {operation} failed ({status})")
+        name = _STATUS_NAMES.get(status, "unknown")
+        super().__init__(f"Keychain {operation} failed ({name}, {status})")
         self.status = status
+        self.status_name = name
+        self.transient = status in {-25308, -25315, -25320}
+
+
+def set_background_mode() -> None:
+    """Disable Keychain UI in the unattended helper process."""
+    global _BACKGROUND_MODE
+    status = _SECURITY.SecKeychainSetUserInteractionAllowed(False)
+    if status != 0:
+        raise KeychainError("disable interaction", status)
+    _BACKGROUND_MODE = True
 
 
 def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
@@ -92,19 +116,30 @@ def _find(service: str, account: str, *, include_secret: bool):
     return status, item, length.value, secret
 
 
-def get_password(service: str, account: str) -> str | None:
+def get_password_bytes(service: str, account: str) -> bytearray | None:
+    """Copy a secret into caller-wipeable memory."""
     status, item, length, secret = _find(service, account, include_secret=True)
     if status == _NOT_FOUND:
         return None
     if status != 0:
         raise KeychainError("read", status)
     try:
-        return ctypes.string_at(secret, length).decode("utf-8")
+        return bytearray(ctypes.string_at(secret, length))
     finally:
         if secret:
             _SECURITY.SecKeychainItemFreeContent(None, secret)
         if item:
             _CORE_FOUNDATION.CFRelease(item)
+
+
+def get_password(service: str, account: str) -> str | None:
+    value = get_password_bytes(service, account)
+    if value is None:
+        return None
+    try:
+        return value.decode("utf-8")
+    finally:
+        value[:] = b"\x00" * len(value)
 
 
 def has_password(service: str, account: str) -> bool:

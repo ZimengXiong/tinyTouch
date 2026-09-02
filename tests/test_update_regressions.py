@@ -514,14 +514,27 @@ class UpdateRegressionTests(unittest.TestCase):
     def test_helper_keychain_denial_recovers_without_setup(self):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         manager = helper.split("def run_manager", 1)[1].split("def run(port", 1)[0]
-        self.assertIn("keychain_retry_after", manager)
-        self.assertIn("KEYCHAIN_RETRY_SECONDS", manager)
-        self.assertIn("retrying in", manager)
+        self.assertIn("BackoffPolicy", manager)
+        self.assertIn('"keychain.unavailable"', manager)
+        self.assertIn("retry_after", manager)
         self.assertNotIn("blocked_devices", manager)
         top = helper.split("def main()", 1)[1]
         self.assertNotIn("except BaseException", top)
-        self.assertIn("time.sleep(KEYCHAIN_RETRY_SECONDS)", top)
+        self.assertIn("backoff.delay(failures)", top)
+        self.assertIn("time.sleep(delay)", top)
         self.assertNotIn("parked until it is restarted", top)
+
+    def test_cli_generation_update_marks_loaded_helper_for_rebootstrap(self):
+        source = (ROOT / "tinytouch").read_text()
+        update = source.split("def _update_installed_cli_unlocked", 1)[1].split(
+            "def update_installed_cli", 1
+        )[0]
+        self.assertIn("HELPER_MIGRATION_PATH", update)
+        self.assertIn('"target_cli_sha256": expected_sha', update)
+        self.assertLess(
+            update.index("atomic_write_json("),
+            update.index("atomic_write_bytes("),
+        )
 
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
         source = (

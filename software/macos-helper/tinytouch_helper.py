@@ -5,23 +5,37 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from enum import Enum
 import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import serial
 import serial.tools.list_ports
 try:
-    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
+    from tinytouch_keychain import (
+        KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
+    )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from tinytouch_keychain import KeychainError, get_password, has_password, set_password
+    from tinytouch_keychain import (
+        KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
+    )
+from tinytouch_runtime import (
+    BackoffPolicy,
+    LeaseObserver,
+    SerialFrameDecoder,
+    atomic_write_json,
+    diagnostic,
+)
 
 
 SERVICE = "tinyTouch"
@@ -37,7 +51,9 @@ HEARTBEAT_TIMEOUT_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
-KEYCHAIN_RETRY_SECONDS = 60.0
+MAX_EVENT_AUTHENTICATORS = 8
+MAX_COUNTER = (1 << 64) - 1
+MAX_SCORE = (1 << 31) - 1
 
 # macOS virtual key codes for the physical keys used by TinyUSB's US ASCII map.
 _MAC_KEYCODES = {
@@ -100,18 +116,18 @@ def keychain_set(password: str, device_id: str = ACCOUNT) -> None:
     set_password(SERVICE, device_id, password)
 
 
-def keychain_get(device_id: str = ACCOUNT) -> bytes:
-    value = get_password(SERVICE, device_id)
+def keychain_get(device_id: str = ACCOUNT) -> bytearray:
+    value = get_password_bytes(SERVICE, device_id)
     if value is None:
         raise KeyError(f"No Keychain password for {device_id}")
-    return value.encode("utf-8")
+    return value
 
 
 def fingerprint_account(device_id: str, slot: int) -> str:
     return f"{device_id}:fingerprint:{slot}"
 
 
-def load_passwords(device_id: str) -> dict[int, bytes]:
+def load_passwords(device_id: str) -> dict[int, bytearray]:
     passwords = {0: keychain_get(device_id)}
     for slot in range(1, 6):
         account = fingerprint_account(device_id, slot)
@@ -217,11 +233,14 @@ def pairing_keychain_set(key_hex: str, device_id: str = PREFERRED_SERIAL) -> Non
     set_password(PAIRING_SERVICE, device_id, key.hex())
 
 
-def pairing_keychain_get(device_id: str = PREFERRED_SERIAL) -> bytes:
-    value = get_password(PAIRING_SERVICE, device_id)
+def pairing_keychain_get(device_id: str = PREFERRED_SERIAL) -> bytearray:
+    value = get_password_bytes(PAIRING_SERVICE, device_id)
     if value is None:
         raise KeyError(f"No Keychain pairing key for {device_id}")
-    return parse_pairing_key(value)
+    try:
+        return bytearray(parse_pairing_key(value.decode("ascii")))
+    finally:
+        value[:] = b"\x00" * len(value)
 
 
 def mac_hex(pairing_key: bytes, message: str) -> str:
@@ -270,7 +289,10 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     try:
         if not data:
             return b""
-        input_buffer = ctypes.create_string_buffer(data, len(data))
+        if isinstance(data, bytearray):
+            input_buffer = (ctypes.c_ubyte * len(data)).from_buffer(data)
+        else:
+            input_buffer = ctypes.create_string_buffer(data, len(data))
         output_buffer = ctypes.create_string_buffer(len(data))
         moved = ctypes.c_size_t()
         status = common_crypto.CCCryptorUpdate(
@@ -311,21 +333,16 @@ def load_state(device_id: str | None = None) -> dict:
     seen = state.get("seen_nonces", [])
     if not isinstance(seen, list):
         seen = []
-    return {"seen_nonces": [str(item) for item in seen[-MAX_SEEN_NONCES:]]}
+    return {"seen_nonces": [str(item).lower() for item in seen[-MAX_SEEN_NONCES:]]}
 
 
 def save_state(state: dict, device_id: str | None = None) -> None:
-    path = state_path(device_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(state, f, separators=(",", ":"))
-    tmp.replace(path)
+    atomic_write_json(state_path(device_id), state)
 
 
 def remember_nonce(state: dict, nonce: str, device_id: str | None = None) -> None:
     seen_nonces = state.setdefault("seen_nonces", [])
-    seen_nonces.append(nonce)
+    seen_nonces.append(nonce.lower())
     state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
     save_state(state, device_id)
 
@@ -340,6 +357,61 @@ def valid_hex(value: str, byte_len: int) -> bool:
     return True
 
 
+class AuthenticatedEvent(NamedTuple):
+    version: int
+    nonce: str
+    counter: int
+    slot: int
+    score: int
+    authenticator: str
+    key_id: str | None
+
+
+def parse_event(line: str, pairing_key: bytes) -> AuthenticatedEvent | None:
+    """Parse and authenticate one protocol-v5-compatible HID event."""
+    if not isinstance(line, str) or len(line.encode("utf-8", "replace")) > MAX_SERIAL_LINE_BYTES:
+        return None
+    parts = line.strip().split()
+    if not parts or parts[0] not in {"EV", "EV2"}:
+        return None
+    version = 1 if parts[0] == "EV" else 2
+    if version == 1 and len(parts) != 6:
+        return None
+    if version == 2 and not 6 <= len(parts) <= 5 + MAX_EVENT_AUTHENTICATORS:
+        return None
+    nonce, counter_text, slot_text, score_text = parts[1:5]
+    if not valid_hex(nonce, 16):
+        diagnostic("protocol.event_rejected", level="warning", reason="invalid_nonce")
+        return None
+    if not all(re.fullmatch(r"[0-9]+", item) for item in (counter_text, slot_text, score_text)):
+        return None
+    counter, slot, score = map(int, (counter_text, slot_text, score_text))
+    if not 0 <= counter <= MAX_COUNTER or slot not in range(1, 6) or not 0 <= score <= MAX_SCORE:
+        return None
+
+    key_id: str | None = None
+    if version == 1:
+        authenticator = parts[5].lower()
+        material = f"EV|{nonce}|{counter_text}|{slot_text}|{score_text}"
+    else:
+        key_id = hashlib.sha256(pairing_key).hexdigest()[:16]
+        authenticators: dict[str, str] = {}
+        for value in parts[5:]:
+            match = re.fullmatch(r"([0-9A-Fa-f]{16}):([0-9A-Fa-f]{64})", value)
+            if match is None or match.group(1).lower() in authenticators:
+                return None
+            authenticators[match.group(1).lower()] = match.group(2).lower()
+        authenticator = authenticators.get(key_id, "")
+        material = f"EV2|{key_id}|{nonce}|{counter_text}|{slot_text}|{score_text}"
+    if not valid_hex(authenticator, 32):
+        return None
+    expected = mac_hex(pairing_key, material)
+    if not hmac.compare_digest(expected, authenticator):
+        diagnostic("protocol.event_rejected", level="warning", reason="invalid_mac")
+        return None
+    return AuthenticatedEvent(version, nonce, counter, slot, score, authenticator, key_id)
+
+
 def handle_event(
     line: str,
     password: bytes | dict[int, bytes],
@@ -350,55 +422,36 @@ def handle_event(
     device_id: str | None = None,
     keyboard_map: dict[str, str] | None = None,
 ) -> str | None:
-    parts = line.strip().split()
-    if not parts or parts[0] not in {"EV", "EV2"}:
+    event = parse_event(line, pairing_key)
+    if event is None:
         return None
-    if parts[0] == "EV":
-        if len(parts) != 6:
-            return None
-        _, nonce, counter, slot, score, got_mac = parts
-        key_id = None
-        mac_material = f"EV|{nonce}|{counter}|{slot}|{score}"
-    else:
-        if len(parts) < 6:
-            return None
-        _, nonce, counter, slot, score, *authenticators = parts
-        key_id = hashlib.sha256(pairing_key).hexdigest()[:16]
-        prefix = f"{key_id}:"
-        match = next((item[len(prefix):] for item in authenticators
-                      if item.lower().startswith(prefix)), None)
-        if match is None:
-            return None
-        got_mac = match
-        mac_material = f"EV2|{key_id}|{nonce}|{counter}|{slot}|{score}"
-    try:
-        fingerprint_slot = int(slot)
-        fingerprint_score = int(score)
-    except ValueError:
-        return None
-    if fingerprint_slot not in range(1, 6) or fingerprint_score < 0:
-        return None
-    if not valid_hex(nonce, 16):
-        print("bad event nonce", file=sys.stderr)
-        return None
-    expected = mac_hex(pairing_key, mac_material)
-    if not hmac.compare_digest(expected, got_mac.lower()):
-        print("bad event mac", file=sys.stderr)
-        return None
+    nonce = event.nonce
+    key_id = event.key_id
+    fingerprint_slot = event.slot
     if state is not None:
         seen_nonces = state.setdefault("seen_nonces", [])
-        if nonce in seen_nonces:
-            print("replayed event nonce", file=sys.stderr)
+        if nonce.lower() in seen_nonces:
+            diagnostic("protocol.event_rejected", level="warning", reason="replayed_nonce")
             return None
     selected_password = (password.get(fingerprint_slot) or password.get(0)) \
         if isinstance(password, dict) else password
     if not selected_password:
-        print(f"no password configured for fingerprint {fingerprint_slot}", file=sys.stderr)
+        diagnostic(
+            "protocol.event_rejected",
+            level="warning",
+            reason="password_missing",
+            fingerprint_slot=fingerprint_slot,
+        )
         return None
     try:
         wire_password = translate_password(selected_password, keyboard_map)
     except (UnicodeError, ValueError) as exc:
-        print(f"password cannot be typed safely: {exc}", file=sys.stderr)
+        diagnostic(
+            "protocol.event_rejected",
+            level="warning",
+            reason="keyboard_layout_unrepresentable",
+            detail=str(exc),
+        )
         return None
     iv_hex, ct_hex = encrypt_password(pairing_key, nonce, wire_password)
     if key_id is None:
@@ -409,7 +462,7 @@ def handle_event(
         reply = f"PW2 {key_id} {nonce} {iv_hex} {ct_hex}"
     reply_mac = mac_hex(pairing_key, reply_material)
     if state is not None and record_nonce:
-        seen_nonces.append(nonce)
+        seen_nonces.append(nonce.lower())
         state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
         if persist_state:
             save_state(state, device_id)
@@ -426,11 +479,16 @@ def resynchronize_event(line: str, device_id: str = "") -> str:
     lost. Everything before the last event marker is unrecoverable, so drop it and keep
     the intact event behind it.
     """
-    marker = line.rfind("EV ")
+    markers = [line.rfind("EV "), line.rfind("EV2 ")]
+    marker = max(markers)
     if marker <= 0:
         return line
-    print(f"{device_id}: discarded truncated event before offset {marker}",
-          file=sys.stderr, flush=True)
+    diagnostic(
+        "protocol.truncated_prefix_discarded",
+        level="warning",
+        device_id=device_id,
+        offset=marker,
+    )
     return line[marker:]
 
 
@@ -462,8 +520,13 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     return lines, remainder
 
 
-def serve_port(port: str, once: bool = False) -> None:
-    device_id = port_identity(port)
+def serve_port(
+    port: str,
+    once: bool = False,
+    stop_event: threading.Event | None = None,
+    device_id: str | None = None,
+) -> None:
+    device_id = normalize_serial(device_id or "") or port_identity(port)
     password = load_passwords(device_id)
     pairing_key = pairing_keychain_get(device_id)
     state = load_state(device_id)
@@ -471,11 +534,14 @@ def serve_port(port: str, once: bool = False) -> None:
     last_port_check = 0.0
     last_received = time.monotonic()
     heartbeat_sent_at: float | None = None
-    serial_buffer = b""
+    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
         with open_serial(port) as ser:
-            print(f"helper listening on {port} ({device_id})", flush=True)
+            diagnostic("worker.connected", device_id=device_id, port=port)
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    diagnostic("worker.drained", device_id=device_id, port=port)
+                    return
                 chunk = ser.read(256)
                 if not chunk:
                     # pyserial can leave a descriptor open after macOS removes
@@ -483,10 +549,13 @@ def serve_port(port: str, once: bool = False) -> None:
                     # simply times out forever, so the manager never gets a
                     # chance to open the device again after wake.
                     now = time.monotonic()
-                    if (serial_buffer and now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS):
-                        print(f"discarded incomplete serial event from {device_id}",
-                              file=sys.stderr, flush=True)
-                        serial_buffer = b""
+                    if now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
+                        if decoder.discard_partial():
+                            diagnostic(
+                                "protocol.partial_frame_expired",
+                                level="warning",
+                                device_id=device_id,
+                            )
                     if now - last_port_check >= 1.0:
                         last_port_check = now
                         if port not in device_ports():
@@ -505,13 +574,19 @@ def serve_port(port: str, once: bool = False) -> None:
                     continue
                 last_received = time.monotonic()
                 heartbeat_sent_at = None
-                lines, serial_buffer = split_serial_lines(serial_buffer, chunk)
-                for raw in lines:
-                    line = raw.decode("utf-8", "replace").strip()
+                for raw in decoder.feed(chunk):
+                    try:
+                        line = raw.decode("ascii").strip()
+                    except UnicodeDecodeError:
+                        diagnostic(
+                            "protocol.frame_rejected",
+                            level="warning",
+                            device_id=device_id,
+                            reason="non_ascii",
+                        )
+                        continue
                     if line == "PONG":
                         continue
-                    if line:
-                        print(f"{device_id}: {line}", flush=True)
                     line = resynchronize_event(line, device_id)
                     if not (line.startswith("EV ") or line.startswith("EV2 ")):
                         continue
@@ -524,88 +599,206 @@ def serve_port(port: str, once: bool = False) -> None:
                         ser.write(reply.encode("ascii"))
                         ser.flush()
                         remember_nonce(state, line.split()[1], device_id)
-                        print(f"sent encrypted password to {device_id}", flush=True)
+                        diagnostic(
+                            "protocol.password_delivered",
+                            device_id=device_id,
+                            fingerprint_slot=int(line.split()[3]),
+                        )
                         if once:
                             return
                 time.sleep(0.01)
     finally:
-        password = {slot: b"\x00" * len(value) for slot, value in password.items()}
-        pairing_key = b"\x00" * len(pairing_key)
+        for value in password.values():
+            value[:] = b"\x00" * len(value)
+        pairing_key[:] = b"\x00" * len(pairing_key)
+
+
+class DeviceEndpoint(NamedTuple):
+    device_id: str
+    port: str
+    location: str
+
+
+def device_endpoints() -> list[DeviceEndpoint]:
+    endpoints: list[DeviceEndpoint] = []
+    for item in serial.tools.list_ports.comports():
+        if not (
+            item.vid == 0x303A
+            and item.pid == 0x4001
+            and isinstance(item.serial_number, str)
+            and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
+        ):
+            continue
+        endpoints.append(
+            DeviceEndpoint(
+                normalize_serial(item.serial_number),
+                item.device,
+                item.location if isinstance(item.location, str) else "",
+            )
+        )
+    return sorted(endpoints, key=lambda endpoint: (endpoint.device_id, endpoint.port))
 
 
 def device_ports() -> list[str]:
-    return sorted(
-        port.device
-        for port in serial.tools.list_ports.comports()
-        if port.vid == 0x303A
-        and port.pid == 0x4001
-        and isinstance(port.serial_number, str)
-        and port.serial_number.upper().startswith("TT-")
-    )
+    return [endpoint.port for endpoint in device_endpoints()]
 
 
 def credentials_exist(device_id: str) -> bool:
     return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
 
 
+class Worker:
+    def __init__(self, endpoint: DeviceEndpoint):
+        self.endpoint = endpoint
+        self.stop_event = threading.Event()
+        self.error: BaseException | None = None
+        self.planned_stop = False
+        self.phase = WorkerPhase.CREATED
+        self.started_at: float | None = None
+        self.thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"tinyTouch-{endpoint.device_id}",
+        )
+
+    def _run(self) -> None:
+        try:
+            serve_port(
+                self.endpoint.port,
+                stop_event=self.stop_event,
+                device_id=self.endpoint.device_id,
+            )
+        except Exception as exc:
+            self.error = exc
+            self.phase = WorkerPhase.FAILED
+        else:
+            self.phase = WorkerPhase.STOPPED
+
+    def start(self) -> None:
+        self.phase = WorkerPhase.RUNNING
+        self.started_at = time.monotonic()
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.planned_stop = True
+        self.phase = WorkerPhase.DRAINING
+        self.stop_event.set()
+
+
+class WorkerPhase(Enum):
+    CREATED = "created"
+    RUNNING = "running"
+    DRAINING = "draining"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class ManagerPhase(Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    DRAINING = "draining"
+    SUSPENDED = "suspended"
+
+
 def run_manager() -> None:
-    workers: dict[str, threading.Thread] = {}
-    failed_attempts: dict[str, float] = {}
-    keychain_retry_after: dict[str, float] = {}
+    workers: dict[str, Worker] = {}
+    failures: dict[str, int] = {}
+    retry_after: dict[str, float] = {}
+    backoff = BackoffPolicy(initial=0.25, maximum=30.0)
+    lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
+    active_lease_nonce: str | None = None
+    phase = ManagerPhase.STARTING
+
+    def transition(target: ManagerPhase, reason: str) -> None:
+        nonlocal phase
+        if phase == target:
+            return
+        diagnostic(
+            "manager.transition",
+            previous=phase.value,
+            current=target.value,
+            reason=reason,
+        )
+        phase = target
+
+    diagnostic("manager.started", pid=os.getpid(), phase=phase.value)
+    transition(ManagerPhase.RUNNING, "startup_complete")
     while True:
         now = time.monotonic()
-        for port, worker in list(workers.items()):
-            if not worker.is_alive():
-                worker.join()
-                del workers[port]
-                failed_attempts[port] = now
-        for port in device_ports():
-            if port in workers:
+        lease = lease_observer.active()
+        if lease is not None:
+            transition(ManagerPhase.DRAINING, "foreground_lease")
+            for worker in workers.values():
+                worker.stop()
+            for device_id, worker in list(workers.items()):
+                if not worker.thread.is_alive():
+                    worker.thread.join()
+                    del workers[device_id]
+            if not workers:
+                lease_observer.acknowledge(lease)
+                transition(ManagerPhase.SUSPENDED, "workers_drained")
+                if active_lease_nonce != lease.nonce:
+                    diagnostic("manager.suspended", owner_pid=lease.pid)
+                    active_lease_nonce = lease.nonce
+            time.sleep(0.05)
+            continue
+        if active_lease_nonce is not None:
+            diagnostic("manager.resumed")
+            active_lease_nonce = None
+        transition(ManagerPhase.RUNNING, "lease_released")
+
+        endpoints = {endpoint.device_id: endpoint for endpoint in device_endpoints()}
+        for device_id, worker in list(workers.items()):
+            current = endpoints.get(device_id)
+            if current is None or current.port != worker.endpoint.port:
+                worker.stop()
+            if worker.thread.is_alive():
                 continue
-            if now - failed_attempts.get(port, 0.0) < 15.0:
+            worker.thread.join()
+            del workers[device_id]
+            if worker.planned_stop:
+                retry_after[device_id] = now
                 continue
-            device_id = port_identity(port)
-            if now < keychain_retry_after.get(device_id, 0.0):
+            if worker.started_at is not None and now - worker.started_at >= 30:
+                failures[device_id] = 0
+            failures[device_id] = failures.get(device_id, 0) + 1
+            delay = backoff.delay(failures[device_id])
+            retry_after[device_id] = now + delay
+            diagnostic(
+                "worker.failed",
+                level="warning",
+                device_id=device_id,
+                error_type=type(worker.error).__name__ if worker.error else "unexpected_exit",
+                retry_seconds=round(delay, 3),
+            )
+
+        for device_id, endpoint in endpoints.items():
+            if device_id in workers or now < retry_after.get(device_id, 0.0):
                 continue
             try:
-                if not credentials_exist(device_id):
-                    continue
+                configured = credentials_exist(device_id)
             except KeychainError as exc:
-                keychain_retry_after[device_id] = now + KEYCHAIN_RETRY_SECONDS
-                print(
-                    f"Keychain access for {device_id} failed; retrying in "
-                    f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
-                    file=sys.stderr, flush=True,
+                failures[device_id] = failures.get(device_id, 0) + 1
+                delay = backoff.delay(failures[device_id])
+                retry_after[device_id] = now + delay
+                diagnostic(
+                    "keychain.unavailable",
+                    level="warning",
+                    device_id=device_id,
+                    status=getattr(exc, "status", None),
+                    retry_seconds=round(delay, 3),
                 )
                 continue
-            keychain_retry_after.pop(device_id, None)
-            worker = threading.Thread(
-                target=managed_worker,
-                args=(port, device_id, keychain_retry_after),
-                daemon=True,
-                name=f"tinyTouch-{device_id}",
-            )
-            workers[port] = worker
+            if not configured:
+                diagnostic("worker.credentials_missing", level="warning", device_id=device_id)
+                retry_after[device_id] = now + 30
+                continue
+            worker = Worker(endpoint)
+            workers[device_id] = worker
             worker.start()
-        time.sleep(1)
-
-
-def managed_worker(
-    port: str, device_id: str | None = None,
-    keychain_retry_after: dict[str, float] | None = None,
-) -> None:
-    try:
-        serve_port(port)
-    except KeychainError as exc:
-        if keychain_retry_after is not None and device_id is not None:
-            keychain_retry_after[device_id] = time.monotonic() + KEYCHAIN_RETRY_SECONDS
-        print(
-            f"worker for {port} stopped because Keychain access failed; retrying in "
-            f"{KEYCHAIN_RETRY_SECONDS:.0f} seconds: {exc}",
-            file=sys.stderr, flush=True,
-        )
-    except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
-        print(f"worker for {port} stopped: {exc}", file=sys.stderr, flush=True)
+            retry_after.pop(device_id, None)
+            diagnostic("worker.started", device_id=device_id, port=endpoint.port)
+        time.sleep(0.1)
 
 
 def run(port: str | None, once: bool) -> None:
@@ -615,7 +808,11 @@ def run(port: str | None, once: bool) -> None:
                 serve_port(port, once)
                 return
             except (OSError, serial.SerialException, subprocess.CalledProcessError) as exc:
-                print(f"serial reconnect after error: {exc}", file=sys.stderr, flush=True)
+                diagnostic(
+                    "worker.reconnect",
+                    level="warning",
+                    error_type=type(exc).__name__,
+                )
                 time.sleep(1)
     if once:
         raise SystemExit("--once requires --port when multiple-device mode is active")
@@ -623,23 +820,14 @@ def run(port: str | None, once: bool) -> None:
 
 
 def wait_for_cli_suspension() -> None:
-    """Wait while a live CLI process owns the serial port suspension."""
-    SUSPEND_ACK_PATH.unlink(missing_ok=True)
-    while SUSPEND_PATH.exists():
-        try:
-            owner_pid = int(SUSPEND_PATH.read_text(encoding="ascii").strip())
-            os.kill(owner_pid, 0)
-        except (OSError, ValueError):
-            SUSPEND_PATH.unlink(missing_ok=True)
-            SUSPEND_ACK_PATH.unlink(missing_ok=True)
+    """Compatibility entry point; manager now observes leases continuously."""
+    observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
+    while True:
+        record = observer.active()
+        if record is None:
             return
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        temporary = SUSPEND_ACK_PATH.with_suffix(".tmp")
-        temporary.write_text(f"{os.getpid()}\n", encoding="ascii")
-        temporary.chmod(0o600)
-        temporary.replace(SUSPEND_ACK_PATH)
+        observer.acknowledge(record)
         time.sleep(0.2)
-    SUSPEND_ACK_PATH.unlink(missing_ok=True)
 
 
 def self_test(device_id: str = PREFERRED_SERIAL) -> None:
@@ -689,6 +877,9 @@ def main() -> None:
     if args.self_test:
         self_test(args.device_id)
         return
+    set_background_mode()
+    failures = 0
+    backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     while True:
         try:
             wait_for_cli_suspension()
@@ -696,16 +887,16 @@ def main() -> None:
             return
         except KeyboardInterrupt:
             raise
-        except KeychainError as exc:
-            print(
-                f"Keychain access failed; retrying in {KEYCHAIN_RETRY_SECONDS:.0f} "
-                f"seconds: {exc}",
-                file=sys.stderr, flush=True,
-            )
-            time.sleep(KEYCHAIN_RETRY_SECONDS)
         except Exception as exc:
-            print(f"top-level restart after error: {exc!r}", file=sys.stderr, flush=True)
-            time.sleep(1)
+            failures += 1
+            delay = backoff.delay(failures)
+            diagnostic(
+                "manager.restart",
+                level="error",
+                error_type=type(exc).__name__,
+                retry_seconds=round(delay, 3),
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

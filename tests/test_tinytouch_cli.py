@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 import plistlib
 import tempfile
 import unittest
@@ -122,6 +123,9 @@ class PackagingTests(unittest.TestCase):
         payload = plistlib.loads(cli.launch_agent_contents(python))
         self.assertEqual(payload["ProgramArguments"], [str(python), str(cli.HELPER)])
         self.assertTrue(payload["KeepAlive"])
+        self.assertEqual(payload["ProcessType"], "Background")
+        self.assertEqual(payload["ThrottleInterval"], 10)
+        self.assertEqual(payload["EnvironmentVariables"]["TINYTOUCH_SERVICE_SCHEMA"], "2")
         self.assertEqual(payload["StandardOutPath"], str(cli.HELPER_LOG_PATH))
         self.assertNotIn("/tmp/", payload["StandardOutPath"])
 
@@ -136,9 +140,43 @@ class PackagingTests(unittest.TestCase):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         self.assertNotIn('"bootout"', unload)
         self.assertIn("HELPER_SUSPEND_PATH", unload)
-        self.assertIn("HELPER_SUSPEND_PATH.unlink", load)
-        self.assertIn("def wait_for_cli_suspension", helper)
-        self.assertIn("os.kill(owner_pid, 0)", helper)
+        self.assertIn("ForegroundLease", unload)
+        self.assertNotIn('"pkill"', unload)
+        self.assertIn("HELPER_LEASE.release", load)
+        self.assertIn("LeaseObserver", helper)
+        self.assertIn('diagnostic("manager.resumed")', helper)
+
+    def test_legacy_helper_migration_is_restartable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launch_agent = Path(directory) / "com.tinytouch.helper.plist"
+            migration = Path(directory) / "migration.json"
+            launch_agent.write_bytes(plistlib.dumps({
+                "Label": "com.tinytouch.helper",
+                "ProgramArguments": ["/old/tinytouch", "_helper"],
+                "KeepAlive": True,
+            }))
+            with (
+                mock.patch.object(cli, "LAUNCH_AGENT", launch_agent),
+                mock.patch.object(cli, "HELPER_MIGRATION_PATH", migration),
+                mock.patch.object(cli, "HELPER_LOG_PATH", Path(directory) / "helper.log"),
+                mock.patch.object(cli, "HELPER_ERROR_LOG_PATH", Path(directory) / "helper.err"),
+                mock.patch.object(cli.subprocess, "run") as subprocess_run,
+                mock.patch.object(cli, "run") as run,
+            ):
+                self.assertTrue(cli.migrate_helper_service(Path("/new/python")))
+                self.assertFalse(migration.exists())
+                payload = plistlib.loads(launch_agent.read_bytes())
+                self.assertEqual(
+                    payload["EnvironmentVariables"]["TINYTOUCH_SERVICE_SCHEMA"], "2"
+                )
+                subprocess_run.assert_called_once()
+                run.assert_called_once_with([
+                    "launchctl", "bootstrap", f"gui/{cli.os.getuid()}", str(launch_agent)
+                ])
+
+                migration.write_text("unfinished")
+                self.assertTrue(cli.migrate_helper_service(Path("/new/python")))
+                self.assertFalse(migration.exists())
 
     def test_factory_reset_removes_all_local_device_credentials(self):
         args = SimpleNamespace(port=None, yes=True)
@@ -500,6 +538,36 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertNotIn("top secret", " ".join(str(call) for call in say.call_args_list))
 
+    def test_legacy_credentials_migrate_only_after_key_matches_device(self):
+        legacy_key = bytes(range(32))
+        credentials = {
+            (cli.PAIRING_SERVICE, cli.DEFAULT_DEVICE_ACCOUNT): legacy_key.hex(),
+            (cli.PASSWORD_SERVICE, cli.DEFAULT_DEVICE_ACCOUNT): "secret",
+        }
+
+        def get_secret(service, account):
+            return credentials.get((service, account))
+
+        def set_secret(service, account, value):
+            credentials[(service, account)] = value
+
+        with (
+            mock.patch.object(cli, "keychain_get", side_effect=get_secret),
+            mock.patch.object(cli, "keychain_exists", side_effect=lambda s, a: (s, a) in credentials),
+            mock.patch.object(cli, "keychain_set", side_effect=set_secret),
+            mock.patch.object(Path, "is_file", return_value=False),
+        ):
+            self.assertFalse(
+                cli.migrate_legacy_hid_credentials("TT-NEW", {"other"}, single_key_device=False)
+            )
+            self.assertTrue(
+                cli.migrate_legacy_hid_credentials(
+                    "TT-NEW", {cli.hid_key_id(legacy_key)}, single_key_device=False
+                )
+            )
+        self.assertEqual(credentials[(cli.PAIRING_SERVICE, "TT-NEW")], legacy_key.hex())
+        self.assertEqual(credentials[(cli.PASSWORD_SERVICE, "TT-NEW")], "secret")
+
     def test_keychain_secrets_never_use_process_arguments(self):
         cli_source = (ROOT / "tinytouch").read_text()
         helper_source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
@@ -510,6 +578,57 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("SecKeychainAddGenericPassword", (
             ROOT / "software" / "macos-helper" / "tinytouch_keychain.py"
         ).read_text())
+
+    def test_uninstall_preserves_support_data_and_keychain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support = Path(directory) / "support"
+            generation = support / "cli-generation"
+            generation.mkdir(parents=True)
+            executable = generation / "tinytouch"
+            executable.write_text("executable")
+            command = Path(directory) / "bin" / "tinytouch"
+            command.parent.mkdir()
+            command.symlink_to(executable)
+            state = support / "state-TT-DEVICE.json"
+            state.write_text("{}")
+            with (
+                mock.patch.object(cli, "SUPPORT_DIR", support),
+                mock.patch.object(cli, "CLI_INSTALL_PATH", command),
+                mock.patch.object(cli, "remove_helper"),
+                mock.patch.object(cli.shutil, "which", return_value=str(command)),
+                mock.patch.object(cli, "keychain_delete") as keychain_delete,
+                mock.patch.object(cli, "say"),
+            ):
+                cli.command_uninstall(cli.parser().parse_args(["uninstall"]))
+            self.assertFalse(command.exists())
+            self.assertTrue(executable.exists())
+            self.assertTrue(state.exists())
+            keychain_delete.assert_not_called()
+
+    def test_diagnostics_are_structured_private_and_secret_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "diagnostics.json"
+            args = cli.parser().parse_args([
+                "diagnostics", "--lines", "5", "--output", str(output)
+            ])
+            with (
+                mock.patch.object(cli, "detect_ports", return_value=[]),
+                mock.patch.object(cli, "helper_job_status", return_value={
+                    "loaded": True, "state": "running", "pid": 42,
+                }),
+                mock.patch.object(cli, "helper_service_schema", return_value=2),
+                mock.patch.object(cli, "recent_diagnostics", return_value=[{
+                    "event": "worker.connected", "device_id": "TT-DEVICE",
+                }]),
+                mock.patch.object(cli, "say"),
+            ):
+                cli.command_diagnostics(args)
+            snapshot = json.loads(output.read_text())
+            self.assertEqual(snapshot["schema"], 1)
+            self.assertEqual(snapshot["service"]["state"], "running")
+            self.assertEqual(snapshot["recent_events"][0]["event"], "worker.connected")
+            self.assertNotIn("password", output.read_text().lower())
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
 
 class ParserTests(unittest.TestCase):
