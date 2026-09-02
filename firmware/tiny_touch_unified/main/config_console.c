@@ -142,12 +142,16 @@ static void clear_ota(void) {
 static void status(void) {
   char line[320];
   int count = fingerprint_count();
+  // fingerprint_count probes the UART and can update the live health state.
+  // Read health after that probe so one STATUS line cannot say ready with an
+  // unavailable fingerprint count.
+  bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
            "hosts=%u ota=%s",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
-           fingerprint_is_ready() ? "ready" : "offline", count,
+           sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
            (firmware_update_active() ? "writing" : "idle"));
   reply(line);

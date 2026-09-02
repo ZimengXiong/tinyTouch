@@ -318,6 +318,11 @@ typedef enum {
 typedef struct {
   auth_state_t state;
   TickType_t state_started;
+  // A capture is allowed only after the touch line has been observed inactive.
+  // GPIO2 is optional on some boards and can idle high when it is not wired.
+  // Treating a static high level as a touch makes the device capture without a
+  // user and can leave the sensor showing a failure result.
+  bool presence_armed;
 } auth_runtime_t;
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
@@ -344,11 +349,17 @@ static void touch_hid_task(void *arg) {
   auth_runtime_t runtime = {
     .state = AUTH_STATE_IDLE,
     .state_started = xTaskGetTickCount(),
+    .presence_armed = false,
   };
 
   while (true) {
     TickType_t now = xTaskGetTickCount();
     bool present = fingerprint_present_hint();
+
+    // Require an observed release before accepting the next asserted level.
+    // This turns the touch signal into an edge, rather than continuously
+    // trusting its level. It also makes an unwired or floating GPIO harmless.
+    if (!present) runtime.presence_armed = true;
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
       if (!present && (TickType_t)(now - runtime.state_started) >=
@@ -361,11 +372,12 @@ static void touch_hid_task(void *arg) {
 
     // Presence is the sole trigger for a capture. Idle operation never sends
     // sensor commands and therefore never flashes a failure indication.
-    if (!present || !fingerprint_is_ready() || !tud_hid_ready()) {
+    if (!present || !runtime.presence_armed || !fingerprint_is_ready() || !tud_hid_ready()) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
+    runtime.presence_armed = false;
     fingerprint_match_t match = fingerprint_authorize_poll_match();
     if (match.slot == 0) {
       auth_wait_for_lift(&runtime, now);
