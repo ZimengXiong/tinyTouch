@@ -524,6 +524,18 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("time.sleep(delay)", top)
         self.assertNotIn("parked until it is restarted", top)
 
+    def test_cli_generation_update_marks_loaded_helper_for_rebootstrap(self):
+        source = (ROOT / "tinytouch").read_text()
+        update = source.split("def _update_installed_cli_unlocked", 1)[1].split(
+            "def update_installed_cli", 1
+        )[0]
+        self.assertIn("HELPER_MIGRATION_PATH", update)
+        self.assertIn('"target_cli_sha256": expected_sha', update)
+        self.assertLess(
+            update.index("atomic_write_json("),
+            update.index("atomic_write_bytes("),
+        )
+
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
         source = (
             ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue"

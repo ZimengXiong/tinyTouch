@@ -357,9 +357,24 @@ def _update_installed_cli_unlocked(manifest: dict, *, announce: bool) -> bool:
     temporary.replace(CLI_INSTALL_PATH)
     marker.write_text(expected_sha + "\n", encoding="ascii")
     # If a helper is installed, pin its next launch to this immutable generation
-    # instead of the mutable ~/.local/bin/tinytouch symlink.
+    # instead of the mutable ~/.local/bin/tinytouch symlink. launchd retains an
+    # in-memory job definition, so leave a migration marker for the re-executed
+    # CLI to boot out and bootstrap the new definition.
     if LAUNCH_AGENT.exists():
-        LAUNCH_AGENT.write_bytes(launch_agent_contents(Path(sys.executable)))
+        atomic_write_json(
+            HELPER_MIGRATION_PATH,
+            {
+                "schema": 1,
+                "target_service_schema": 2,
+                "target_cli_sha256": expected_sha,
+                "started_at": int(time.time()),
+            },
+        )
+        atomic_write_bytes(
+            LAUNCH_AGENT,
+            launch_agent_contents(Path(sys.executable)),
+            mode=0o644,
+        )
     # Keep the active generation plus one rollback generation. Failed staging
     # directories are temporary and disappear automatically.
     generations = sorted(
