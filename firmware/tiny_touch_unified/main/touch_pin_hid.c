@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "fingerprint.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -369,6 +370,7 @@ static TickType_t sensor_poll_interval(bool present) {
 
 static void touch_hid_task(void *arg) {
   (void)arg;
+  ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
   auth_runtime_t runtime = {
     .state = AUTH_STATE_IDLE,
     .pending_match = {0},
@@ -377,6 +379,7 @@ static void touch_hid_task(void *arg) {
   };
 
   while (true) {
+    ESP_ERROR_CHECK(esp_task_wdt_reset());
     if (usb_runtime_service_reconnect()) continue;
     TickType_t now = xTaskGetTickCount();
     service_hid_release();
@@ -446,7 +449,9 @@ static void touch_hid_task(void *arg) {
 
 void touch_pin_hid_start(void) {
   password_responses = xQueueCreate(1, 640);
-  xTaskCreate(touch_hid_task, "touch_hid", 6144, NULL, 4, NULL);
+  configASSERT(password_responses != NULL);
+  BaseType_t created = xTaskCreate(touch_hid_task, "touch_hid", 6144, NULL, 4, NULL);
+  configASSERT(created == pdPASS);
 }
 
 void touch_pin_hid_usb_attached(void) {

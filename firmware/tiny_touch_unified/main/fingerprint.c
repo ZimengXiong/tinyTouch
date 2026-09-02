@@ -301,6 +301,7 @@ void fingerprint_init(void) {
   uart_param_config(FP_UART, &cfg);
   uart_set_pin(FP_UART, FP_TX_PIN, FP_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
   fp_mutex = xSemaphoreCreateMutex();
+  configASSERT(fp_mutex != NULL);
 
   uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
   uint8_t confirm = 0xff;

@@ -199,6 +199,20 @@ class FirmwareInvariantTests(unittest.TestCase):
             self.assertIn(field, health)
         self.assertIn("runtime_health_format", console)
 
+    def test_auth_task_is_supervised_and_allocations_fail_fast(self):
+        touch = (MAIN / "touch_pin_hid.c").read_text()
+        fingerprint = (MAIN / "fingerprint.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        defaults = (ROOT / "firmware" / "tiny_touch_unified" / "sdkconfig.defaults").read_text()
+
+        self.assertIn("esp_task_wdt_add(NULL)", touch)
+        self.assertIn("esp_task_wdt_reset()", touch)
+        self.assertIn("configASSERT(password_responses != NULL)", touch)
+        self.assertIn("configASSERT(fp_mutex != NULL)", fingerprint)
+        self.assertIn("configASSERT(cdc_write_mutex != NULL)", console)
+        self.assertIn("CONFIG_ESP_TASK_WDT_PANIC=y", defaults)
+        self.assertIn("CONFIG_ESP_TASK_WDT_TIMEOUT_S=30", defaults)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]

@@ -689,5 +689,7 @@ void config_console_start(void) {
   update_authorized_until = 0;
   clear_update_session();
   cdc_write_mutex = xSemaphoreCreateMutex();
-  xTaskCreate(console_task, "config_console", 4096, NULL, 3, NULL);
+  configASSERT(cdc_write_mutex != NULL);
+  BaseType_t created = xTaskCreate(console_task, "config_console", 4096, NULL, 3, NULL);
+  configASSERT(created == pdPASS);
 }
