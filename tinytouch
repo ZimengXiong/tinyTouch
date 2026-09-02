@@ -56,6 +56,9 @@ CLI_INSTALL_DIR = Path.home() / ".local" / "bin"
 CLI_INSTALL_PATH = CLI_INSTALL_DIR / "tinytouch"
 VERBOSE = False
 HELPER_SUSPENDED = False
+# Whether the helper was actually running when this command suspended it.
+# None means nothing has suspended it yet.
+HELPER_RUNNING_AT_START = None
 DEFAULT_SITE_ORIGIN = "https://tinytouch.alpacaengineer.ing"
 TRUSTED_SITE_ORIGINS = {DEFAULT_SITE_ORIGIN, "https://docs.tinytouch.dev"}
 SITE_ORIGIN = os.environ.get("TINYTOUCH_SITE_ORIGIN", DEFAULT_SITE_ORIGIN).rstrip("/")
@@ -1218,6 +1221,35 @@ def remove_helper() -> None:
 def load_helper() -> None:
     unload_helper()
     run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
+
+
+def restore_helper() -> None:
+    """Bring the helper back up after a command suspended it.
+
+    The launch agent is written with RunAtLoad and KeepAlive, so the plist
+    existing is what "the helper should be running" means. Anything that leaves
+    it unloaded leaves the device unable to answer a fingerprint touch until the
+    user re-runs setup, so restoring it is unconditional rather than dependent on
+    having seen it running earlier in this command.
+
+    launchctl bootout is asynchronous, so a bootstrap issued immediately after
+    one can lose the race with a service that is still shutting down. Retry
+    briefly before giving up.
+    """
+    if not LAUNCH_AGENT.exists():
+        return
+    last_error = None
+    for attempt in range(3):
+        try:
+            load_helper()
+            return
+        except ToolError as exc:
+            last_error = exc
+            time.sleep(0.4 * (attempt + 1))
+    raise ToolError(
+        f"{last_error} Run 'tinytouch status' to check it, or "
+        "'tinytouch setup' to reinstall it."
+    )
 
 
 def install_helper(python: Path) -> None:
@@ -2398,7 +2430,16 @@ def command_status(args: argparse.Namespace) -> None:
                 say("Action: check sensor power and UART wiring (TX to GPIO44, RX to GPIO43).")
             if fields.get("firmware") != "unified":
                 say(f"Action: flash the unified firmware at {FACTORY_FLASH_URL}.")
-    say(f"HID background service: {'installed' if LAUNCH_AGENT.exists() else 'not installed'}")
+    if not LAUNCH_AGENT.exists():
+        say("HID background service: not installed")
+    elif HELPER_RUNNING_AT_START is False:
+        # The plist is present but launchd was not running the job when this
+        # command started, so touches were going nowhere.
+        say("HID background service: installed but not running")
+        say("Action: it is restarted when this command finishes. If this repeats, "
+            "check ~/Library/Logs/tinyTouch/helper.err.")
+    else:
+        say("HID background service: installed and running")
     if shutil.which("sc_auth"):
         identities = subprocess.run(["sc_auth", "identities"], text=True, capture_output=True)
         verbose("sc_auth identities output: " + (identities.stdout.strip() or "none"))
@@ -2958,7 +2999,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global VERBOSE, HELPER_SUSPENDED
+    global VERBOSE, HELPER_SUSPENDED, HELPER_RUNNING_AT_START
     if FROZEN and len(sys.argv) > 1 and sys.argv[1] == "_helper":
         sys.argv = ["tinytouch-helper", *sys.argv[2:]]
         from tinytouch_helper import main as helper_main  # type: ignore
@@ -3004,6 +3045,7 @@ def main() -> int:
         if args.command in device_commands:
             reexec_in_environment_if_needed()
             helper_was_loaded = unload_helper() or helper_was_loaded
+            HELPER_RUNNING_AT_START = helper_was_loaded
             if helper_was_loaded:
                 os.environ["_TINYTOUCH_RESTART_HELPER"] = "1"
             HELPER_SUSPENDED = True
@@ -3022,14 +3064,10 @@ def main() -> int:
     finally:
         if HELPER_SUSPENDED:
             HELPER_SUSPENDED = False
-            helper_installing_commands = {"setup", "mode", "add-computer", "password"}
-            if LAUNCH_AGENT.exists() and (
-                helper_was_loaded or args.command in helper_installing_commands
-            ):
-                try:
-                    load_helper()
-                except ToolError as exc:
-                    print(f"tinytouch: HID background service could not restart: {exc}", file=sys.stderr)
+            try:
+                restore_helper()
+            except ToolError as exc:
+                print(f"tinytouch: HID background service could not restart: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

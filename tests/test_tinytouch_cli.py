@@ -561,6 +561,95 @@ class ParserTests(unittest.TestCase):
         self.assertEqual((config.setting, config.value), ("enter", "off"))
         self.assertEqual(layout.layout, "auto")
 
+class HelperLifecycleTests(unittest.TestCase):
+    """The launch agent is written with RunAtLoad and KeepAlive, so a plist on
+    disk means the helper is meant to be running. A command that suspends it
+    must put it back, or touches go nowhere until the user re-runs setup (#38).
+    """
+
+    def run_command(self, command, *, was_running, launch_agent_exists=True):
+        args = cli.parser().parse_args([command])
+        loads = []
+        with (
+            mock.patch.object(cli, "show_startup_mark"),
+            mock.patch.object(cli, "schedule_auto_update"),
+            mock.patch.object(cli, "reexec_in_environment_if_needed"),
+            mock.patch.object(cli, "unload_helper", return_value=was_running),
+            mock.patch.object(cli, "load_helper", side_effect=lambda: loads.append(True)),
+            mock.patch.object(type(cli.LAUNCH_AGENT), "exists", return_value=launch_agent_exists),
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(cli.argparse.Namespace, "func", create=True),
+        ):
+            os.environ.pop("_TINYTOUCH_RESTART_HELPER", None)
+            args.func = lambda _args: None
+            with mock.patch.object(cli, "parser") as parser:
+                parser.return_value.parse_args.return_value = args
+                cli.main()
+        return loads
+
+    def test_helper_is_restored_even_when_it_was_not_already_running(self):
+        # The regression: a previous command left the job unloaded, so
+        # unload_helper() finds nothing to stop. The old code then skipped the
+        # restart for any command outside setup/mode/add-computer/password,
+        # leaving the helper down until the user re-ran setup.
+        loads = self.run_command("status", was_running=False)
+        self.assertEqual(len(loads), 1)
+
+    def test_helper_is_restored_when_it_was_running(self):
+        loads = self.run_command("status", was_running=True)
+        self.assertEqual(len(loads), 1)
+
+    def test_helper_is_not_started_when_it_is_not_installed(self):
+        # PIV mode and factory-reset delete the plist on purpose. Absent plist
+        # means the helper should stay gone.
+        loads = self.run_command("status", was_running=False, launch_agent_exists=False)
+        self.assertEqual(loads, [])
+
+    def test_restore_retries_a_racing_bootstrap(self):
+        attempts = []
+
+        def flaky():
+            attempts.append(True)
+            if len(attempts) < 3:
+                raise cli.ToolError("Bootstrap failed: 5: Input/output error")
+
+        with (
+            mock.patch.object(type(cli.LAUNCH_AGENT), "exists", return_value=True),
+            mock.patch.object(cli, "load_helper", side_effect=flaky),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            cli.restore_helper()
+        self.assertEqual(len(attempts), 3)
+
+    def test_restore_failure_says_how_to_recover(self):
+        with (
+            mock.patch.object(type(cli.LAUNCH_AGENT), "exists", return_value=True),
+            mock.patch.object(cli, "load_helper", side_effect=cli.ToolError("did not release")),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            with self.assertRaises(cli.ToolError) as context:
+                cli.restore_helper()
+        message = str(context.exception)
+        self.assertIn("did not release", message)
+        self.assertIn("tinytouch setup", message)
+
+    def test_status_distinguishes_installed_from_running(self):
+        def status_lines(running_at_start):
+            said = []
+            with (
+                mock.patch.object(cli, "say", side_effect=lambda text="": said.append(text)),
+                mock.patch.object(cli, "require_macos"),
+                mock.patch.object(cli, "choose_port", return_value=None),
+                mock.patch.object(type(cli.LAUNCH_AGENT), "exists", return_value=True),
+                mock.patch.object(cli.shutil, "which", return_value=None),
+                mock.patch.object(cli, "HELPER_RUNNING_AT_START", running_at_start),
+            ):
+                cli.command_status(cli.parser().parse_args(["status"]))
+            return "\n".join(said)
+
+        self.assertIn("installed but not running", status_lines(False))
+        self.assertIn("installed and running", status_lines(True))
+
 
 if __name__ == "__main__":
     unittest.main()
