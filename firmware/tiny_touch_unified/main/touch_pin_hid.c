@@ -30,8 +30,7 @@ static void secure_wipe(void *data, size_t length) {
 static bool wait_hid_ready(void) {
   TickType_t started = xTaskGetTickCount();
   while (!tud_hid_ready()) {
-    if (usb_runtime_is_suspended() ||
-        (TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(2000)) {
+    if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(2000)) {
       return false;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
