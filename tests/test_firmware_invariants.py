@@ -279,6 +279,27 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("if (ins != 0xc0)", dispatch)
         self.assertIn("if (!apdu || !response || response_cap < 2)", wrapper)
 
+    def test_console_rejects_wrapped_numbers_and_reopened_first_setup(self):
+        source = (MAIN / "config_console.c").read_text()
+        parser = source.split("static bool parse_unsigned", 1)[1].split(
+            "static bool first_setup_allowed", 1
+        )[0]
+        first_setup = source.split("static bool first_setup_allowed", 1)[1].split(
+            "static bool valid_update_token", 1
+        )[0]
+
+        self.assertIn("text[0] < '0' || text[0] > '9'", parser)
+        self.assertIn("*end != '\\0'", parser)
+        self.assertIn("parsed > maximum", parser)
+        self.assertIn("!piv_uses_provisioned_keys()", first_setup)
+        self.assertIn("!device_config_hid_key_configured()", first_setup)
+        for command in ("ENROLL ", "PROFILE_COMPLETE ", "DELETE "):
+            body = source.split(f'strncmp(command, "{command}', 1)[1].split(
+                "} else if", 1
+            )[0]
+            self.assertIn("parse_unsigned", body)
+        self.assertIn("decode_hex(arguments, token_bytes", source)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]

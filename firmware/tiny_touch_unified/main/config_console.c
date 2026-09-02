@@ -1,6 +1,8 @@
 #include "config_console.h"
 
+#include <limits.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -183,6 +185,21 @@ static bool decode_hid_key(const char *hex, uint8_t key[32]) {
   return decode_hex(hex, key, 32);
 }
 
+static bool parse_unsigned(const char *text, unsigned long maximum,
+                           unsigned long *value) {
+  if (!text || !value || text[0] < '0' || text[0] > '9') return false;
+  char *end = NULL;
+  unsigned long parsed = strtoul(text, &end, 10);
+  if (!end || *end != '\0' || parsed > maximum) return false;
+  *value = parsed;
+  return true;
+}
+
+static bool first_setup_allowed(int fingerprint_count) {
+  return fingerprint_count == 0 && !piv_uses_provisioned_keys() &&
+         !device_config_hid_key_configured();
+}
+
 static bool valid_update_token(const char *token) {
   return update_token[0] && strlen(token) == 32 && strcmp(token, update_token) == 0;
 }
@@ -194,15 +211,18 @@ static bool begin_firmware_update(char *arguments) {
   char *digest_hex = strchr(size_text, ' ');
   if (!digest_hex) return false;
   *digest_hex++ = '\0';
-  char *end = NULL;
-  unsigned long size = strtoul(size_text, &end, 10);
+  unsigned long size = 0;
+  uint8_t token_bytes[16];
   uint8_t digest[32];
-  bool ok = end && *end == '\0' && size > 0 && decode_hex(digest_hex, digest, sizeof(digest)) &&
+  bool ok = decode_hex(arguments, token_bytes, sizeof(token_bytes)) &&
+            parse_unsigned(size_text, SIZE_MAX, &size) && size > 0 &&
+            decode_hex(digest_hex, digest, sizeof(digest)) &&
             firmware_update_begin((size_t)size, digest);
   if (ok) {
     memcpy(update_token, arguments, 33);
     update_last_activity = esp_timer_get_time();
   }
+  memset(token_bytes, 0, sizeof(token_bytes));
   memset(digest, 0, sizeof(digest));
   return ok;
 }
@@ -214,11 +234,11 @@ static bool append_firmware_chunk(char *arguments, size_t *next_offset) {
   char *encoded = strchr(offset_text, ' ');
   if (!encoded) return false;
   *encoded++ = '\0';
-  char *end = NULL;
-  unsigned long offset = strtoul(offset_text, &end, 10);
+  unsigned long offset = 0;
   static uint8_t decoded[FIRMWARE_UPDATE_CHUNK_MAX];
   size_t decoded_length = 0;
-  bool ok = valid_update_token(arguments) && end && *end == '\0' &&
+  bool ok = valid_update_token(arguments) &&
+            parse_unsigned(offset_text, SIZE_MAX, &offset) &&
             mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_length,
                                   (const unsigned char *)encoded, strlen(encoded)) == 0 &&
             decoded_length > 0 && firmware_update_write((size_t)offset, decoded, decoded_length);
@@ -377,9 +397,11 @@ static void handle_command(void) {
     int count = fingerprint_count();
     if (count < 0) {
       send_line("ERR CONFIG_UNLOCK sensor");
-    } else if (count == 0) {
+    } else if (first_setup_allowed(count)) {
       authorize_config();
       send_line("OK CONFIG_UNLOCK first_setup seconds=120");
+    } else if (count == 0) {
+      send_line("ERR CONFIG_UNLOCK fingerprint");
     } else {
       send_line("PROMPT TOUCH");
       if (fingerprint_authorize_once()) {
@@ -393,9 +415,11 @@ static void handle_command(void) {
     int count = fingerprint_count();
     if (count < 0) {
       send_line("ERR UPDATE_UNLOCK sensor");
-    } else if (count == 0) {
+    } else if (first_setup_allowed(count)) {
       update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
       send_line("OK UPDATE_UNLOCK first_setup seconds=30");
+    } else if (count == 0) {
+      send_line("ERR UPDATE_UNLOCK fingerprint_required");
     } else {
       send_line("PROMPT TOUCH");
       if (fingerprint_authorize_once()) {
@@ -423,9 +447,7 @@ static void handle_command(void) {
     unsigned long value = 0;
     if (ok) {
       *value_text++ = '\0';
-      char *end = NULL;
-      value = strtoul(value_text, &end, 10);
-      ok = end && *end == '\0';
+      ok = parse_unsigned(value_text, ULONG_MAX, &value);
     }
     if (ok && strcmp(name, "typing_delay_ms") == 0) {
       ok = value >= 1 && value <= 100 &&
@@ -485,20 +507,23 @@ static void handle_command(void) {
     send_line(ok ? "OK HID_KEY_REMOVE" : "ERR HID_KEY_REMOVE");
   } else if (strncmp(command, "ENROLL ", 7) == 0) {
     if (!require_config_authorization()) return;
-    unsigned long slot = strtoul(command + 7, NULL, 10);
-    bool ok = fingerprint_enroll((uint16_t)slot, enrollment_prompt);
+    unsigned long slot = 0;
+    bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
+              fingerprint_enroll((uint16_t)slot, enrollment_prompt);
     if (ok) authorize_config();
     snprintf(line, sizeof(line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
     send_line(line);
   } else if (strncmp(command, "PROFILE_COMPLETE ", 17) == 0) {
     if (!require_config_authorization()) return;
-    unsigned long views = strtoul(command + 17, NULL, 10);
-    bool ok = views == 4 && device_config_set_fingerprint_profile_views((uint8_t)views);
+    unsigned long views = 0;
+    bool ok = parse_unsigned(command + 17, UINT8_MAX, &views) && views == 4 &&
+              device_config_set_fingerprint_profile_views((uint8_t)views);
     send_line(ok ? "OK PROFILE_COMPLETE views=4" : "ERR PROFILE_COMPLETE");
   } else if (strncmp(command, "DELETE ", 7) == 0) {
     if (!require_config_authorization()) return;
-    unsigned long slot = strtoul(command + 7, NULL, 10);
-    bool ok = fingerprint_delete((uint16_t)slot);
+    unsigned long slot = 0;
+    bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
+              fingerprint_delete((uint16_t)slot);
     if (ok) ok = device_config_set_fingerprint_profile_views(0);
     snprintf(line, sizeof(line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
     send_line(line);
