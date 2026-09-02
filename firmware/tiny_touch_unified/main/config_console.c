@@ -22,8 +22,6 @@
 #include "mbedtls/base64.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "soc/rtc_cntl_reg.h"
-#include "soc/soc.h"
 #include "tusb.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
@@ -652,7 +650,8 @@ static void handle_command(void) {
     clear_update_session();
     if (ok) {
       fingerprint_prepare_for_restart();
-      snprintf(line, sizeof(response_line), "OK UPDATE_COMMIT stack_free=%u",
+      snprintf(line, sizeof(response_line),
+               "OK UPDATE_COMMIT stack_free=%u power_cycle=required",
                (unsigned)firmware_update_commit_stack_free());
       send_line(line);
     } else {
@@ -660,10 +659,6 @@ static void handle_command(void) {
       snprintf(line, sizeof(response_line), "ERR UPDATE_COMMIT active=0 error=%s",
                firmware_update_last_error());
       send_line(line);
-    }
-    if (ok) {
-      vTaskDelay(pdMS_TO_TICKS(150));
-      esp_restart();
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
@@ -676,32 +671,16 @@ static void handle_command(void) {
     send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
     bool ok = factory_reset();
-    send_line(ok ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
-    if (ok) {
-      // Factory reset restores PIV mode. Restart immediately so a device that
-      // was using HID cannot keep its old descriptor until another command.
-      vTaskDelay(pdMS_TO_TICKS(150));
-      esp_restart();
-    }
+    send_line(ok ? "OK FACTORY_RESET power_cycle=required" : "ERR FACTORY_RESET");
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
     if (!require_config_authorization()) return;
-    send_line("OK USB_RECONNECT");
-    // USB descriptors are selected during TinyUSB initialization. Restart so
-    // a persisted mode change cannot reattach the descriptor from the prior
-    // mode and expose CCID while the device is configured for HID.
-    vTaskDelay(pdMS_TO_TICKS(150));
-    esp_restart();
+    send_line("OK USB_RECONNECT power_cycle=required");
   } else if (strcmp(command, "REBOOT") == 0) {
     if (!require_config_authorization()) return;
-    send_line("OK REBOOT");
-    vTaskDelay(pdMS_TO_TICKS(100));
-    esp_restart();
+    send_line("OK REBOOT power_cycle=required");
   } else if (strcmp(command, "BOOTLOADER") == 0) {
     if (!require_config_authorization()) return;
-    send_line("OK BOOTLOADER");
-    vTaskDelay(pdMS_TO_TICKS(100));
-    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-    esp_restart();
+    send_line("OK BOOTLOADER manual=required");
   } else {
     send_line("ERR UNKNOWN_COMMAND");
   }
