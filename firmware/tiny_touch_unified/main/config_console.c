@@ -651,10 +651,9 @@ static void handle_command(void) {
     update_last_reason = ok ? "none" : "commit_failed";
     clear_update_session();
     if (ok) {
-      bool sensor_reset = fingerprint_prepare_for_restart();
-      snprintf(line, sizeof(response_line),
-               "OK UPDATE_COMMIT stack_free=%u sensor_reset=%u",
-               (unsigned)firmware_update_commit_stack_free(), sensor_reset ? 1U : 0U);
+      fingerprint_prepare_for_restart();
+      snprintf(line, sizeof(response_line), "OK UPDATE_COMMIT stack_free=%u",
+               (unsigned)firmware_update_commit_stack_free());
       send_line(line);
     } else {
       resume_update_sensor();
