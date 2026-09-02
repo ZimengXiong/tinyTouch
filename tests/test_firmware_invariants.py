@@ -106,18 +106,18 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("device_config_submit_enter", body)
 
     def test_long_suspend_never_reconnects_until_resume(self):
-        source = (MAIN / "touch_pin_hid.c").read_text()
+        source = (MAIN / "usb_runtime.c").read_text()
         suspend = source.split("void tud_suspend_cb", 1)[1].split("void tud_resume_cb", 1)[0]
         self.assertNotIn("tud_disconnect", suspend)
         self.assertNotIn("tud_connect", suspend)
-        self.assertIn("hid_suspended &&", source)
+        self.assertIn("state.suspended &&", source)
 
     def test_remote_wake_is_advertised_and_guarded_by_host_permission(self):
         descriptor = (MAIN / "usb_descriptors.c").read_text()
-        hid = (MAIN / "touch_pin_hid.c").read_text()
+        usb = (MAIN / "usb_runtime.c").read_text()
         self.assertIn("TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP", descriptor)
-        self.assertIn("hid_remote_wakeup_enabled", hid)
-        self.assertIn("tud_remote_wakeup()", hid)
+        self.assertIn("remote_wakeup_enabled", usb)
+        self.assertIn("tud_remote_wakeup()", usb)
 
     def test_hid_mode_does_not_advertise_a_smart_card(self):
         descriptors = (MAIN / "usb_descriptors.c").read_text()
@@ -136,10 +136,10 @@ class FirmwareInvariantTests(unittest.TestCase):
         task = source.split("static void touch_hid_task", 1)[1].split(
             "void touch_pin_hid_start", 1
         )[0]
-        self.assertEqual(1, task.count("tud_remote_wakeup()"))
+        self.assertEqual(1, task.count("usb_runtime_request_remote_wakeup()"))
         self.assertLess(
             task.index("fingerprint_authorize_poll_match()"),
-            task.index("tud_remote_wakeup()"),
+            task.index("usb_runtime_request_remote_wakeup()"),
         )
 
     def test_fingerprint_uart_rejects_corrupt_packets(self):
@@ -157,8 +157,7 @@ class FirmwareInvariantTests(unittest.TestCase):
         task = source.split("static void touch_hid_task", 1)[1].split(
             "void touch_pin_hid_start", 1
         )[0]
-        self.assertIn("hid_suspended", availability)
-        self.assertIn("hid_remote_wakeup_enabled", availability)
+        self.assertIn("usb_runtime_can_poll_sensor", availability)
         self.assertNotIn("fingerprint_present_hint", availability)
         self.assertIn(
             "tud_hid_ready() || suspended_sensor_poll_available()", task
@@ -179,7 +178,7 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertNotIn("TickType_t pending_since", task)
         self.assertLess(
             task.index("fingerprint_authorize_poll_match()"),
-            task.index("tud_remote_wakeup()"),
+            task.index("usb_runtime_request_remote_wakeup()"),
         )
 
     def test_tinyusb_has_one_service_task(self):

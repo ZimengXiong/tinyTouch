@@ -18,19 +18,12 @@
 #include "piv.h"
 #include "runtime_health.h"
 #include "usb_descriptors.h"
+#include "usb_runtime.h"
 
 static const char *TAG = "touch_hid";
 static const uint8_t ascii_to_keycode[128][2] = {HID_ASCII_TO_KEYCODE};
 static QueueHandle_t password_responses;
 static uint32_t event_counter;
-static volatile bool hid_suspended;
-static volatile bool hid_needs_release;
-static volatile bool hid_reconnect_pending;
-static volatile TickType_t hid_suspended_at;
-static volatile bool hid_remote_wakeup_enabled;
-static volatile bool hid_remote_wakeup_attempted;
-
-#define USB_LONG_SUSPEND_MS 5000
 #define USB_WAKE_TIMEOUT_MS 2000
 #define SUSPENDED_SENSOR_POLL_MS 250
 
@@ -42,7 +35,7 @@ static void secure_wipe(void *data, size_t length) {
 static bool wait_hid_ready(void) {
   TickType_t started = xTaskGetTickCount();
   while (!tud_hid_ready()) {
-    if (hid_suspended ||
+    if (usb_runtime_is_suspended() ||
         (TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(2000)) {
       return false;
     }
@@ -324,8 +317,7 @@ done:
 }
 
 static bool suspended_sensor_poll_available(void) {
-  return hid_suspended && hid_remote_wakeup_enabled &&
-         !hid_remote_wakeup_attempted;
+  return usb_runtime_can_poll_sensor();
 }
 
 typedef enum {
@@ -362,26 +354,16 @@ static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
   runtime->state_started = now;
 }
 
-static bool service_deferred_usb_reconnect(void) {
-  if (!hid_reconnect_pending || hid_suspended) return false;
-  hid_reconnect_pending = false;
-  ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
-  runtime_health_note_usb_reconnect();
-  tud_disconnect();
-  vTaskDelay(pdMS_TO_TICKS(250));
-  tud_connect();
-  hid_needs_release = true;
-  return true;
-}
-
 static void service_hid_release(void) {
-  if (!hid_needs_release || !tud_hid_ready()) return;
-  tud_hid_keyboard_report(0, 0, NULL);
-  hid_needs_release = false;
+  if (!tud_hid_ready() || !usb_runtime_take_release_request()) return;
+  if (!tud_hid_keyboard_report(0, 0, NULL)) {
+    ESP_LOGW(TAG, "could not send the pending HID release report");
+    usb_runtime_request_release();
+  }
 }
 
 static TickType_t sensor_poll_interval(bool present) {
-  if (hid_suspended) return pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS);
+  if (usb_runtime_is_suspended()) return pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS);
   return present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
 }
 
@@ -395,13 +377,13 @@ static void touch_hid_task(void *arg) {
   };
 
   while (true) {
-    if (service_deferred_usb_reconnect()) continue;
+    if (usb_runtime_service_reconnect()) continue;
     TickType_t now = xTaskGetTickCount();
     service_hid_release();
     bool present = fingerprint_present_hint();
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_HOST) {
-      if (!hid_suspended && tud_hid_ready()) {
+      if (!usb_runtime_is_suspended() && tud_hid_ready()) {
         handle_fingerprint_match(runtime.pending_match);
         auth_wait_for_lift(&runtime, xTaskGetTickCount());
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -439,7 +421,7 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    if (!hid_suspended) {
+    if (!usb_runtime_is_suspended()) {
       handle_fingerprint_match(match);
       auth_wait_for_lift(&runtime, xTaskGetTickCount());
       vTaskDelay(pdMS_TO_TICKS(250));
@@ -449,8 +431,7 @@ static void touch_hid_task(void *arg) {
 
     // Match before requesting wake so an unrecognized touch cannot wake the
     // host. Remote wake still requires permission from the host.
-    hid_remote_wakeup_attempted = true;
-    if (tud_remote_wakeup()) {
+    if (usb_runtime_request_remote_wakeup()) {
       runtime.state = AUTH_STATE_WAITING_FOR_HOST;
       runtime.pending_match = match;
       runtime.state_started = xTaskGetTickCount();
@@ -469,39 +450,7 @@ void touch_pin_hid_start(void) {
 }
 
 void touch_pin_hid_usb_attached(void) {
-  hid_suspended = false;
-  hid_reconnect_pending = false;
-  hid_needs_release = true;
-  hid_remote_wakeup_enabled = false;
-  hid_remote_wakeup_attempted = false;
-  runtime_health_note_usb(RUNTIME_USB_ATTACHED);
-}
-
-// The host can suspend the USB bus while the HID task is between a key-down
-// and key-up report.  Mark the report state dirty so the task emits a release
-// after resume instead of leaving the host with a stuck key.
-void tud_suspend_cb(bool remote_wakeup_en) {
-  if (!hid_suspended) {
-    hid_suspended_at = xTaskGetTickCount();
-  }
-  hid_suspended = true;
-  hid_needs_release = true;
-  hid_remote_wakeup_enabled = remote_wakeup_en;
-  hid_remote_wakeup_attempted = false;
-  runtime_health_note_usb(RUNTIME_USB_SUSPENDED);
-}
-
-void tud_resume_cb(void) {
-  if (hid_suspended &&
-      (TickType_t)(xTaskGetTickCount() - hid_suspended_at) >=
-          pdMS_TO_TICKS(USB_LONG_SUSPEND_MS)) {
-    hid_reconnect_pending = true;
-  }
-  hid_suspended = false;
-  hid_needs_release = true;
-  hid_remote_wakeup_enabled = false;
-  hid_remote_wakeup_attempted = false;
-  runtime_health_note_usb(RUNTIME_USB_ATTACHED);
+  usb_runtime_on_attached();
 }
 
 bool touch_pin_hid_submit_response(const char *response) {
