@@ -44,6 +44,12 @@ _CORE_FOUNDATION.CFRelease.argtypes = [ctypes.c_void_p]
 
 _SECURITY.SecKeychainSetUserInteractionAllowed.argtypes = [ctypes.c_bool]
 _SECURITY.SecKeychainSetUserInteractionAllowed.restype = ctypes.c_int32
+_SECURITY.SecKeychainCopyDefault.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+_SECURITY.SecKeychainCopyDefault.restype = ctypes.c_int32
+_SECURITY.SecKeychainUnlock.argtypes = [
+    ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_bool,
+]
+_SECURITY.SecKeychainUnlock.restype = ctypes.c_int32
 
 
 class KeychainError(RuntimeError):
@@ -62,6 +68,23 @@ def set_background_mode() -> None:
     if status != 0:
         raise KeychainError("disable interaction", status)
     _BACKGROUND_MODE = True
+
+
+def unlock_default_keychain(password: bytearray) -> None:
+    """Unlock the login Keychain from a caller-provided terminal password."""
+    if not password:
+        raise KeychainError("unlock", -1)
+    keychain = ctypes.c_void_p()
+    status = _SECURITY.SecKeychainCopyDefault(ctypes.byref(keychain))
+    if status != 0 or not keychain:
+        raise KeychainError("default keychain", status)
+    try:
+        buffer = (ctypes.c_ubyte * len(password)).from_buffer(password)
+        status = _SECURITY.SecKeychainUnlock(keychain, len(password), buffer, True)
+        if status != 0:
+            raise KeychainError("unlock", status)
+    finally:
+        _CORE_FOUNDATION.CFRelease(keychain)
 
 
 def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
