@@ -57,6 +57,7 @@ HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
 _lease: ForegroundLease | None = None
 _sudo_session_ready = False
 _setup_password: bytearray | None = None
+_helper_suppressed = False
 
 
 class ToolError(RuntimeError):
@@ -253,6 +254,8 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
 
 def unload_helper() -> bool:
     global _lease
+    if _helper_suppressed:
+        return False
     if _lease is not None:
         return True
     loaded = subprocess.run(
@@ -282,6 +285,8 @@ def helper_loaded() -> bool:
 
 def load_helper() -> None:
     global _lease
+    if _helper_suppressed:
+        return
     if _lease is not None:
         _lease.release()
         _lease = None
@@ -291,6 +296,8 @@ def load_helper() -> None:
 
 def remove_helper() -> None:
     global _lease
+    global _helper_suppressed
+    _helper_suppressed = True
     if _lease is not None:
         _lease.release()
         _lease = None
@@ -322,6 +329,8 @@ def ensure_helper_environment() -> Path:
 
 
 def install_helper() -> None:
+    global _helper_suppressed
+    _helper_suppressed = False
     python = ensure_helper_environment()
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
