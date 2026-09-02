@@ -12,6 +12,7 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/oid.h"
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
 
@@ -158,6 +159,15 @@ static bool write_identity_part(nvs_handle_t handle, const char *name,
 static bool create_certificate(mbedtls_pk_context *key, char *output,
                                size_t output_size) {
   uint8_t serial_bytes[16];
+  static const unsigned char client_auth_oid[] = MBEDTLS_OID_CLIENT_AUTH;
+  mbedtls_asn1_sequence client_auth = {
+    .buf = {
+      .tag = MBEDTLS_ASN1_OID,
+      .len = sizeof(client_auth_oid) - 1,
+      .p = (unsigned char *)client_auth_oid,
+    },
+    .next = NULL,
+  };
   mbedtls_x509write_cert certificate;
   mbedtls_x509write_crt_init(&certificate);
   esp_fill_random(serial_bytes, sizeof(serial_bytes));
@@ -173,6 +183,10 @@ static bool create_certificate(mbedtls_pk_context *key, char *output,
   if (result == 0) result = mbedtls_x509write_crt_set_serial_raw(
       &certificate, serial_bytes, sizeof(serial_bytes));
   if (result == 0) mbedtls_x509write_crt_set_md_alg(&certificate, MBEDTLS_MD_SHA256);
+  if (result == 0) result = mbedtls_x509write_crt_set_basic_constraints(&certificate, 0, -1);
+  if (result == 0) result = mbedtls_x509write_crt_set_key_usage(
+      &certificate, MBEDTLS_X509_KU_DIGITAL_SIGNATURE | MBEDTLS_X509_KU_KEY_ENCIPHERMENT);
+  if (result == 0) result = mbedtls_x509write_crt_set_ext_key_usage(&certificate, &client_auth);
   if (result == 0) result = mbedtls_x509write_crt_pem(
       &certificate, (unsigned char *)output, output_size, piv_rng, NULL);
   secure_wipe(serial_bytes, sizeof(serial_bytes));
