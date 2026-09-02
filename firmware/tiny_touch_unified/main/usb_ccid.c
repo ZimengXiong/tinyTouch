@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "device_config.h"
 #include "piv.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
@@ -21,7 +22,6 @@ static uint8_t rx_buf[CCID_BUF_SIZE];
 static uint8_t tx_buf[CCID_BUF_SIZE];
 static uint8_t rhport_active;
 static ccid_apdu_handler_t apdu_handler;
-static bool ep_ready;
 static bool in_busy;
 
 static void usb_event_cb(tinyusb_event_t *event, void *arg) {
@@ -68,7 +68,11 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
   uint32_t len = le32(msg + 1);
   uint8_t slot = msg[5];
   uint8_t seq = msg[6];
-  if (len > msg_len - 10 || len > sizeof(rx_buf) - 10) {
+  if (slot != 0) {
+    send_ccid(0x81, slot, seq, 0x42, 0x05, NULL, 0);
+    return;
+  }
+  if (len != msg_len - 10 || len > sizeof(rx_buf) - 10) {
     send_ccid(0x81, slot, seq, 0x42, 0x01, NULL, 0);
     return;
   }
@@ -112,7 +116,6 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
 static void ccid_init(void) {}
 static void ccid_reset(uint8_t rhport) {
   (void)rhport;
-  ep_ready = false;
   in_busy = false;
   piv_reset_transport_state();
 }
@@ -131,7 +134,6 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
       !usbd_edpt_open(rhport, ep_in)) return 0;
 
   rhport_active = rhport;
-  ep_ready = true;
   in_busy = false;
   usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
   return required_len;
@@ -189,7 +191,10 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.descriptor.device = &tiny_touch_device_descriptor;
   tusb_cfg.descriptor.string = tiny_touch_string_descriptors;
   tusb_cfg.descriptor.string_count = tiny_touch_string_descriptor_count;
-  tusb_cfg.descriptor.full_speed_config = tiny_touch_fs_configuration_descriptor;
+  tusb_cfg.descriptor.full_speed_config =
+      device_config_mode() == DEVICE_MODE_HID
+          ? tiny_touch_hid_configuration_descriptor
+          : tiny_touch_piv_configuration_descriptor;
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 }

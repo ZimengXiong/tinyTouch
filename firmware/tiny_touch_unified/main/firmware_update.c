@@ -5,6 +5,7 @@
 
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -180,6 +181,7 @@ size_t firmware_update_commit_stack_free(void) {
 
 static void firmware_update_commit_task(void *argument) {
   firmware_commit_context_t *context = argument;
+  ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
   set_error("ota_end_running", ESP_OK);
   esp_err_t end_result = esp_ota_end(context->handle);
   esp_err_t boot_result = ESP_OK;
@@ -197,6 +199,7 @@ static void firmware_update_commit_task(void *argument) {
     context->result = true;
   }
   commit_stack_free = uxTaskGetStackHighWaterMark(NULL);
+  ESP_ERROR_CHECK(esp_task_wdt_delete(NULL));
   xSemaphoreGive(context->completed);
   vTaskDelete(NULL);
 }

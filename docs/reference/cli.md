@@ -26,6 +26,7 @@ tinytouch status --verbose
 tinytouch test
 tinytouch logs
 tinytouch logs --lines 100
+tinytouch diagnostics --output ~/Desktop/tinytouch-diagnostics.json
 ```
 
 ## Fingerprints
@@ -67,3 +68,13 @@ tinytouch config set cooldown 1000
 tinytouch update
 tinytouch factory-reset
 ```
+
+## Removal
+
+```sh
+tinytouch uninstall
+```
+
+Uninstall preserves Keychain credentials and recovery state. See the
+[macOS host architecture](/reference/macos-host) for lifecycle, migration, and
+firmware compatibility details.

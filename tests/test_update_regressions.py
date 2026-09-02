@@ -511,15 +511,30 @@ class UpdateRegressionTests(unittest.TestCase):
                     with cli.firmware_transaction():
                         raise OSError("actual update failure")
 
-    def test_helper_keychain_denial_is_quarantined(self):
+    def test_helper_keychain_denial_recovers_without_setup(self):
         helper = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         manager = helper.split("def run_manager", 1)[1].split("def run(port", 1)[0]
-        self.assertIn("blocked_devices", manager)
-        self.assertIn("automatic retries are", manager)
-        self.assertIn("disabled until the helper is restarted", manager)
+        self.assertIn("BackoffPolicy", manager)
+        self.assertIn('"keychain.unavailable"', manager)
+        self.assertIn("retry_after", manager)
+        self.assertNotIn("blocked_devices", manager)
         top = helper.split("def main()", 1)[1]
         self.assertNotIn("except BaseException", top)
-        self.assertIn("helper is parked until it is restarted", top)
+        self.assertIn("backoff.delay(failures)", top)
+        self.assertIn("time.sleep(delay)", top)
+        self.assertNotIn("parked until it is restarted", top)
+
+    def test_cli_generation_update_marks_loaded_helper_for_rebootstrap(self):
+        source = (ROOT / "tinytouch").read_text()
+        update = source.split("def _update_installed_cli_unlocked", 1)[1].split(
+            "def update_installed_cli", 1
+        )[0]
+        self.assertIn("HELPER_MIGRATION_PATH", update)
+        self.assertIn('"target_cli_sha256": expected_sha', update)
+        self.assertLess(
+            update.index("atomic_write_json("),
+            update.index("atomic_write_bytes("),
+        )
 
     def test_web_serial_picker_filters_espressif_and_manifest_is_bounded(self):
         source = (
@@ -544,13 +559,13 @@ class UpdateRegressionTests(unittest.TestCase):
 
     def test_fingerprint_packets_are_checksum_validated(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "fingerprint.c").read_text()
-        self.assertIn("expected_sum", source)
-        self.assertIn("received_sum", source)
+        self.assertIn("fp_response_checksum_valid", source)
+        self.assertIn("return received == expected", source)
         self.assertIn("checksum mismatch", source)
 
-    def test_ccid_bounds_are_subtraction_based_and_in_transfer_is_serialized(self):
+    def test_ccid_frames_are_exactly_bounded_and_in_transfer_is_serialized(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "usb_ccid.c").read_text()
-        self.assertIn("len > msg_len - 10", source)
+        self.assertIn("len != msg_len - 10", source)
         self.assertIn("in_busy", source)
         self.assertNotIn("len + 10 > msg_len", source)
 

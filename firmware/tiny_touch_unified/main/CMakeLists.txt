@@ -6,9 +6,11 @@ idf_component_register(
     "fingerprint.c"
     "firmware_update.c"
     "piv.c"
+    "runtime_health.c"
     "touch_pin_hid.c"
     "usb_ccid.c"
     "usb_descriptors.c"
+    "usb_runtime.c"
   INCLUDE_DIRS "."
   REQUIRES app_update driver esp_timer esp_tinyusb mbedtls nvs_flash
   PRIV_REQUIRES esp_driver_uart

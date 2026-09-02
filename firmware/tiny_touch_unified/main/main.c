@@ -9,8 +9,10 @@
 #include "config_console.h"
 #include "device_config.h"
 #include "piv.h"
+#include "runtime_health.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
+#include "usb_runtime.h"
 
 #ifdef TINYTOUCH_RECOVERY_BUILD
 static const char *TAG = "tiny_touch";
@@ -67,6 +69,7 @@ static void run_recovery_once(void) {
 #endif
 
 void app_main(void) {
+  runtime_health_init();
   esp_err_t nvs_result = nvs_flash_init();
 #ifndef TINYTOUCH_RECOVERY_BUILD
   if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -92,6 +95,7 @@ void app_main(void) {
 #endif
   device_config_init();
   piv_init();
+  usb_runtime_init();
   usb_ccid_start(piv_handle_apdu);
   config_console_start();
   touch_pin_hid_start();

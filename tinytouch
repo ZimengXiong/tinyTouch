@@ -47,6 +47,12 @@ VENV = ROOT / ".venv"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.tinytouch.helper.plist"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 FIRMWARE_LOCK = SUPPORT_DIR / "firmware-update.lock"
+HELPER_LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
+HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
+HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
+HELPER_SUSPEND_PATH = SUPPORT_DIR / "helper-suspend"
+HELPER_SUSPEND_ACK_PATH = SUPPORT_DIR / "helper-suspend-ack"
+HELPER_MIGRATION_PATH = SUPPORT_DIR / "helper-service-migration.json"
 INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
@@ -72,6 +78,16 @@ TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
 if not FROZEN and str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
+
+from tinytouch_runtime import (  # type: ignore  # noqa: E402
+    ForegroundLease,
+    LeaseBusyError,
+    LeaseProtocolError,
+    atomic_write_bytes,
+    atomic_write_json,
+)
+
+HELPER_LEASE: ForegroundLease | None = None
 
 
 class ToolError(RuntimeError):
@@ -341,9 +357,24 @@ def _update_installed_cli_unlocked(manifest: dict, *, announce: bool) -> bool:
     temporary.replace(CLI_INSTALL_PATH)
     marker.write_text(expected_sha + "\n", encoding="ascii")
     # If a helper is installed, pin its next launch to this immutable generation
-    # instead of the mutable ~/.local/bin/tinytouch symlink.
+    # instead of the mutable ~/.local/bin/tinytouch symlink. launchd retains an
+    # in-memory job definition, so leave a migration marker for the re-executed
+    # CLI to boot out and bootstrap the new definition.
     if LAUNCH_AGENT.exists():
-        LAUNCH_AGENT.write_bytes(launch_agent_contents(Path(sys.executable)))
+        atomic_write_json(
+            HELPER_MIGRATION_PATH,
+            {
+                "schema": 1,
+                "target_service_schema": 2,
+                "target_cli_sha256": expected_sha,
+                "started_at": int(time.time()),
+            },
+        )
+        atomic_write_bytes(
+            LAUNCH_AGENT,
+            launch_agent_contents(Path(sys.executable)),
+            mode=0o644,
+        )
     # Keep the active generation plus one rollback generation. Failed staging
     # directories are temporary and disappear automatically.
     generations = sorted(
@@ -1092,12 +1123,7 @@ def helper_state_path(account: str) -> Path:
 
 
 def save_keyboard_layout(account: str, layout: str) -> None:
-    destination = keyboard_settings_path(account)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"keyboard_layout": layout}, separators=(",", ":")),
-                         encoding="utf-8")
-    temporary.replace(destination)
+    atomic_write_json(keyboard_settings_path(account), {"keyboard_layout": layout})
 
 
 def ensure_helper_environment() -> Path:
@@ -1133,14 +1159,20 @@ def launch_agent_contents(python: Path) -> bytes:
         arguments = [str(executable), "_helper"]
     else:
         arguments = [str(python), str(HELPER)]
-    log_dir = Path.home() / "Library" / "Logs" / "tinyTouch"
     payload = {
         "Label": "com.tinytouch.helper",
         "ProgramArguments": arguments,
         "RunAtLoad": True,
         "KeepAlive": True,
-        "StandardOutPath": str(log_dir / "helper.log"),
-        "StandardErrorPath": str(log_dir / "helper.err"),
+        "ProcessType": "Background",
+        "ThrottleInterval": 10,
+        "ExitTimeOut": 5,
+        "StandardOutPath": str(HELPER_LOG_PATH),
+        "StandardErrorPath": str(HELPER_ERROR_LOG_PATH),
+        "EnvironmentVariables": {
+            "TINYTOUCH_SERVICE_SCHEMA": "2",
+            "TINYTOUCH_DIAGNOSTIC_LOG": str(HELPER_LOG_PATH),
+        },
     }
     return plistlib.dumps(payload, sort_keys=False)
 
@@ -1153,6 +1185,63 @@ def helper_job_loaded() -> bool:
         stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
+
+
+def helper_job_status() -> dict[str, object]:
+    result = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return {"loaded": False, "state": "not_loaded"}
+    state_match = re.search(r"^\s*state = ([A-Za-z]+)\s*$", result.stdout, re.MULTILINE)
+    pid_match = re.search(r"^\s*pid = ([0-9]+)\s*$", result.stdout, re.MULTILINE)
+    exit_match = re.search(r"^\s*last exit code = (-?[0-9]+)\s*$", result.stdout, re.MULTILINE)
+    value: dict[str, object] = {
+        "loaded": True,
+        "state": state_match.group(1) if state_match else "waiting",
+    }
+    if pid_match:
+        value["pid"] = int(pid_match.group(1))
+    if exit_match:
+        value["last_exit_code"] = int(exit_match.group(1))
+    return value
+
+
+def helper_service_schema() -> int:
+    try:
+        payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
+        environment = payload.get("EnvironmentVariables", {})
+        value = environment.get("TINYTOUCH_SERVICE_SCHEMA", "0")
+        return int(value)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def migrate_helper_service(python: Path) -> bool:
+    """Replace a legacy launchd job through a restartable migration."""
+    if not LAUNCH_AGENT.exists():
+        HELPER_MIGRATION_PATH.unlink(missing_ok=True)
+        return False
+    if helper_service_schema() >= 2 and not HELPER_MIGRATION_PATH.exists():
+        return False
+    atomic_write_json(
+        HELPER_MIGRATION_PATH,
+        {"schema": 1, "target_service_schema": 2, "started_at": int(time.time())},
+    )
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
+    run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
+    HELPER_MIGRATION_PATH.unlink(missing_ok=True)
+    verbose("migrated HID background service to schema 2")
+    return True
 
 
 def helper_process_patterns() -> tuple[str, ...]:
@@ -1181,9 +1270,29 @@ def helper_processes_running() -> bool:
 
 
 def unload_helper() -> bool:
+    global HELPER_LEASE
     was_running = helper_job_loaded() or helper_processes_running()
     if not was_running:
         return False
+    if HELPER_LEASE is not None:
+        return True
+    lease = ForegroundLease(HELPER_SUSPEND_PATH, HELPER_SUSPEND_ACK_PATH)
+    try:
+        lease.acquire(wait_for_ack=True)
+    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
+        raise ToolError(
+            f"Could not acquire the tinyTouch device from the HID background service: {exc} "
+            "Run 'tinytouch logs --lines 100' for details."
+        ) from exc
+    HELPER_LEASE = lease
+    return was_running
+
+
+def remove_helper() -> None:
+    global HELPER_LEASE
+    if HELPER_LEASE is not None:
+        HELPER_LEASE.release()
+        HELPER_LEASE = None
     if LAUNCH_AGENT.exists():
         subprocess.run(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
@@ -1191,47 +1300,33 @@ def unload_helper() -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    for pattern in helper_process_patterns():
-        subprocess.run(
-            ["pkill", "-TERM", "-f", pattern],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    deadline = time.monotonic() + 6
-    while helper_job_loaded() or helper_processes_running():
-        if time.monotonic() >= deadline:
-            raise ToolError(
-                "The HID background service did not release the serial port. Run "
-                "'tinytouch status' again; if this repeats, unplug and reconnect tinyTouch."
-            )
-        time.sleep(0.05)
-    time.sleep(0.15)
-    return was_running
-
-
-def remove_helper() -> None:
-    unload_helper()
+    HELPER_SUSPEND_PATH.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK_PATH.unlink(missing_ok=True)
     LAUNCH_AGENT.unlink(missing_ok=True)
 
 
 def load_helper() -> None:
-    unload_helper()
+    global HELPER_LEASE
+    if HELPER_LEASE is not None:
+        HELPER_LEASE.release()
+        HELPER_LEASE = None
+    if helper_job_loaded():
+        return
     run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
 
 
 def install_helper(python: Path) -> None:
+    migrate_helper_service(python)
     unload_helper()
     if FROZEN:
         install_command_if_needed()
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
-    log_dir = Path.home() / "Library" / "Logs" / "tinyTouch"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    HELPER_LOG_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        log_dir.chmod(0o700)
+        HELPER_LOG_DIR.chmod(0o700)
     except OSError:
         pass
-    LAUNCH_AGENT.write_bytes(launch_agent_contents(python))
+    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
     if not HELPER_SUSPENDED:
         load_helper()
 
@@ -1907,7 +2002,7 @@ def pair_piv(requested_identity: str | None = None, port: str | None = None) -> 
             say()
             say("macOS may show three prompts:")
             say("  1. Terminal Password — your normal Mac password")
-            say("  2. Smart Card PIN — 000000 (six zeros)")
+            say("  2. Smart Card PIN — 111111 (six ones)")
             say("  3. Keychain/System Password — your normal Mac password again")
             try:
                 try:
@@ -1918,7 +2013,7 @@ def pair_piv(requested_identity: str | None = None, port: str | None = None) -> 
                     if "6982" in detail:
                         raise ToolError(
                             "macOS pairing was not authorized in time. Run 'tinytouch pair' "
-                            "again, touch an enrolled finger when instructed, and use 000000 "
+                            "again, touch an enrolled finger when instructed, and use 111111 "
                             "at the smart-card PIN prompt."
                         ) from exc
                     if "CryptoTokenKit" in detail:
@@ -2001,10 +2096,70 @@ def require_fingerprint_sensor(status: dict[str, str]) -> None:
     )
 
 
+def migrate_legacy_hid_credentials(
+    account: str,
+    registered_ids: set[str],
+    *,
+    single_key_device: bool,
+) -> bool:
+    """Copy a proven legacy pairing into the per-device namespace."""
+    if keychain_get(PAIRING_SERVICE, account) is not None:
+        return False
+    for legacy_account in dict.fromkeys((DEFAULT_DEVICE_ACCOUNT, ACCOUNT)):
+        if legacy_account == account:
+            continue
+        candidate_hex = keychain_get(PAIRING_SERVICE, legacy_account)
+        try:
+            candidate = bytes.fromhex(candidate_hex) if candidate_hex else None
+        except ValueError:
+            candidate = None
+        if candidate is None or len(candidate) != 32:
+            continue
+        if not single_key_device and hid_key_id(candidate) not in registered_ids:
+            continue
+        keychain_set(PAIRING_SERVICE, account, candidate.hex())
+        if not keychain_exists(PASSWORD_SERVICE, account):
+            password = keychain_get(PASSWORD_SERVICE, legacy_account)
+            if password is None and legacy_account != ACCOUNT:
+                password = keychain_get(PASSWORD_SERVICE, ACCOUNT)
+            if password is not None:
+                keychain_set(PASSWORD_SERVICE, account, password)
+                del password
+        destination_settings = keyboard_settings_path(account)
+        for source in (
+            keyboard_settings_path(legacy_account),
+            SUPPORT_DIR / "settings-legacy.json",
+        ):
+            if not destination_settings.exists() and source.is_file():
+                atomic_write_bytes(destination_settings, source.read_bytes())
+        destination_state = helper_state_path(account)
+        for source in (
+            helper_state_path(legacy_account),
+            SUPPORT_DIR / "state-legacy.json",
+        ):
+            if not destination_state.exists() and source.is_file():
+                atomic_write_bytes(destination_state, source.read_bytes())
+        verbose(f"migrated legacy HID credentials from {legacy_account} to {account}")
+        return True
+    return False
+
+
 def configure_hid_credentials(port: str, status: dict[str, str]) -> None:
     python = ensure_helper_environment()
     account = pairing_account_for_port(port)
     device_has_key = status.get("hid_key") == "configured"
+    registered_ids: set[str] = set()
+    capacity = 1
+    protocol = firmware_protocol(status)
+    if protocol >= 2:
+        registered_ids, capacity = hid_key_ids(port)
+    migrated = migrate_legacy_hid_credentials(
+        account,
+        registered_ids,
+        single_key_device=protocol < 2 and device_has_key,
+    )
+    if migrated:
+        say("  ✓ Existing HID credentials migrated for this device.")
     local_key_hex = keychain_get(PAIRING_SERVICE, account)
     try:
         local_key = bytes.fromhex(local_key_hex) if local_key_hex else None
@@ -2014,8 +2169,7 @@ def configure_hid_credentials(port: str, status: dict[str, str]) -> None:
         local_key = None
     local_has_password = keychain_exists(PASSWORD_SERVICE, account)
 
-    if firmware_protocol(status) >= 2:
-        registered_ids, capacity = hid_key_ids(port)
+    if protocol >= 2:
         if local_key is None:
             local_key = secrets.token_bytes(32)
         local_id = hid_key_id(local_key)
@@ -2802,7 +2956,7 @@ def command_delete(args: argparse.Namespace) -> None:
 
 def command_logs(args: argparse.Namespace) -> None:
     say("tinyTouch HID background-service logs")
-    paths = [Path("/tmp/tinytouch-helper.log"), Path("/tmp/tinytouch-helper.err")]
+    paths = [HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH]
     for path in paths:
         say(f"==> {path} <==")
         if not path.exists():
@@ -2810,6 +2964,84 @@ def command_logs(args: argparse.Namespace) -> None:
             continue
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         say("\n".join(lines[-args.lines :]))
+
+
+def recent_diagnostics(limit: int) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for path in (HELPER_LOG_PATH, HELPER_ERROR_LOG_PATH):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines[-limit:]:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("event"), str):
+                records.append(value)
+    return records[-limit:]
+
+
+def command_diagnostics(args: argparse.Namespace) -> None:
+    """Emit a secret-free machine-readable support snapshot."""
+    ports = []
+    try:
+        import serial.tools.list_ports  # type: ignore
+
+        for item in serial.tools.list_ports.comports():
+            if item.device in detect_ports():
+                ports.append({
+                    "port": item.device,
+                    "vid": item.vid,
+                    "pid": item.pid,
+                    "serial": item.serial_number,
+                    "location": item.location,
+                })
+    except ImportError:
+        ports = [{"port": value} for value in detect_ports()]
+    snapshot = {
+        "schema": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cli_version": CLI_VERSION,
+        "macos_version": platform.mac_ver()[0],
+        "architecture": platform.machine(),
+        "service": helper_job_status(),
+        "service_schema": helper_service_schema(),
+        "devices": ports,
+        "recent_events": recent_diagnostics(args.lines),
+    }
+    payload = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        destination = Path(args.output).expanduser().resolve()
+        atomic_write_bytes(destination, payload.encode("utf-8"))
+        say(f"Diagnostics written to {destination}.")
+    else:
+        say(payload.rstrip())
+
+
+def command_uninstall(_args: argparse.Namespace) -> None:
+    """Remove executable service components while preserving user data."""
+    remove_helper()
+    removed_commands: list[Path] = []
+    candidates = {CLI_INSTALL_PATH}
+    discovered = shutil.which("tinytouch")
+    if discovered:
+        candidates.add(Path(discovered))
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(SUPPORT_DIR.resolve())
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if candidate.is_symlink():
+            candidate.unlink()
+            removed_commands.append(candidate)
+    say("tinyTouch background service removed.")
+    if removed_commands:
+        say("Command links removed: " + ", ".join(str(path) for path in removed_commands))
+    say(f"Passwords, pairing keys, settings, and rollback generations remain in {SUPPORT_DIR}.")
+    say("Delete those only after confirming that you no longer need recovery or migration.")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -2949,6 +3181,20 @@ def parser() -> argparse.ArgumentParser:
     logs.add_argument("--lines", type=int, default=40)
     logs.set_defaults(func=command_logs)
 
+    diagnostics = sub.add_parser(
+        "diagnostics", help="write a structured support snapshot without Keychain secrets"
+    )
+    add_verbose_option(diagnostics)
+    diagnostics.add_argument("--lines", type=int, default=100)
+    diagnostics.add_argument("--output", help="write private JSON to this path")
+    diagnostics.set_defaults(func=command_diagnostics)
+
+    uninstall = sub.add_parser(
+        "uninstall", help="remove the CLI service while preserving credentials and settings"
+    )
+    add_verbose_option(uninstall)
+    uninstall.set_defaults(func=command_uninstall)
+
     flash_local = sub.add_parser("flash-local", help="flash a local firmware binary over OTA (developer command)")
     add_verbose_option(flash_local)
     flash_local.add_argument("binary", help="path to tiny_touch_unified.bin")
@@ -2991,7 +3237,7 @@ def main() -> int:
         return 1
     args = parser().parse_args()
     VERBOSE = args.verbose
-    if args.command != "update":
+    if args.command not in {"update", "uninstall"}:
         schedule_auto_update()
     device_commands = {
         "setup", "mode", "add-computer", "computers", "status", "test", "enroll", "pair", "keys",
@@ -3003,6 +3249,7 @@ def main() -> int:
         show_startup_mark()
         if args.command in device_commands:
             reexec_in_environment_if_needed()
+            migrate_helper_service(Path(sys.executable).resolve())
             helper_was_loaded = unload_helper() or helper_was_loaded
             if helper_was_loaded:
                 os.environ["_TINYTOUCH_RESTART_HELPER"] = "1"

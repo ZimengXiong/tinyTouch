@@ -9,10 +9,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "mbedtls/base64.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/x509_crt.h"
 #include "nvs.h"
 
 static const char *TAG = "piv";
@@ -76,6 +76,7 @@ static uint8_t chained_p1;
 static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
+static uint8_t user_presence_slots_used;
 static TickType_t pairing_mode_until;
 
 static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
@@ -88,24 +89,60 @@ static const TickType_t USER_PRESENCE_WINDOW_TICKS = pdMS_TO_TICKS(10000);
 static const TickType_t PAIRING_MODE_WINDOW_TICKS = pdMS_TO_TICKS(120000);
 
 static size_t encode_len(uint8_t *out, size_t len);
+static int piv_rng(void *ctx, unsigned char *out, size_t len);
 static bool respond_data(const uint8_t *data, size_t data_len, uint8_t *response,
                          size_t *response_len, size_t response_cap);
 
-static void decode_pem_cert(const char *pem, uint8_t *der, size_t der_cap, size_t *der_len) {
-  *der_len = 0;
-  const char *begin = strstr(pem, "-----BEGIN CERTIFICATE-----");
-  const char *end = strstr(pem, "-----END CERTIFICATE-----");
-  if (!begin || !end || end <= begin) return;
-  begin = strchr(begin, '\n');
-  if (!begin) return;
-  begin++;
-  size_t b64_len = (size_t)(end - begin);
-  int rc = mbedtls_base64_decode(der, der_cap, der_len,
-                                 (const unsigned char *)begin, b64_len);
-  if (rc != 0) {
-    *der_len = 0;
-    ESP_LOGW(TAG, "certificate DER decode failed: -0x%x", -rc);
+static void secure_wipe(void *data, size_t length) {
+  volatile uint8_t *cursor = data;
+  while (length--) *cursor++ = 0;
+}
+
+static void wipe_stored_identity(void) {
+  secure_wipe(stored_cert_9a, sizeof(stored_cert_9a));
+  secure_wipe(stored_key_9a, sizeof(stored_key_9a));
+  secure_wipe(stored_cert_9d, sizeof(stored_cert_9d));
+  secure_wipe(stored_key_9d, sizeof(stored_key_9d));
+}
+
+static bool load_certificate_for_key(const char *pem, mbedtls_pk_context *key,
+                                     uint8_t *der, size_t der_cap, size_t *der_len) {
+  if (der_len) *der_len = 0;
+  mbedtls_x509_crt certificate;
+  mbedtls_x509_crt_init(&certificate);
+  int parse_result = mbedtls_x509_crt_parse(
+      &certificate, (const unsigned char *)pem, strlen(pem) + 1);
+  int pair_result = parse_result == 0
+                        ? mbedtls_pk_check_pair(&certificate.pk, key, piv_rng, NULL)
+                        : parse_result;
+  bool valid = parse_result == 0 && pair_result == 0 &&
+               (!der || (der_len && certificate.raw.len <= der_cap));
+  if (valid && der) {
+    memcpy(der, certificate.raw.p, certificate.raw.len);
+    *der_len = certificate.raw.len;
   }
+  mbedtls_x509_crt_free(&certificate);
+  return valid;
+}
+
+static bool validate_identity_pair(const char *certificate, const char *private_key) {
+  if (!certificate || !private_key) return false;
+  mbedtls_pk_context key;
+  mbedtls_pk_init(&key);
+  int result = mbedtls_pk_parse_key(&key, (const unsigned char *)private_key,
+                                    strlen(private_key) + 1,
+                                    NULL, 0, NULL, NULL);
+  bool valid = result == 0 && mbedtls_pk_get_type(&key) == MBEDTLS_PK_RSA &&
+               mbedtls_pk_get_bitlen(&key) == 2048 &&
+               load_certificate_for_key(certificate, &key, NULL, 0, NULL);
+  mbedtls_pk_free(&key);
+  return valid;
+}
+
+bool piv_validate_identity(const char *cert_9a, const char *key_9a,
+                           const char *cert_9d, const char *key_9d) {
+  return validate_identity_pair(cert_9a, key_9a) &&
+         validate_identity_pair(cert_9d, key_9d);
 }
 
 static bool load_nvs_string(nvs_handle_t handle, const char *name, char *out, size_t cap) {
@@ -183,8 +220,24 @@ static size_t encoded_len_size(size_t len) {
 static size_t apdu_le(const uint8_t *apdu, size_t apdu_len, size_t default_len) {
   if (apdu_len == 4) return default_len;
   if (apdu_len == 5) return apdu[4] == 0 ? 256 : apdu[4];
-  uint8_t lc = apdu[4];
-  if (apdu_len > 5 + lc) return apdu[5 + lc] == 0 ? 256 : apdu[5 + lc];
+  if (apdu[4] == 0x00) {
+    if (apdu_len == 7) {
+      size_t le = ((size_t)apdu[5] << 8) | apdu[6];
+      return le == 0 ? 65536 : le;
+    }
+    if (apdu_len < 7) return default_len;
+    size_t lc = ((size_t)apdu[5] << 8) | apdu[6];
+    size_t data_end = 7 + lc;
+    if (apdu_len == data_end + 2) {
+      size_t le = ((size_t)apdu[data_end] << 8) | apdu[data_end + 1];
+      return le == 0 ? 65536 : le;
+    }
+    return default_len;
+  }
+  size_t data_end = 5 + apdu[4];
+  if (apdu_len == data_end + 1) {
+    return apdu[data_end] == 0 ? 256 : apdu[data_end];
+  }
   return default_len;
 }
 
@@ -240,13 +293,17 @@ static bool read_lc_data(const uint8_t *apdu, size_t apdu_len,
   if (apdu[4] == 0x00) {
     if (apdu_len < 7) return false;
     size_t lc = ((size_t)apdu[5] << 8) | apdu[6];
-    if (lc > apdu_len - 7) return false;
+    size_t data_end = 7 + lc;
+    if (lc == 0 || (apdu_len != data_end && apdu_len != data_end + 2)) {
+      return false;
+    }
     *data = apdu + 7;
     *data_len = lc;
     return true;
   }
-  uint8_t lc = apdu[4];
-  if ((size_t)lc > apdu_len - 5) return false;
+  size_t lc = apdu[4];
+  size_t data_end = 5 + lc;
+  if (apdu_len != data_end && apdu_len != data_end + 1) return false;
   *data = apdu + 5;
   *data_len = lc;
   return true;
@@ -267,21 +324,27 @@ static bool tlv_read_len(const uint8_t *buf, size_t buf_len, size_t *off, size_t
   return true;
 }
 
-static bool tlv_find_one(const uint8_t *buf, size_t buf_len, uint8_t tag,
-                         const uint8_t **value, size_t *value_len) {
+static bool parse_dynamic_auth(const uint8_t *buf, size_t buf_len,
+                               const uint8_t **challenge, size_t *challenge_len) {
   size_t off = 0;
+  bool saw_challenge = false;
+  bool saw_empty_response = false;
   while (off < buf_len) {
-    uint8_t t = buf[off++];
+    uint8_t tag = buf[off++];
     size_t len = 0;
-    if (!tlv_read_len(buf, buf_len, &off, &len) || off > buf_len || len > buf_len - off) return false;
-    if (t == tag) {
-      *value = buf + off;
-      *value_len = len;
-      return true;
+    if (!tlv_read_len(buf, buf_len, &off, &len) || len > buf_len - off) return false;
+    if (tag == 0x81 && !saw_challenge && len > 0) {
+      *challenge = buf + off;
+      *challenge_len = len;
+      saw_challenge = true;
+    } else if (tag == 0x82 && !saw_empty_response && len == 0) {
+      saw_empty_response = true;
+    } else {
+      return false;
     }
     off += len;
   }
-  return false;
+  return off == buf_len && saw_challenge && saw_empty_response;
 }
 
 static int piv_rng(void *ctx, unsigned char *out, size_t len) {
@@ -392,15 +455,34 @@ static bool handle_verify(const uint8_t *apdu, size_t apdu_len,
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6985);
   }
-  const uint8_t *data = NULL;
-  size_t data_len = 0;
-  if (apdu[2] != 0x00 || apdu[3] != 0x80 ||
-      !read_lc_data(apdu, apdu_len, &data, &data_len)) {
+  if (apdu[3] != 0x80) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6a88);
+  }
+  if (apdu[2] == 0xff && apdu_len == 4) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x9000);
+  }
+  if (apdu[2] != 0x00) {
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6a86);
   }
-  (void)data;
-  (void)data_len;
+  if (apdu_len == 4) {
+    return append_sw(response, response_len, response_cap,
+                     deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)
+                         ? 0x9000 : 0x63c3);
+  }
+  const uint8_t *data = NULL;
+  size_t data_len = 0;
+  static const uint8_t expected_pin[8] = {
+    '1', '1', '1', '1', '1', '1', 0xff, 0xff,
+  };
+  if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
+      data_len != sizeof(expected_pin) ||
+      memcmp(data, expected_pin, sizeof(expected_pin)) != 0) {
+    pin_verified_until = 0;
+    return append_sw(response, response_len, response_cap, 0x6a80);
+  }
   pin_verified_until = xTaskGetTickCount() + PIN_VERIFIED_WINDOW_TICKS;
   return append_sw(response, response_len, response_cap, 0x9000);
 }
@@ -420,6 +502,9 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6982);
   }
+  // PIN verification authorizes one cryptographic attempt. Malformed input
+  // must not leave a reusable authorization window behind.
+  pin_verified_until = 0;
   const uint8_t *data = NULL;
   size_t data_len = 0;
   if (!read_lc_data(apdu, apdu_len, &data, &data_len)) {
@@ -431,13 +516,14 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     return append_sw(response, response_len, response_cap, 0x6a80);
   }
   size_t outer_len = 0;
-  if (!tlv_read_len(data, data_len, &outer_off, &outer_len) || outer_off + outer_len > data_len) {
+  if (!tlv_read_len(data, data_len, &outer_off, &outer_len) ||
+      outer_off + outer_len != data_len) {
     return append_sw(response, response_len, response_cap, 0x6a80);
   }
 
   const uint8_t *challenge = NULL;
   size_t challenge_len = 0;
-  if (!tlv_find_one(data + outer_off, outer_len, 0x81, &challenge, &challenge_len)) {
+  if (!parse_dynamic_auth(data + outer_off, outer_len, &challenge, &challenge_len)) {
     return append_sw(response, response_len, response_cap, 0x6a80);
   }
   mbedtls_pk_context *key = apdu[3] == 0x9d ? &key_mgmt_key : &auth_key;
@@ -450,39 +536,44 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
                                              USER_PRESENCE_WINDOW_TICKS);
   bool pairing_mode_valid = deadline_active(pairing_mode_until,
                                             PAIRING_MODE_WINDOW_TICKS);
-  if (!user_presence_valid && !pairing_mode_valid) {
+  uint8_t slot_bit = apdu[3] == 0x9d ? 0x02 : 0x01;
+  bool slot_already_used = (user_presence_slots_used & slot_bit) != 0;
+  if ((!user_presence_valid || slot_already_used) && !pairing_mode_valid) {
     pin_verified_until = 0;
-    user_presence_until = 0;
+    if (!user_presence_valid) {
+      user_presence_until = 0;
+      user_presence_slots_used = 0;
+    }
     return append_sw(response, response_len, response_cap, 0x6982);
   }
-  // One touch authorizes one private-key operation, regardless of slot.
-  // Pairing mode remains the explicit, time-limited provisioning exception.
-  if (!pairing_mode_valid) user_presence_until = 0;
+  // A macOS login can use 9a for authentication and then 9d to unlock the
+  // login Keychain. One touch permits at most one operation in each slot; it
+  // never permits repeated operations in either slot.
+  if (!pairing_mode_valid) {
+    user_presence_slots_used |= slot_bit;
+    if (user_presence_slots_used == 0x03) user_presence_until = 0;
+  }
 
   uint8_t sig[256];
-  size_t sig_len = sizeof(sig);
-  int rc = 0;
-  if (challenge_len == sizeof(sig)) {
-    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*key);
-    rc = mbedtls_rsa_private(rsa, piv_rng, NULL, challenge, sig);
-  } else {
-    uint8_t hash[32];
-    mbedtls_sha256(challenge, challenge_len, hash, 0);
-    rc = mbedtls_pk_sign(key, MBEDTLS_MD_SHA256, hash, sizeof(hash),
-                         sig, sizeof(sig), &sig_len, piv_rng, NULL);
+  size_t sig_len = mbedtls_pk_get_len(key);
+  if (sig_len != sizeof(sig) || challenge_len != sig_len) {
+    return append_sw(response, response_len, response_cap, 0x6700);
   }
-  pin_verified_until = 0;
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(*key);
+  int rc = mbedtls_rsa_private(rsa, piv_rng, NULL, challenge, sig);
   if (rc != 0) {
     ESP_LOGE(TAG, "sign failed: -0x%x", -rc);
     return append_sw(response, response_len, response_cap, 0x6f00);
   }
 
+  size_t inner_len = 1 + encoded_len_size(sig_len) + sig_len;
+  size_t required = 1 + encoded_len_size(inner_len) + inner_len + 2;
+  if (required > response_cap) return false;
   size_t off = 0;
   response[off++] = 0x7c;
-  off += encode_len(response + off, 1 + (sig_len >= 0x80 ? 3 : 1) + sig_len);
+  off += encode_len(response + off, inner_len);
   response[off++] = 0x82;
   off += encode_len(response + off, sig_len);
-  if (off + sig_len + 2 > response_cap) return false;
   memcpy(response + off, sig, sig_len);
   off += sig_len;
   *response_len = off;
@@ -527,13 +618,15 @@ void piv_init(void) {
 
   if (!have_provisioned_material) {
     ESP_LOGI(TAG, "PIV identity is unconfigured");
+    wipe_stored_identity();
     return;
   }
   int rc = mbedtls_pk_parse_key(&auth_key,
                                 (const unsigned char *)key_9a_pem,
                                 strlen(key_9a_pem) + 1,
                                 NULL, 0, NULL, NULL);
-  bool auth_ok = rc == 0 && mbedtls_pk_get_type(&auth_key) == MBEDTLS_PK_RSA;
+  bool auth_ok = rc == 0 && mbedtls_pk_get_type(&auth_key) == MBEDTLS_PK_RSA &&
+                 mbedtls_pk_get_bitlen(&auth_key) == 2048;
   if (!auth_ok) {
     ESP_LOGW(TAG, "provisioned auth private key could not be loaded");
   }
@@ -542,14 +635,19 @@ void piv_init(void) {
                             (const unsigned char *)key_9d_pem,
                             strlen(key_9d_pem) + 1,
                             NULL, 0, NULL, NULL);
-  bool key_mgmt_ok = rc == 0 && mbedtls_pk_get_type(&key_mgmt_key) == MBEDTLS_PK_RSA;
+  bool key_mgmt_ok = rc == 0 &&
+                     mbedtls_pk_get_type(&key_mgmt_key) == MBEDTLS_PK_RSA &&
+                     mbedtls_pk_get_bitlen(&key_mgmt_key) == 2048;
   if (!key_mgmt_ok) {
     ESP_LOGW(TAG, "provisioned key-management private key could not be loaded");
   }
 
-  decode_pem_cert(cert_9a_pem, cert_9a_der, sizeof(cert_9a_der), &cert_9a_der_len);
-  decode_pem_cert(cert_9d_pem, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
-  using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_der_len > 0 && cert_9d_der_len > 0;
+  bool cert_9a_ok = auth_ok && load_certificate_for_key(
+      cert_9a_pem, &auth_key, cert_9a_der, sizeof(cert_9a_der), &cert_9a_der_len);
+  bool cert_9d_ok = key_mgmt_ok && load_certificate_for_key(
+      cert_9d_pem, &key_mgmt_key, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
+  using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_ok && cert_9d_ok;
+  wipe_stored_identity();
   if (!using_provisioned_keys) {
     ESP_LOGW(TAG, "provisioned PIV material is incomplete or unusable");
     // Credential readiness is aggregate. Never retain a usable key or
@@ -576,12 +674,14 @@ void piv_reset_transport_state(void) {
   chained_apdu_data_len = 0;
   pin_verified_until = 0;
   user_presence_until = 0;
+  user_presence_slots_used = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 
 void piv_note_user_presence(void) {
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
+  user_presence_slots_used = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 
@@ -608,6 +708,19 @@ static bool piv_handle_apdu_locked(const uint8_t *apdu, size_t apdu_len,
 
   uint8_t ins = apdu[1];
   uint8_t cla = apdu[0];
+
+  if (cla != 0x00 && cla != 0x10) {
+    chained_apdu_data_len = 0;
+    return append_sw(response, response_len, response_cap, 0x6e00);
+  }
+  if ((cla & 0x10) && ins != 0x87) {
+    chained_apdu_data_len = 0;
+    return append_sw(response, response_len, response_cap, 0x6884);
+  }
+  if (ins != 0xc0) {
+    pending_response_len = 0;
+    pending_response_off = 0;
+  }
 
   if ((cla & 0x10) && ins == 0x87) {
     const uint8_t *data = NULL;
@@ -677,6 +790,9 @@ static bool piv_handle_apdu_locked(const uint8_t *apdu, size_t apdu_len,
 bool piv_handle_apdu(const uint8_t *apdu, size_t apdu_len,
                      uint8_t *response, size_t *response_len,
                      size_t response_cap) {
+  if (!response_len) return false;
+  *response_len = 0;
+  if (!apdu || !response || response_cap < 2) return false;
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   bool ok = piv_handle_apdu_locked(apdu, apdu_len, response, response_len, response_cap);
   if (piv_mutex) xSemaphoreGive(piv_mutex);
