@@ -1915,7 +1915,7 @@ def pair_piv(requested_identity: str | None = None, port: str | None = None) -> 
             say()
             say("macOS may show three prompts:")
             say("  1. Terminal Password — your normal Mac password")
-            say("  2. Smart Card PIN — 000000 (six zeros)")
+            say("  2. Smart Card PIN — 111111 (six zeros)")
             say("  3. Keychain/System Password — your normal Mac password again")
             try:
                 try:
@@ -1926,7 +1926,7 @@ def pair_piv(requested_identity: str | None = None, port: str | None = None) -> 
                     if "6982" in detail:
                         raise ToolError(
                             "macOS pairing was not authorized in time. Run 'tinytouch pair' "
-                            "again, touch an enrolled finger when instructed, and use 000000 "
+                            "again, touch an enrolled finger when instructed, and use 111111 "
                             "at the smart-card PIN prompt."
                         ) from exc
                     if "CryptoTokenKit" in detail:
