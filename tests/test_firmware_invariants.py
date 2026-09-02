@@ -300,6 +300,25 @@ class FirmwareInvariantTests(unittest.TestCase):
             self.assertIn("parse_unsigned", body)
         self.assertIn("decode_hex(arguments, token_bytes", source)
 
+    def test_piv_provisioning_validates_key_pairs_before_nvs_commit(self):
+        piv = (MAIN / "piv.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        validation = piv.split("bool piv_validate_identity", 1)[1].split(
+            "static bool load_nvs_string", 1
+        )[0]
+        commit = console.split("static bool commit_provisioning", 1)[1].split(
+            "static bool factory_reset", 1
+        )[0]
+
+        self.assertIn("mbedtls_x509_crt_parse", piv)
+        self.assertIn("mbedtls_pk_check_pair", piv)
+        self.assertEqual(2, validation.count("validate_identity_pair"))
+        self.assertLess(commit.index("piv_validate_identity"),
+                        commit.index('nvs_open("piv_keys"'))
+        self.assertIn("reset_provisioning();", commit)
+        self.assertIn("piv_uses_provisioned_keys()", commit)
+        self.assertIn("wipe_stored_identity();", piv)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]

@@ -316,9 +316,19 @@ static bool provision_buffers_valid(void) {
 }
 
 static bool commit_provisioning(void) {
-  if (!provision_buffers_valid()) return false;
+  if (!provision_buffers_valid() ||
+      !piv_validate_identity((char *)provision_cert9a.data,
+                             (char *)provision_key9a.data,
+                             (char *)provision_cert9d.data,
+                             (char *)provision_key9d.data)) {
+    reset_provisioning();
+    return false;
+  }
   nvs_handle_t handle;
-  if (nvs_open("piv_keys", NVS_READWRITE, &handle) != ESP_OK) return false;
+  if (nvs_open("piv_keys", NVS_READWRITE, &handle) != ESP_OK) {
+    reset_provisioning();
+    return false;
+  }
   esp_err_t result = nvs_set_blob(handle, "cert9a", provision_cert9a.data,
                                   provision_cert9a.length + 1);
   if (result == ESP_OK) result = nvs_set_blob(handle, "key9a", provision_key9a.data,
@@ -329,11 +339,9 @@ static bool commit_provisioning(void) {
                                                provision_key9d.length + 1);
   if (result == ESP_OK) result = nvs_commit(handle);
   nvs_close(handle);
-  if (result == ESP_OK) {
-    piv_reload_keys();
-    reset_provisioning();
-  }
-  return result == ESP_OK;
+  if (result == ESP_OK) piv_reload_keys();
+  reset_provisioning();
+  return result == ESP_OK && piv_uses_provisioned_keys();
 }
 
 static bool factory_reset(void) {

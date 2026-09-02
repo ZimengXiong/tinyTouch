@@ -9,10 +9,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "mbedtls/base64.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/x509_crt.h"
 #include "nvs.h"
 
 static const char *TAG = "piv";
@@ -89,24 +89,59 @@ static const TickType_t USER_PRESENCE_WINDOW_TICKS = pdMS_TO_TICKS(10000);
 static const TickType_t PAIRING_MODE_WINDOW_TICKS = pdMS_TO_TICKS(120000);
 
 static size_t encode_len(uint8_t *out, size_t len);
+static int piv_rng(void *ctx, unsigned char *out, size_t len);
 static bool respond_data(const uint8_t *data, size_t data_len, uint8_t *response,
                          size_t *response_len, size_t response_cap);
 
-static void decode_pem_cert(const char *pem, uint8_t *der, size_t der_cap, size_t *der_len) {
-  *der_len = 0;
-  const char *begin = strstr(pem, "-----BEGIN CERTIFICATE-----");
-  const char *end = strstr(pem, "-----END CERTIFICATE-----");
-  if (!begin || !end || end <= begin) return;
-  begin = strchr(begin, '\n');
-  if (!begin) return;
-  begin++;
-  size_t b64_len = (size_t)(end - begin);
-  int rc = mbedtls_base64_decode(der, der_cap, der_len,
-                                 (const unsigned char *)begin, b64_len);
-  if (rc != 0) {
-    *der_len = 0;
-    ESP_LOGW(TAG, "certificate DER decode failed: -0x%x", -rc);
+static void secure_wipe(void *data, size_t length) {
+  volatile uint8_t *cursor = data;
+  while (length--) *cursor++ = 0;
+}
+
+static void wipe_stored_identity(void) {
+  secure_wipe(stored_cert_9a, sizeof(stored_cert_9a));
+  secure_wipe(stored_key_9a, sizeof(stored_key_9a));
+  secure_wipe(stored_cert_9d, sizeof(stored_cert_9d));
+  secure_wipe(stored_key_9d, sizeof(stored_key_9d));
+}
+
+static bool load_certificate_for_key(const char *pem, mbedtls_pk_context *key,
+                                     uint8_t *der, size_t der_cap, size_t *der_len) {
+  if (der_len) *der_len = 0;
+  mbedtls_x509_crt certificate;
+  mbedtls_x509_crt_init(&certificate);
+  int parse_result = mbedtls_x509_crt_parse(
+      &certificate, (const unsigned char *)pem, strlen(pem) + 1);
+  int pair_result = parse_result == 0
+                        ? mbedtls_pk_check_pair(&certificate.pk, key, piv_rng, NULL)
+                        : parse_result;
+  bool valid = parse_result == 0 && pair_result == 0 &&
+               (!der || (der_len && certificate.raw.len <= der_cap));
+  if (valid && der) {
+    memcpy(der, certificate.raw.p, certificate.raw.len);
+    *der_len = certificate.raw.len;
   }
+  mbedtls_x509_crt_free(&certificate);
+  return valid;
+}
+
+static bool validate_identity_pair(const char *certificate, const char *private_key) {
+  if (!certificate || !private_key) return false;
+  mbedtls_pk_context key;
+  mbedtls_pk_init(&key);
+  int result = mbedtls_pk_parse_key(&key, (const unsigned char *)private_key,
+                                    strlen(private_key) + 1,
+                                    NULL, 0, NULL, NULL);
+  bool valid = result == 0 && mbedtls_pk_get_type(&key) == MBEDTLS_PK_RSA &&
+               load_certificate_for_key(certificate, &key, NULL, 0, NULL);
+  mbedtls_pk_free(&key);
+  return valid;
+}
+
+bool piv_validate_identity(const char *cert_9a, const char *key_9a,
+                           const char *cert_9d, const char *key_9d) {
+  return validate_identity_pair(cert_9a, key_9a) &&
+         validate_identity_pair(cert_9d, key_9d);
 }
 
 static bool load_nvs_string(nvs_handle_t handle, const char *name, char *out, size_t cap) {
@@ -567,6 +602,7 @@ void piv_init(void) {
 
   if (!have_provisioned_material) {
     ESP_LOGI(TAG, "PIV identity is unconfigured");
+    wipe_stored_identity();
     return;
   }
   int rc = mbedtls_pk_parse_key(&auth_key,
@@ -587,9 +623,12 @@ void piv_init(void) {
     ESP_LOGW(TAG, "provisioned key-management private key could not be loaded");
   }
 
-  decode_pem_cert(cert_9a_pem, cert_9a_der, sizeof(cert_9a_der), &cert_9a_der_len);
-  decode_pem_cert(cert_9d_pem, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
-  using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_der_len > 0 && cert_9d_der_len > 0;
+  bool cert_9a_ok = auth_ok && load_certificate_for_key(
+      cert_9a_pem, &auth_key, cert_9a_der, sizeof(cert_9a_der), &cert_9a_der_len);
+  bool cert_9d_ok = key_mgmt_ok && load_certificate_for_key(
+      cert_9d_pem, &key_mgmt_key, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
+  using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_ok && cert_9d_ok;
+  wipe_stored_identity();
   if (!using_provisioned_keys) {
     ESP_LOGW(TAG, "provisioned PIV material is incomplete or unusable");
     // Credential readiness is aggregate. Never retain a usable key or
