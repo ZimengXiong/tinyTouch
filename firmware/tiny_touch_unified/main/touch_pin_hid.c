@@ -49,14 +49,6 @@ static bool send_key(uint8_t modifier, uint8_t key) {
   return true;
 }
 
-static bool type_dummy_pin(void) {
-  for (int i = 0; i < 6; i++) {
-    // Numeric-keypad usages are independent of the active keyboard layout.
-    if (!send_key(0, HID_KEY_KEYPAD_1)) return false;
-  }
-  return send_key(0, HID_KEY_ENTER);
-}
-
 static bool type_ascii(const uint8_t *data, size_t length) {
   // Validate the complete payload before emitting any key. A malformed helper
   // response must never leave a password prefix in the focused field.
@@ -326,16 +318,15 @@ typedef struct {
 } auth_runtime_t;
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
-  bool success = false;
   if (device_config_mode() == DEVICE_MODE_HID) {
     ESP_LOGI(TAG, "finger matched; requesting HID password");
-    success = request_and_type_password(match);
+    bool success = request_and_type_password(match);
     if (!success) ESP_LOGW(TAG, "HID helper request failed");
   } else {
-    ESP_LOGI(TAG, "finger matched; authorizing PIV and typing PIN");
+    // PIV is a smart-card protocol. Fingerprint presence authorizes the card;
+    // it must never emit a synthetic PIN through the HID keyboard interface.
+    ESP_LOGI(TAG, "finger matched; authorizing PIV smart-card operation");
     piv_note_user_presence();
-    success = type_dummy_pin();
-    if (!success) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
   }
 }
 
