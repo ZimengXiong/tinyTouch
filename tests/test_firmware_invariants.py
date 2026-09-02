@@ -335,8 +335,17 @@ class FirmwareInvariantTests(unittest.TestCase):
         reconnect = source.split('strcmp(command, "USB_RECONNECT")', 1)[1].split(
             '} else if (strcmp(command, "REBOOT")', 1
         )[0]
+        reboot = source.split('strcmp(command, "REBOOT")', 1)[1].split(
+            '} else if (strcmp(command, "BOOTLOADER")', 1
+        )[0]
+        reset = source.split('strcmp(command, "FACTORY_RESET")', 1)[1].split(
+            '} else if (strcmp(command, "USB_RECONNECT")', 1
+        )[0]
 
         self.assertIn("esp_restart()", reconnect)
+        self.assertIn("require_config_authorization()", reconnect)
+        self.assertIn("require_config_authorization()", reboot)
+        self.assertIn("esp_restart()", reset)
         self.assertNotIn("tud_disconnect()", reconnect)
         self.assertNotIn("tud_connect()", reconnect)
 

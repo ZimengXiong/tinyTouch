@@ -646,8 +646,16 @@ static void handle_command(void) {
     bool ok = build_matches && sensor_ok && firmware_update_confirm_running();
     send_line(ok ? "OK CONFIRM_FIRMWARE" : "ERR CONFIRM_FIRMWARE");
   } else if (strcmp(command, "FACTORY_RESET") == 0) {
-    send_line(factory_reset() ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
+    bool ok = factory_reset();
+    send_line(ok ? "OK FACTORY_RESET" : "ERR FACTORY_RESET");
+    if (ok) {
+      // Factory reset restores PIV mode. Restart immediately so a device that
+      // was using HID cannot keep its old descriptor until another command.
+      vTaskDelay(pdMS_TO_TICKS(150));
+      esp_restart();
+    }
   } else if (strcmp(command, "USB_RECONNECT") == 0) {
+    if (!require_config_authorization()) return;
     send_line("OK USB_RECONNECT");
     // USB descriptors are selected during TinyUSB initialization. Restart so
     // a persisted mode change cannot reattach the descriptor from the prior
@@ -655,6 +663,7 @@ static void handle_command(void) {
     vTaskDelay(pdMS_TO_TICKS(150));
     esp_restart();
   } else if (strcmp(command, "REBOOT") == 0) {
+    if (!require_config_authorization()) return;
     send_line("OK REBOOT");
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
