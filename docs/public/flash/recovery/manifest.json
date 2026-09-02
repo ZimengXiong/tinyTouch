@@ -1,5 +1,5 @@
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "protocol": 5,
   "secureVersion": 0,
   "flashSize": "4MB",
@@ -11,7 +11,7 @@
       "file": "recovery_bootloader.bin",
       "address": 0,
       "size": 21488,
-      "sha256": "1c4f8f02459769d452c9206ff9f6528e126bcf10d6691e73ff1136ab3bb4db8d"
+      "sha256": "04628c946491f56de62339c02b679cb6ccd378e380e6d6a2ae09c9358390371b"
     },
     {
       "name": "Partition table",
@@ -25,7 +25,7 @@
       "file": "tiny_touch_recovery.bin",
       "address": 65536,
       "size": 462848,
-      "sha256": "01750fc8816fbc61deb6e374c24f3c7574dfc8375f5296fad61a2462a476937d"
+      "sha256": "3981204ddff70c52b490c6c8923faa938a5d63f8b4a8a617af0decf0844f78c7"
     },
     {
       "name": "OTA state",
@@ -38,6 +38,6 @@
   "fullImage": {
     "file": "tiny_touch_recovery_full.bin",
     "size": 2170880,
-    "sha256": "5a550ab4c21b7f20ef4c241410785a5bd797273afe3e2315bb594f17254669d1"
+    "sha256": "9a31252df1b4080829af21ef162679d32efcf7fe6b31219f6d917515164a4dbc"
   }
 }
