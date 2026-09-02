@@ -61,13 +61,18 @@ class KeychainError(RuntimeError):
         self.transient = status in {-25308, -25315, -25320}
 
 
-def set_background_mode() -> None:
-    """Disable Keychain UI in the unattended helper process."""
+def disable_user_interaction() -> None:
+    """Forbid Keychain UI so callers fail in the terminal instead of prompting."""
     global _BACKGROUND_MODE
     status = _SECURITY.SecKeychainSetUserInteractionAllowed(False)
     if status != 0:
         raise KeychainError("disable interaction", status)
     _BACKGROUND_MODE = True
+
+
+def set_background_mode() -> None:
+    """Disable Keychain UI in the unattended helper process."""
+    disable_user_interaction()
 
 
 def unlock_default_keychain(password: bytearray) -> None:

@@ -889,12 +889,12 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
+    set_background_mode()
     if args.self_test:
         if not args.device_id:
             raise SystemExit("--device-id is required for --self-test")
         self_test(args.device_id)
         return
-    set_background_mode()
     failures = 0
     backoff = BackoffPolicy(initial=0.25, maximum=30.0)
     while True:

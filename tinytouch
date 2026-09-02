@@ -82,32 +82,41 @@ def run(command: list[str], **kwargs):
         raise ToolError(detail or f"Command failed: {command[0]}") from exc
 
 
-def run_sudo(command: list[str]) -> None:
-    """Authorize sudo once from the terminal, then run one privileged command."""
+def authorize_macos() -> None:
+    """Authorize sudo and unlock the login Keychain from one terminal prompt."""
     global _sudo_session_ready
-    if not _sudo_session_ready:
-        cached = subprocess.run(
-            ["sudo", "-n", "-v"], check=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if cached.returncode:
-            entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
-            if not entered:
-                raise ToolError("A Mac password is required for this step.")
+    if _sudo_session_ready:
+        return
+    cached = subprocess.run(
+        ["sudo", "-n", "-v"], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if not cached.returncode:
+        _keychain().disable_user_interaction()
+    else:
+        entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
+        if not entered:
+            raise ToolError("A Mac password is required for this step.")
+        try:
             try:
-                try:
-                    _keychain().unlock_default_keychain(entered)
-                except _keychain().KeychainError as exc:
-                    raise ToolError("Mac password did not unlock the login Keychain.") from exc
-                validated = subprocess.run(
-                    ["sudo", "-S", "-p", "", "-v"], input=bytes(entered) + b"\n",
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                )
-            finally:
-                entered[:] = b"\x00" * len(entered)
-            if validated.returncode:
-                raise ToolError("Mac password was not accepted by sudo.")
-        _sudo_session_ready = True
+                _keychain().unlock_default_keychain(entered)
+                _keychain().disable_user_interaction()
+            except _keychain().KeychainError as exc:
+                raise ToolError("Mac password did not unlock the login Keychain.") from exc
+            validated = subprocess.run(
+                ["sudo", "-S", "-p", "", "-v"], input=bytes(entered) + b"\n",
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+        finally:
+            entered[:] = b"\x00" * len(entered)
+        if validated.returncode:
+            raise ToolError("Mac password was not accepted by sudo.")
+    _sudo_session_ready = True
+
+
+def run_sudo(command: list[str]) -> None:
+    """Run a privileged command after terminal-only authorization."""
+    authorize_macos()
     run(["sudo", "-n", *command])
 
 
@@ -424,6 +433,7 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
+    authorize_macos()
     account = device_account(port)
     stored = keychain_get(PAIRING_SERVICE, account)
     try:
@@ -455,6 +465,24 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
         raise ToolError("HID setup is incomplete: the helper is not loaded.")
     if identifier not in host_list(port)[0]:
         raise ToolError("HID setup is incomplete: the device has no registered host.")
+
+
+def command_hid_smoke(_: argparse.Namespace) -> None:
+    """Install and exercise the HID helper without a physical device."""
+    require_macos()
+    authorize_macos()
+    device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
+    key = secrets.token_bytes(32)
+    password = "tinyTouch-smoke-password"
+    try:
+        keychain_set(PAIRING_SERVICE, device_id, key.hex())
+        keychain_set(PASSWORD_SERVICE, device_id, password)
+        install_helper()
+        run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
+        say("HID bridge smoke test passed. The helper is installed; no device was used.")
+    finally:
+        keychain_delete(PAIRING_SERVICE, device_id)
+        keychain_delete(PASSWORD_SERVICE, device_id)
 
 
 def host_list(port: str) -> tuple[set[str], int]:
@@ -878,6 +906,8 @@ def parser() -> argparse.ArgumentParser:
     pair = sub.add_parser("pair")
     pair.add_argument("--port")
     pair.set_defaults(func=command_pair)
+    hid_smoke = sub.add_parser("hid-smoke")
+    hid_smoke.set_defaults(func=command_hid_smoke)
     return parser
 
 
