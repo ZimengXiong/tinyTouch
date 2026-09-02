@@ -11,11 +11,13 @@ import json
 import os
 import platform
 import plistlib
+import pty
 import re
 import secrets
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -402,6 +404,9 @@ def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
 
 
 def device_account(port: str) -> str:
+    override = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
+    if override:
+        return override
     try:
         import serial.tools.list_ports  # type: ignore
     except ImportError as exc:
@@ -468,23 +473,69 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
 
 
 def command_hid_smoke(_: argparse.Namespace) -> None:
-    """Install and exercise the HID helper without a physical device."""
+    """Run the HID setup path against a temporary protocol-6 device."""
     require_macos()
-    authorize_macos()
     device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
-    key = secrets.token_bytes(32)
-    password = "tinyTouch-smoke-password"
+    master, slave = pty.openpty()
+    port = os.ttyname(slave)
+    state = {"mode": "piv", "hosts": set()}
+    stopped = threading.Event()
+
+    def reply(line: str) -> str:
+        if line == "STATUS":
+            return (
+                "OK STATUS firmware=0.8.4 protocol=6 mode=" + state["mode"]
+                + f" sensor=ready fingerprints=4 piv=none hosts={len(state['hosts'])}"
+            )
+        if line == "AUTH":
+            return "EVENT TOUCH\nOK AUTH"
+        if line == "HOST LIST":
+            identifiers = ",".join(sorted(state["hosts"])) or "none"
+            return f"OK HOST LIST capacity=8 ids={identifiers}"
+        if line.startswith("HOST ADD "):
+            state["hosts"].add(line.split()[2].lower())
+            return "OK ADD"
+        if line == "SET MODE HID":
+            state["mode"] = "hid"
+            return "OK MODE"
+        return "ERR COMMAND"
+
+    def serve() -> None:
+        buffered = b""
+        while not stopped.is_set():
+            try:
+                chunk = os.read(master, 256)
+            except OSError:
+                return
+            if not chunk:
+                continue
+            buffered += chunk
+            while b"\n" in buffered:
+                raw, buffered = buffered.split(b"\n", 1)
+                response = reply(raw.decode("ascii", "replace").strip())
+                os.write(master, (response + "\n").encode("ascii"))
+
+    worker = threading.Thread(target=serve, daemon=True)
+    previous_account = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
     try:
         remove_helper()
-        keychain_set(PAIRING_SERVICE, device_id, key.hex())
-        keychain_set(PASSWORD_SERVICE, device_id, password)
-        install_helper()
+        os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = device_id
+        worker.start()
+        command_setup(argparse.Namespace(mode="hid", port=port, skip_enroll=True, no_pair=False))
         run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
-        say(f"HID bridge password: {password}")
-        say("HID bridge smoke test passed. A fresh helper was installed with a temporary device identity.")
+        say(f"HID bridge password: {keychain_get(PASSWORD_SERVICE, device_id)}")
+        say("HID setup and bridge smoke test passed.")
     finally:
+        stopped.set()
+        os.close(master)
+        os.close(slave)
+        if previous_account is None:
+            os.environ.pop("TINYTOUCH_DEVICE_ACCOUNT", None)
+        else:
+            os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = previous_account
         keychain_delete(PAIRING_SERVICE, device_id)
         keychain_delete(PASSWORD_SERVICE, device_id)
+        remove_helper()
 
 
 def host_list(port: str) -> tuple[set[str], int]:
