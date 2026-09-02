@@ -542,6 +542,13 @@ def serve_port(
     try:
         with open_serial(port) as ser:
             diagnostic("worker.connected", device_id=device_id, port=port)
+            # A USB reconnect can expose the serial node before the device's
+            # console is usable. Probe now instead of waiting five seconds for
+            # the normal idle heartbeat; a failed probe makes the manager open
+            # a fresh port automatically.
+            ser.write(b"PING\n")
+            ser.flush()
+            heartbeat_sent_at = time.monotonic()
             while True:
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
