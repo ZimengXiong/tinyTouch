@@ -107,7 +107,7 @@ static void status(void) {
   char line[320];
   int count = fingerprint_count();
   snprintf(line, sizeof(line),
-           "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
+           "OK STATUS protocol=6 firmware=unified firmware_version=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
            "hosts=%u ota=%s",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
