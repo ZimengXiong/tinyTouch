@@ -37,6 +37,7 @@ static char ota_token[33];
 static int64_t authorized_until;
 static int64_t ota_last_activity;
 static SemaphoreHandle_t write_lock;
+static volatile bool piv_create_active;
 
 static void wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -242,9 +243,25 @@ static void factory_reset(void) {
   reply(ok ? "OK RESET FACTORY" : "ERR RESET FACTORY");
 }
 
+static void piv_create_task(void *argument) {
+  (void)argument;
+  bool ok = piv_create_identity();
+  piv_create_active = false;
+  reply(ok ? "OK PIV CREATE" : "ERR PIV CREATE");
+  vTaskDelete(NULL);
+}
+
 static void piv_create(void) {
   if (!require_authorized()) return;
-  reply(piv_create_identity() ? "OK PIV CREATE" : "ERR PIV CREATE");
+  if (piv_create_active) { reply("ERR PIV BUSY"); return; }
+  piv_create_active = true;
+  BaseType_t created = xTaskCreate(piv_create_task, "piv_create", 10240, NULL, 1, NULL);
+  if (created != pdPASS) {
+    piv_create_active = false;
+    reply("ERR PIV CREATE");
+    return;
+  }
+  reply("EVENT PIV_CREATE");
 }
 
 static void ota_begin(char *arguments) {

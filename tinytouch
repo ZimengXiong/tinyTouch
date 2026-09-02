@@ -707,7 +707,7 @@ def command_setup(args: argparse.Namespace) -> None:
                 serial_command(port, "SET MODE PIV", timeout=4)
                 fresh_status(port, {"mode": "piv"})
             if device.get("piv") != "ready":
-                serial_command(port, "PIV CREATE", timeout=15)
+                serial_command(port, "PIV CREATE", timeout=45)
                 if status(port).get("piv") != "ready":
                     raise ToolError("Live verification failed: the PIV identity is not ready.")
         enroll(port, args.skip_enroll)
