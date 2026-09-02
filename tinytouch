@@ -992,6 +992,13 @@ def command_status(args: argparse.Namespace) -> None:
     say(json.dumps(data, indent=2, sort_keys=True))
 
 
+def command_logs(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    for line in serial_command(port, "LOGS", timeout=4):
+        if line.startswith("LOG "):
+            say(line)
+
+
 def command_test(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     status(port)
@@ -1088,6 +1095,9 @@ def parser() -> argparse.ArgumentParser:
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("--port")
     status_cmd.set_defaults(func=command_status)
+    logs = sub.add_parser("logs", help="show the device event log without probing the sensor")
+    logs.add_argument("--port")
+    logs.set_defaults(func=command_logs)
     test = sub.add_parser("test")
     test.add_argument("--port")
     test.set_defaults(func=command_test)

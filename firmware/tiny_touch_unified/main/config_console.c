@@ -314,6 +314,7 @@ static void ota_commit(const char *token) {
 static void handle_command(void) {
   if (strcmp(command, "PING") == 0) reply("PONG 6");
   else if (strcmp(command, "STATUS") == 0) status();
+  else if (strcmp(command, "LOGS") == 0) touch_pin_hid_send_logs();
   else if (strcmp(command, "AUTH") == 0) authorize();
   else if (strncmp(command, "SET MODE ", 9) == 0) set_mode(command + 9);
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);

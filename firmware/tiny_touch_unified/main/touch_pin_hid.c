@@ -24,6 +24,46 @@ static uint32_t event_counter;
 static volatile bool usb_sensor_probe_pending;
 static volatile TickType_t usb_sensor_probe_at;
 
+#define DEVICE_LOG_CAPACITY 32
+typedef struct {
+  uint32_t milliseconds;
+  const char *event;
+  int value;
+} device_log_entry_t;
+static device_log_entry_t device_log[DEVICE_LOG_CAPACITY];
+static size_t device_log_next;
+static size_t device_log_count;
+static portMUX_TYPE device_log_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void log_event(const char *event, int value) {
+  taskENTER_CRITICAL(&device_log_lock);
+  device_log[device_log_next] = (device_log_entry_t) {
+    .milliseconds = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+    .event = event,
+    .value = value,
+  };
+  device_log_next = (device_log_next + 1) % DEVICE_LOG_CAPACITY;
+  if (device_log_count < DEVICE_LOG_CAPACITY) device_log_count++;
+  taskEXIT_CRITICAL(&device_log_lock);
+}
+
+void touch_pin_hid_send_logs(void) {
+  device_log_entry_t entries[DEVICE_LOG_CAPACITY];
+  size_t count;
+  taskENTER_CRITICAL(&device_log_lock);
+  count = device_log_count;
+  size_t first = (device_log_next + DEVICE_LOG_CAPACITY - count) % DEVICE_LOG_CAPACITY;
+  for (size_t i = 0; i < count; i++) entries[i] = device_log[(first + i) % DEVICE_LOG_CAPACITY];
+  taskEXIT_CRITICAL(&device_log_lock);
+  char line[96];
+  for (size_t i = 0; i < count; i++) {
+    snprintf(line, sizeof(line), "LOG ms=%lu event=%s value=%d",
+             (unsigned long)entries[i].milliseconds, entries[i].event, entries[i].value);
+    config_console_send_line(line);
+  }
+  config_console_send_line("OK LOGS");
+}
+
 static void secure_wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
   while (length--) *cursor++ = 0;
@@ -323,6 +363,7 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
   if (device_config_mode() == DEVICE_MODE_HID) {
     ESP_LOGI(TAG, "finger matched; requesting HID password");
     bool success = request_and_type_password(match);
+    log_event(success ? "hid_typed" : "hid_failed", match.slot);
     if (!success) ESP_LOGW(TAG, "HID helper request failed");
   } else {
     // The PIV applet accepts this PIN. Emit it only after a verified background
@@ -330,7 +371,9 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     static const uint8_t piv_pin[] = {'1', '1', '1', '1', '1', '1'};
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
     piv_note_user_presence();
-    if (!type_ascii(piv_pin, sizeof(piv_pin))) ESP_LOGW(TAG, "PIV PIN typing failed");
+    bool typed = type_ascii(piv_pin, sizeof(piv_pin));
+    log_event(typed ? "piv_pin_typed" : "piv_pin_failed", match.slot);
+    if (!typed) ESP_LOGW(TAG, "PIV PIN typing failed");
   }
 }
 
@@ -347,6 +390,7 @@ static void touch_hid_task(void *arg) {
     .presence_armed = false,
   };
   TickType_t next_recovery = 0;
+  log_event("task_started", 0);
 
   while (true) {
     // Console commands such as PIV setup own the fingerprint session. Do not
@@ -360,7 +404,9 @@ static void touch_hid_task(void *arg) {
     if (usb_sensor_probe_pending && now >= usb_sensor_probe_at) {
       // Match the helper's successful post-enumeration STATUS probe. The
       // sensor may finish booting after USB, so retry only until it responds.
-      if (fingerprint_count() >= 0) {
+      int count = fingerprint_count();
+      log_event(count >= 0 ? "sensor_probe_ok" : "sensor_probe_failed", count);
+      if (count >= 0) {
         usb_sensor_probe_pending = false;
       } else {
         usb_sensor_probe_at = now + pdMS_TO_TICKS(1000);
@@ -389,7 +435,7 @@ static void touch_hid_task(void *arg) {
       // path so a disconnected sensor cannot monopolize the task.
       if (now >= next_recovery) {
         next_recovery = now + pdMS_TO_TICKS(2000);
-        fingerprint_recover();
+        log_event(fingerprint_recover() ? "sensor_recovered" : "sensor_recover_failed", 0);
       }
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -404,13 +450,16 @@ static void touch_hid_task(void *arg) {
     }
 
     runtime.presence_armed = false;
+    log_event("touch_detected", 0);
     fingerprint_match_t match = fingerprint_authorize_poll_match();
     if (match.slot == 0) {
+      log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
+    log_event("finger_matched", match.slot);
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());
     vTaskDelay(pdMS_TO_TICKS(250));
@@ -426,6 +475,7 @@ void touch_pin_hid_start(void) {
 }
 
 void touch_pin_hid_usb_attached(void) {
+  log_event("usb_attached", 0);
   usb_sensor_probe_pending = true;
   usb_sensor_probe_at = xTaskGetTickCount() + pdMS_TO_TICKS(500);
 }
