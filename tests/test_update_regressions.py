@@ -550,9 +550,9 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("return received == expected", source)
         self.assertIn("checksum mismatch", source)
 
-    def test_ccid_bounds_are_subtraction_based_and_in_transfer_is_serialized(self):
+    def test_ccid_frames_are_exactly_bounded_and_in_transfer_is_serialized(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "usb_ccid.c").read_text()
-        self.assertIn("len > msg_len - 10", source)
+        self.assertIn("len != msg_len - 10", source)
         self.assertIn("in_busy", source)
         self.assertNotIn("len + 10 > msg_len", source)
 
