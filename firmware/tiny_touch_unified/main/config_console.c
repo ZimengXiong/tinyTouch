@@ -28,6 +28,7 @@
 
 #define AUTH_WINDOW_US (120LL * 1000000LL)
 #define OTA_WINDOW_US (30LL * 1000000LL)
+#define CDC_WRITE_TIMEOUT_US (2LL * 1000000LL)
 
 static char command[5632];
 static size_t command_length;
@@ -42,11 +43,33 @@ static void wipe(void *data, size_t length) {
   while (length--) *cursor++ = 0;
 }
 
+static bool cdc_write_all(const char *data, size_t length, int64_t deadline) {
+  if (!tud_cdc_connected()) return false;
+
+  size_t offset = 0;
+  while (offset < length) {
+    size_t remaining = length - offset;
+    uint32_t request = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+    uint32_t written = tud_cdc_write(data + offset, request);
+    if (written) {
+      offset += written;
+      tud_cdc_write_flush();
+      continue;
+    }
+
+    tud_cdc_write_flush();
+    if (esp_timer_get_time() >= deadline) return false;
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return true;
+}
+
 void config_console_send_line(const char *line) {
+  if (!line) return;
   if (write_lock) xSemaphoreTake(write_lock, portMAX_DELAY);
-  tud_cdc_write_str(line);
-  tud_cdc_write_str("\r\n");
-  tud_cdc_write_flush();
+  int64_t deadline = esp_timer_get_time() + CDC_WRITE_TIMEOUT_US;
+  bool sent = cdc_write_all(line, strlen(line), deadline);
+  if (sent) cdc_write_all("\r\n", 2, deadline);
   if (write_lock) xSemaphoreGive(write_lock);
 }
 
