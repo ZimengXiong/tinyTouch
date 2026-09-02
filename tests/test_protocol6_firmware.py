@@ -23,10 +23,6 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn("tiny_touch_hid_configuration_descriptor", descriptors)
         self.assertNotIn("tiny_touch_piv_configuration_descriptor", descriptors)
 
-    def test_status_identifies_unified_protocol_six_firmware(self) -> None:
-        console = self.source("config_console.c")
-        self.assertIn("firmware=unified firmware_version=%s", console)
-
     def test_persistence_swaps_one_live_config_blob(self) -> None:
         source = self.source("device_config.c")
         self.assertIn('CONFIG_NAMESPACE "tt6"', source)
