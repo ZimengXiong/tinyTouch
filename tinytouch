@@ -308,8 +308,8 @@ def status(port: str) -> dict[str, str]:
 
 
 def protocol6(device: dict[str, str]) -> None:
-    if device.get("firmware") != "unified":
-        raise ToolError(f"This is not unified tinyTouch firmware. Flash it at {FACTORY_FLASH_URL}.")
+    if not device.get("firmware"):
+        raise ToolError(f"The device did not report a firmware version. Flash it at {FACTORY_FLASH_URL}.")
     try:
         protocol = int(device.get("protocol", "0"))
     except ValueError as exc:

@@ -26,9 +26,9 @@ class ProtocolSixTests(unittest.TestCase):
         with self.assertRaisesRegex(cli.ToolError, "protocol 6"):
             cli.protocol6({"firmware": "unified", "protocol": "5"})
 
-    def test_old_firmware_is_not_treated_as_unified(self):
-        with self.assertRaisesRegex(cli.ToolError, "not unified"):
-            cli.protocol6({"firmware": "legacy", "protocol": "6"})
+    def test_protocol_six_requires_a_firmware_version(self):
+        with self.assertRaisesRegex(cli.ToolError, "did not report a firmware version"):
+            cli.protocol6({"protocol": "6"})
 
     def test_protocol_six_terminal_responses_are_grouped_by_command(self):
         self.assertTrue(cli.is_terminal("SET MODE HID", "OK SET MODE"))
