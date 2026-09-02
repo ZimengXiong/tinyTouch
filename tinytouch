@@ -19,7 +19,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import certifi
 
@@ -637,19 +637,43 @@ def package_test() -> None:
 
 
 def network_test() -> None:
-    """Check that the active channel names a verified protocol-6 OTA asset."""
-    channel = json.loads(download(RELEASE_CHANNEL_URL).decode())
+    """Check the active channel and one downloadable OTA asset."""
+    try:
+        channel = json.loads(download(RELEASE_CHANNEL_URL).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolError("release channel is not valid JSON") from exc
     manifest_url = channel.get("manifest") if isinstance(channel, dict) else None
-    if not isinstance(manifest_url, str):
-        raise ToolError("channel has no manifest URL")
-    manifest = json.loads(download(manifest_url).decode())
-    if manifest.get("protocol") != CURRENT_PROTOCOL:
-        raise ToolError("release manifest protocol is not 6")
+    parsed_url = urlparse(manifest_url) if isinstance(manifest_url, str) else None
+    if parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ToolError("release channel has no valid manifest URL")
+    try:
+        manifest = json.loads(download(manifest_url).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ToolError("release manifest is not valid JSON") from exc
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
+        raise ToolError("release manifest is incomplete")
     ota = manifest.get("ota")
-    if not isinstance(ota, dict) or not ota.get("file") or not re.fullmatch(
-        r"[0-9a-f]{64}", str(ota.get("sha256", ""))
+    if not isinstance(ota, dict):
+        raise ToolError("release manifest has no OTA asset")
+    filename = ota.get("file")
+    size = ota.get("size")
+    digest = str(ota.get("sha256", ""))
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or urlparse(filename).scheme
+        or urlparse(filename).netloc
+        or Path(filename).is_absolute()
+        or ".." in Path(filename).parts
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
-        raise ToolError("release manifest has no verified OTA asset")
+        raise ToolError("release manifest has an invalid OTA asset")
+    image = download(urljoin(manifest_url, filename))
+    if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
+        raise ToolError("release OTA asset does not match its manifest")
     say("network ok")
 
 
