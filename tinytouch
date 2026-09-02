@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 import getpass
 import hashlib
 import json
@@ -58,6 +59,7 @@ _lease: ForegroundLease | None = None
 _sudo_session_ready = False
 _setup_password: bytearray | None = None
 _helper_suppressed = False
+_active_serial = None
 
 
 class ToolError(RuntimeError):
@@ -350,41 +352,50 @@ def install_helper() -> None:
         raise ToolError("The HID helper did not load.")
 
 
-def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
+def exchange_serial(device, command: str, *, timeout: float) -> list[str]:
+    lines: list[str] = []
+    touch_prompted = False
+    device.write((command + "\n").encode("ascii"))
+    device.flush()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = device.readline()
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        lines.append(line)
+        verbose("device: " + line)
+        if line == "EVENT TOUCH" and not touch_prompted:
+            say("Touch the fingerprint sensor now.")
+            touch_prompted = True
+        elif line == "EVENT LIFT":
+            say("Lift your finger from the sensor.")
+        elif line == "EVENT TOUCH_AGAIN":
+            say("Touch the same finger again now.")
+        if is_terminal(command, line):
+            break
+    if not lines or not is_terminal(command, lines[-1]):
+        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
+    if lines[-1].startswith("ERR "):
+        raise ToolError(human_error(lines[-1], touch_prompted=touch_prompted))
+    return lines
+
+
+@contextmanager
+def foreground_session(port: str):
+    global _active_serial
     try:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required. Run setup again.") from exc
     was_loaded = unload_helper()
-    # Releasing the helper can make macOS recreate the CDC node. Resolve the
-    # path only after that handoff, never before it.
     port = current_port(port)
-    lines: list[str] = []
-    touch_prompted = False
     try:
-        with serial.Serial(port, 115200, timeout=0.25, write_timeout=2) as device:
-            time.sleep(0.2)
-            device.reset_input_buffer()
-            device.write((command + "\n").encode("ascii"))
-            device.flush()
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                raw = device.readline()
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", "replace").strip()
-                if line:
-                    lines.append(line)
-                    verbose("device: " + line)
-                    if line == "EVENT TOUCH" and not touch_prompted:
-                        say("Touch the fingerprint sensor now.")
-                        touch_prompted = True
-                    elif line == "EVENT LIFT":
-                        say("Lift your finger from the sensor.")
-                    elif line == "EVENT TOUCH_AGAIN":
-                        say("Touch the same finger again now.")
-                    if is_terminal(command, line):
-                        break
+        device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
+        time.sleep(0.2)
+        device.reset_input_buffer()
     except Exception as exc:
         if "Device not configured" in str(exc):
             raise ToolError(
@@ -393,14 +404,21 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
                 "do not unplug it unless 'tinytouch status' cannot find the device."
             ) from exc
         raise ToolError(f"Could not communicate with tinyTouch on {port}: {exc}") from exc
+    _active_serial = device
+    try:
+        yield port
     finally:
+        _active_serial = None
+        device.close()
         if was_loaded:
             load_helper()
-    if not lines or not is_terminal(command, lines[-1]):
-        raise SerialTimeout(f"tinyTouch did not acknowledge {command.split()[0]}.")
-    if lines[-1].startswith("ERR "):
-        raise ToolError(human_error(lines[-1], touch_prompted=touch_prompted))
-    return lines
+
+
+def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[str]:
+    if _active_serial is not None:
+        return exchange_serial(_active_serial, command, timeout=timeout)
+    with foreground_session(port):
+        return exchange_serial(_active_serial, command, timeout=timeout)
 
 
 def fields_from(lines: list[str], prefix: str) -> dict[str, str]:
@@ -651,20 +669,24 @@ def command_setup(args: argparse.Namespace) -> None:
     # Setup starts from one known state. Remove the old HID service before
     # opening the CDC port, then install a fresh service after HID pairing.
     remove_helper()
-    unlock(port)
     if mode == "hid":
+        unlock(port)
         configure_hid(port, device)
         if device.get("mode") != "hid":
             serial_command(port, "SET MODE HID", timeout=4)
             device = fresh_status(port, {"mode": "hid"})
     else:
-        if device.get("mode") != "piv":
-            serial_command(port, "SET MODE PIV", timeout=4)
-            fresh_status(port, {"mode": "piv"})
-        if device.get("piv") != "ready":
-            serial_command(port, "PIV CREATE", timeout=15)
-            if status(port).get("piv") != "ready":
-                raise ToolError("Live verification failed: the PIV identity is not ready.")
+        # PIV setup keeps one foreground CDC connection through authorization,
+        # mode selection, and identity creation.
+        with foreground_session(port):
+            unlock(port)
+            if device.get("mode") != "piv":
+                serial_command(port, "SET MODE PIV", timeout=4)
+                fresh_status(port, {"mode": "piv"})
+            if device.get("piv") != "ready":
+                serial_command(port, "PIV CREATE", timeout=15)
+                if status(port).get("piv") != "ready":
+                    raise ToolError("Live verification failed: the PIV identity is not ready.")
     enroll(port, args.skip_enroll)
     device = status(port)
     protocol6(device)
@@ -765,9 +787,11 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     protocol6(device)
     if ask("Factory reset clears fingerprints, keys, hosts, and settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
         raise ToolError("Factory reset cancelled.")
-    unlock(port)
-    serial_command(port, "RESET FACTORY", timeout=15)
-    cleared = status(port)
+    remove_helper()
+    with foreground_session(port):
+        unlock(port)
+        serial_command(port, "RESET FACTORY", timeout=15)
+        cleared = status(port)
     for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
         if key == "piv" and key not in cleared:
             continue
