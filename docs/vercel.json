@@ -16,11 +16,5 @@
       "destination": "/customer/setup",
       "permanent": true
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/github-releases/:path*",
-      "destination": "https://github.com/ZimengXiong/tinyTouch/releases/:path*"
-    }
   ]
 }
