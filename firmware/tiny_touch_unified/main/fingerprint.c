@@ -377,23 +377,20 @@ bool fingerprint_recover(void) {
 }
 
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  // A capture is valid only after a new touch edge. Without this gate, the
-  // sensor can return a stale image and flash red before the user touches it.
+  // TOUCH_OUT is not reliable enough to gate a foreground capture on every
+  // supported module. Reuse HID's quiet matcher and keep polling until the
+  // user presents a valid enrolled finger or the authorization window ends.
   prompted_authorization_active = true;
-  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
-  while (fingerprint_present_hint() && xTaskGetTickCount() < deadline) {
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  if (fingerprint_present_hint()) {
-    prompted_authorization_active = false;
-    return false;
-  }
   if (prompt) prompt();
-  deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
-  while (!fingerprint_present_hint() && xTaskGetTickCount() < deadline) {
+  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
+  bool ok = false;
+  while (xTaskGetTickCount() < deadline) {
+    if (fingerprint_authorize_poll_match().slot != 0) {
+      ok = true;
+      break;
+    }
     vTaskDelay(pdMS_TO_TICKS(120));
   }
-  bool ok = fingerprint_present_hint() && fingerprint_authorize_poll_match().slot != 0;
   prompted_authorization_active = false;
   return ok;
 }
