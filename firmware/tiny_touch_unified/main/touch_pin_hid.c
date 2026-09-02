@@ -323,10 +323,12 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     bool success = request_and_type_password(match);
     if (!success) ESP_LOGW(TAG, "HID helper request failed");
   } else {
-    // PIV is a smart-card protocol. Fingerprint presence authorizes the card;
-    // it must never emit a synthetic PIN through the HID keyboard interface.
-    ESP_LOGI(TAG, "finger matched; authorizing PIV smart-card operation");
+    // The PIV applet accepts this PIN. Emit it only after a verified background
+    // fingerprint match, so the macOS smart-card PIN field can complete login.
+    static const uint8_t piv_pin[] = {'1', '1', '1', '1', '1', '1'};
+    ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
     piv_note_user_presence();
+    if (!type_ascii(piv_pin, sizeof(piv_pin))) ESP_LOGW(TAG, "PIV PIN typing failed");
   }
 }
 
