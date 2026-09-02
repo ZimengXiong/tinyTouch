@@ -52,6 +52,7 @@ HELPER_LOG_PATH = HELPER_LOG_DIR / "helper.log"
 HELPER_ERROR_LOG_PATH = HELPER_LOG_DIR / "helper.err"
 HELPER_SUSPEND_PATH = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK_PATH = SUPPORT_DIR / "helper-suspend-ack"
+HELPER_MIGRATION_PATH = SUPPORT_DIR / "helper-service-migration.json"
 INSTALLED_SERVICE = SUPPORT_DIR / "tinytouch-service"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
@@ -1168,6 +1169,40 @@ def helper_job_loaded() -> bool:
     return result.returncode == 0
 
 
+def helper_service_schema() -> int:
+    try:
+        payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
+        environment = payload.get("EnvironmentVariables", {})
+        value = environment.get("TINYTOUCH_SERVICE_SCHEMA", "0")
+        return int(value)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def migrate_helper_service(python: Path) -> bool:
+    """Replace a legacy launchd job through a restartable migration."""
+    if not LAUNCH_AGENT.exists():
+        HELPER_MIGRATION_PATH.unlink(missing_ok=True)
+        return False
+    if helper_service_schema() >= 2 and not HELPER_MIGRATION_PATH.exists():
+        return False
+    atomic_write_json(
+        HELPER_MIGRATION_PATH,
+        {"schema": 1, "target_service_schema": 2, "started_at": int(time.time())},
+    )
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    atomic_write_bytes(LAUNCH_AGENT, launch_agent_contents(python), mode=0o644)
+    run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
+    HELPER_MIGRATION_PATH.unlink(missing_ok=True)
+    verbose("migrated HID background service to schema 2")
+    return True
+
+
 def helper_process_patterns() -> tuple[str, ...]:
     patterns = [str(CLI_INSTALL_PATH) + " _helper", str(HELPER)]
     if LAUNCH_AGENT.exists():
@@ -1240,6 +1275,7 @@ def load_helper() -> None:
 
 
 def install_helper(python: Path) -> None:
+    migrate_helper_service(python)
     unload_helper()
     if FROZEN:
         install_command_if_needed()
@@ -3110,6 +3146,7 @@ def main() -> int:
         show_startup_mark()
         if args.command in device_commands:
             reexec_in_environment_if_needed()
+            migrate_helper_service(Path(sys.executable).resolve())
             helper_was_loaded = unload_helper() or helper_was_loaded
             if helper_was_loaded:
                 os.environ["_TINYTOUCH_RESTART_HELPER"] = "1"

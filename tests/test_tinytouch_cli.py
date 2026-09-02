@@ -145,6 +145,38 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("LeaseObserver", helper)
         self.assertIn('diagnostic("manager.resumed")', helper)
 
+    def test_legacy_helper_migration_is_restartable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launch_agent = Path(directory) / "com.tinytouch.helper.plist"
+            migration = Path(directory) / "migration.json"
+            launch_agent.write_bytes(plistlib.dumps({
+                "Label": "com.tinytouch.helper",
+                "ProgramArguments": ["/old/tinytouch", "_helper"],
+                "KeepAlive": True,
+            }))
+            with (
+                mock.patch.object(cli, "LAUNCH_AGENT", launch_agent),
+                mock.patch.object(cli, "HELPER_MIGRATION_PATH", migration),
+                mock.patch.object(cli, "HELPER_LOG_PATH", Path(directory) / "helper.log"),
+                mock.patch.object(cli, "HELPER_ERROR_LOG_PATH", Path(directory) / "helper.err"),
+                mock.patch.object(cli.subprocess, "run") as subprocess_run,
+                mock.patch.object(cli, "run") as run,
+            ):
+                self.assertTrue(cli.migrate_helper_service(Path("/new/python")))
+                self.assertFalse(migration.exists())
+                payload = plistlib.loads(launch_agent.read_bytes())
+                self.assertEqual(
+                    payload["EnvironmentVariables"]["TINYTOUCH_SERVICE_SCHEMA"], "2"
+                )
+                subprocess_run.assert_called_once()
+                run.assert_called_once_with([
+                    "launchctl", "bootstrap", f"gui/{cli.os.getuid()}", str(launch_agent)
+                ])
+
+                migration.write_text("unfinished")
+                self.assertTrue(cli.migrate_helper_service(Path("/new/python")))
+                self.assertFalse(migration.exists())
+
     def test_factory_reset_removes_all_local_device_credentials(self):
         args = SimpleNamespace(port=None, yes=True)
         deleted = []
