@@ -639,6 +639,7 @@ class Worker:
         self.error: BaseException | None = None
         self.planned_stop = False
         self.phase = WorkerPhase.CREATED
+        self.started_at: float | None = None
         self.thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -656,6 +657,7 @@ class Worker:
 
     def start(self) -> None:
         self.phase = WorkerPhase.RUNNING
+        self.started_at = time.monotonic()
         self.thread.start()
 
     def stop(self) -> None:
@@ -738,6 +740,8 @@ def run_manager() -> None:
             if worker.planned_stop:
                 retry_after[device_id] = now
                 continue
+            if worker.started_at is not None and now - worker.started_at >= 30:
+                failures[device_id] = 0
             failures[device_id] = failures.get(device_id, 0) + 1
             delay = backoff.delay(failures[device_id])
             retry_after[device_id] = now + delay
@@ -773,7 +777,6 @@ def run_manager() -> None:
             worker = Worker(endpoint)
             workers[device_id] = worker
             worker.start()
-            failures[device_id] = 0
             retry_after.pop(device_id, None)
             diagnostic("worker.started", device_id=device_id, port=endpoint.port)
         time.sleep(0.1)

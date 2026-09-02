@@ -47,6 +47,18 @@ class WorkerStateMachineTests(unittest.TestCase):
         self.assertEqual(worker.phase, helper.WorkerPhase.DRAINING)
         self.assertTrue(worker.stop_event.is_set())
 
+    def test_worker_start_records_stability_window_origin(self):
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.example", "1-1")
+        with (
+            mock.patch.object(helper, "serve_port"),
+            mock.patch.object(helper.time, "monotonic", return_value=123.0),
+        ):
+            worker = helper.Worker(endpoint)
+            worker.start()
+            worker.thread.join()
+        self.assertEqual(worker.started_at, 123.0)
+        self.assertEqual(worker.phase, helper.WorkerPhase.STOPPED)
+
 
 class HelperProtocolTests(unittest.TestCase):
     @staticmethod
