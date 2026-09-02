@@ -18,6 +18,7 @@
 #include "firmware_update.h"
 #include "piv.h"
 #include "touch_pin_hid.h"
+#include "usb_ccid.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
 #define TINYTOUCH_FIRMWARE_VERSION "development"
@@ -248,6 +249,12 @@ static void piv_create_task(void *argument) {
   bool ok = piv_create_identity();
   piv_create_active = false;
   reply(ok ? "OK PIV CREATE" : "ERR PIV CREATE");
+  if (ok) {
+    // Give CDC enough time to deliver the successful response before asking
+    // macOS to rescan the PIV token.
+    vTaskDelay(pdMS_TO_TICKS(300));
+    usb_ccid_rescan();
+  }
   vTaskDelete(NULL);
 }
 
