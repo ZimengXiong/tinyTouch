@@ -479,6 +479,7 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
         keychain_set(PASSWORD_SERVICE, device_id, password)
         install_helper()
         run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
+        say(f"Simulated HID password: {password}")
         say("HID bridge smoke test passed. The helper is installed; no device was used.")
     finally:
         keychain_delete(PAIRING_SERVICE, device_id)
