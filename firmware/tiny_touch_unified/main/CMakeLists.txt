@@ -22,6 +22,9 @@ endif()
 if(TINYTOUCH_LOCAL_OTA_TEST)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_LOCAL_OTA_TEST=1)
 endif()
+if(TINYTOUCH_OTA_VALIDATION_RELEASE)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_OTA_VALIDATION_RELEASE=1)
+endif()
 
 target_compile_definitions(
   ${COMPONENT_LIB} PRIVATE

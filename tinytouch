@@ -2665,10 +2665,10 @@ def _confirm_running_firmware(
     *,
     expected_version: str | None = None,
     expected_build: str | None = None,
+    allow_sensor_power_cycle: bool = False,
 ) -> dict[str, str]:
     """Prove runtime health, retain a pending OTA image, then prove it stayed active."""
     require_unified_firmware(status)
-    require_fingerprint_sensor(status)
     if expected_version is not None and status.get("firmware_version") != expected_version:
         raise SupportError(
             f"tinyTouch booted firmware {status.get('firmware_version', 'unknown')}; "
@@ -2687,6 +2687,9 @@ def _confirm_running_firmware(
             "image whose rollback state cannot be proven."
         )
     state = running_ota_state(status)
+    sensor_ready = status.get("sensor") == "ok"
+    if not sensor_ready and not (allow_sensor_power_cycle and state == "pending"):
+        require_fingerprint_sensor(status)
     if state in {"invalid", "aborted", "new"}:
         raise SupportError(f"tinyTouch is running an unsafe OTA state ({state}); refusing confirmation.")
     if state == "valid":
@@ -2703,7 +2706,8 @@ def _confirm_running_firmware(
     serial_command(port, f"CONFIRM_FIRMWARE {build}", timeout=3)
     confirmed = status_fields(port)
     require_unified_firmware(confirmed)
-    require_fingerprint_sensor(confirmed)
+    if sensor_ready:
+        require_fingerprint_sensor(confirmed)
     if expected_version is not None and confirmed.get("firmware_version") != expected_version:
         raise SupportError("tinyTouch did not remain on the expected firmware version.")
     if expected_build is not None and confirmed.get("build") != expected_build:
@@ -2720,6 +2724,40 @@ def _confirm_running_firmware(
             f"tinyTouch acknowledged confirmation but still reports OTA state {confirmed_state}."
         )
     return confirmed
+
+
+def recover_fingerprint_sensor_after_ota(port: str, status: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """Ask for a USB power cycle when the fingerprint sensor cannot survive an ESP restart."""
+    if status.get("sensor") == "ok":
+        return port, status
+    location = port_usb_location(port)
+    serial_number = port_usb_serial(port)
+    message = (
+        "Firmware installation is complete. Unplug tinyTouch, reconnect it, wait five seconds, "
+        "then click Continue."
+    )
+    say(message)
+    try:
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'display dialog "' + message + '" with title "tinyTouch update" '
+                'buttons {"Continue"} default button "Continue" with icon caution',
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        ask("Press Return after reconnecting tinyTouch. ")
+    recovered_port = wait_for_runtime_port(
+        location=location, serial_number=serial_number, wait_seconds=30
+    )
+    recovered = status_fields(recovered_port)
+    require_unified_firmware(recovered)
+    require_fingerprint_sensor(recovered)
+    return recovered_port, recovered
 
 
 def command_update(args: argparse.Namespace) -> None:
@@ -2805,12 +2843,16 @@ def command_update(args: argparse.Namespace) -> None:
     # confirmation.
     time.sleep(2)
     status = status_fields(port)
-    _confirm_running_firmware(
+    status = _confirm_running_firmware(
         port,
         status,
         expected_version=manifest.get("version"),
         expected_build=manifest.get("build"),
+        allow_sensor_power_cycle=True,
     )
+    port, status = recover_fingerprint_sensor_after_ota(port, status)
+    if status.get("firmware_version") != manifest.get("version") or status.get("build") != manifest.get("build"):
+        raise SupportError("tinyTouch changed firmware while recovering its fingerprint sensor.")
     say("tinyTouch is up to date.")
 
 

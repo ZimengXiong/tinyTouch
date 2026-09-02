@@ -434,9 +434,9 @@ static void handle_command(void) {
       }
     }
   } else if (strcmp(command, "UPDATE_UNLOCK") == 0) {
-#ifdef TINYTOUCH_LOCAL_OTA_TEST
+#if defined(TINYTOUCH_LOCAL_OTA_TEST) || defined(TINYTOUCH_OTA_VALIDATION_RELEASE)
     update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
-    send_line("OK UPDATE_UNLOCK local_test seconds=30");
+    send_line("OK UPDATE_UNLOCK ota_validation seconds=30");
 #else
     int count = fingerprint_count();
     if (count < 0) {
@@ -668,7 +668,7 @@ static void handle_command(void) {
     }
   } else if (strncmp(command, "CONFIRM_FIRMWARE ", 17) == 0) {
     bool build_matches = strcmp(command + 17, TINYTOUCH_BUILD_ID) == 0;
-#ifdef TINYTOUCH_LOCAL_OTA_TEST
+#if defined(TINYTOUCH_LOCAL_OTA_TEST) || defined(TINYTOUCH_OTA_VALIDATION_RELEASE)
     bool sensor_ok = true;
 #else
     bool sensor_ok = fingerprint_count() >= 0;
