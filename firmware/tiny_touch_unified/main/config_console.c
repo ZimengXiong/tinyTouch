@@ -37,6 +37,10 @@
 #endif
 
 static char command[5632];
+// STATUS diagnostics are larger than a normal command response. Keep the
+// response buffer in static storage so the first post-OTA status probe cannot
+// exhaust the console task stack while the new image is pending verification.
+static char response_line[1536];
 static size_t command_len;
 static bool command_overflow;
 static SemaphoreHandle_t cdc_write_mutex;
@@ -356,7 +360,7 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[1536];
+  char *line = response_line;
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
@@ -366,7 +370,7 @@ static void handle_command(void) {
     runtime_health_format(runtime_info, sizeof(runtime_info));
     int count = fingerprint_count();
     if (count < 0) {
-      snprintf(line, sizeof(line),
+      snprintf(line, sizeof(response_line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
                "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
@@ -381,7 +385,7 @@ static void handle_command(void) {
                ota_info, runtime_info);
       send_line(line);
     } else {
-      snprintf(line, sizeof(line),
+      snprintf(line, sizeof(response_line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
                "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
@@ -398,7 +402,7 @@ static void handle_command(void) {
       send_line(line);
     }
   } else if (strcmp(command, "VERSION") == 0) {
-    snprintf(line, sizeof(line), "OK VERSION firmware=%s protocol=%d",
+    snprintf(line, sizeof(response_line), "OK VERSION firmware=%s protocol=%d",
              TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION);
     send_line(line);
   } else if (strcmp(command, "CONFIG_UNLOCK") == 0) {
@@ -445,7 +449,7 @@ static void handle_command(void) {
     } else if (strcmp(command + 5, "hid") == 0) {
       ok = device_config_set_mode(DEVICE_MODE_HID);
     }
-    snprintf(line, sizeof(line), ok ? "OK MODE mode=%s" : "ERR MODE mode=%s", command + 5);
+    snprintf(line, sizeof(response_line), ok ? "OK MODE mode=%s" : "ERR MODE mode=%s", command + 5);
     send_line(line);
   } else if (strncmp(command, "SETTING ", 8) == 0) {
     if (!require_config_authorization()) return;
@@ -468,7 +472,7 @@ static void handle_command(void) {
     } else {
       ok = false;
     }
-    snprintf(line, sizeof(line), ok ? "OK SETTING name=%s value=%lu" :
+    snprintf(line, sizeof(response_line), ok ? "OK SETTING name=%s value=%lu" :
                                       "ERR SETTING name=%s value=%lu", name, value);
     send_line(line);
   } else if (strncmp(command, "HID_KEY ", 8) == 0) {
@@ -488,7 +492,7 @@ static void handle_command(void) {
       offset += sizeof(host.id) * 2;
       memset(&host, 0, sizeof(host));
     }
-    snprintf(line, sizeof(line), "OK HID_KEY_IDS ids=%s capacity=%d",
+    snprintf(line, sizeof(response_line), "OK HID_KEY_IDS ids=%s capacity=%d",
              offset ? ids : "none", DEVICE_CONFIG_MAX_HID_HOSTS);
     send_line(line);
   } else if (strncmp(command, "HID_KEY_ADD ", 12) == 0) {
@@ -519,7 +523,7 @@ static void handle_command(void) {
     bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
               fingerprint_enroll((uint16_t)slot, enrollment_prompt);
     if (ok) authorize_config();
-    snprintf(line, sizeof(line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
+    snprintf(line, sizeof(response_line), ok ? "OK ENROLL slot=%lu" : "ERR ENROLL slot=%lu", slot);
     send_line(line);
   } else if (strncmp(command, "PROFILE_COMPLETE ", 17) == 0) {
     if (!require_config_authorization()) return;
@@ -533,7 +537,7 @@ static void handle_command(void) {
     bool ok = parse_unsigned(command + 7, UINT16_MAX, &slot) &&
               fingerprint_delete((uint16_t)slot);
     if (ok) ok = device_config_set_fingerprint_profile_views(0);
-    snprintf(line, sizeof(line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
+    snprintf(line, sizeof(response_line), ok ? "OK DELETE slot=%lu" : "ERR DELETE slot=%lu", slot);
     send_line(line);
   } else if (strcmp(command, "DELETE_ALL") == 0) {
     if (!require_config_authorization()) return;
@@ -590,7 +594,7 @@ static void handle_command(void) {
     bool ok = append_firmware_chunk(arguments, &next_offset);
     update_last_reason = ok ? "none" :
                          (firmware_update_active() ? "chunk_rejected" : "write_failed");
-    snprintf(line, sizeof(line),
+    snprintf(line, sizeof(response_line),
              ok ? "OK UPDATE_CHUNK next=%u" : "ERR UPDATE_CHUNK next=%u active=%u error=%s",
              (unsigned)(ok ? next_offset : firmware_update_written()),
              firmware_update_active() ? 1U : 0U, firmware_update_last_error());
@@ -602,10 +606,10 @@ static void handle_command(void) {
     }
     update_last_activity = esp_timer_get_time();
     if (firmware_update_active()) {
-      snprintf(line, sizeof(line), "OK UPDATE_STATUS next=%u",
+      snprintf(line, sizeof(response_line), "OK UPDATE_STATUS next=%u",
                (unsigned)firmware_update_written());
     } else {
-      snprintf(line, sizeof(line), "ERR UPDATE_STATUS active=0 error=%s",
+      snprintf(line, sizeof(response_line), "ERR UPDATE_STATUS active=0 error=%s",
                firmware_update_last_error());
     }
     send_line(line);
@@ -628,11 +632,11 @@ static void handle_command(void) {
     update_last_reason = ok ? "none" : "commit_failed";
     clear_update_session();
     if (ok) {
-      snprintf(line, sizeof(line), "OK UPDATE_COMMIT stack_free=%u",
+      snprintf(line, sizeof(response_line), "OK UPDATE_COMMIT stack_free=%u",
                (unsigned)firmware_update_commit_stack_free());
       send_line(line);
     } else {
-      snprintf(line, sizeof(line), "ERR UPDATE_COMMIT active=0 error=%s",
+      snprintf(line, sizeof(response_line), "ERR UPDATE_COMMIT active=0 error=%s",
                firmware_update_last_error());
       send_line(line);
     }
@@ -733,6 +737,7 @@ void config_console_start(void) {
   clear_update_session();
   cdc_write_mutex = xSemaphoreCreateMutex();
   configASSERT(cdc_write_mutex != NULL);
-  BaseType_t created = xTaskCreate(console_task, "config_console", 4096, NULL, 3, NULL);
+  BaseType_t created = xTaskCreate(console_task, "config_console",
+                                  CONFIG_CONSOLE_STACK_SIZE, NULL, 3, NULL);
   configASSERT(created == pdPASS);
 }

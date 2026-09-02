@@ -72,6 +72,20 @@ class UpdateRegressionTests(unittest.TestCase):
         self.assertIn("update_commit_stack_free=%u", console)
         self.assertIn('"OK UPDATE_COMMIT stack_free=%u"', console)
 
+    def test_console_status_buffers_do_not_exhaust_the_post_ota_stack(self):
+        console = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "config_console.c").read_text()
+        header = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "config_console.h").read_text()
+        stack_size = int(
+            header.split("#define CONFIG_CONSOLE_STACK_SIZE", 1)[1].splitlines()[0]
+        )
+        self.assertGreaterEqual(stack_size, 8192)
+        self.assertIn("static char response_line[1536]", console)
+        handler = console.split("static void handle_command", 1)[1].split(
+            "static void console_task", 1
+        )[0]
+        self.assertNotIn("char line[1536]", handler)
+        self.assertIn("CONFIG_CONSOLE_STACK_SIZE", console)
+
     def test_commit_worker_reports_end_and_boot_selection_phases(self):
         source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "firmware_update.c").read_text()
         worker = source.split("static void firmware_update_commit_task", 1)[1].split(
@@ -424,6 +438,31 @@ class UpdateRegressionTests(unittest.TestCase):
                 cli.wait_for_runtime_port(
                     location="1-2", serial_number="TT-001122334455", wait_seconds=1
                 )
+
+    def test_runtime_reconnect_requires_two_successful_probes(self):
+        board = SimpleNamespace(
+            device="/dev/cu.runtime", vid=0x303A, pid=0x4001,
+            serial_number="TT-001122334455", location="1-2",
+        )
+        list_ports = SimpleNamespace(comports=lambda: [board])
+        fake_tools = SimpleNamespace(list_ports=list_ports)
+        fake_serial = SimpleNamespace(tools=fake_tools)
+        probes = mock.Mock(side_effect=[["PONG"], cli.SerialResponseTimeout("reboot"),
+                                       ["PONG"], ["PONG"]])
+        with (
+            mock.patch.dict(__import__("sys").modules, {
+                "serial": fake_serial, "serial.tools": fake_tools,
+                "serial.tools.list_ports": list_ports,
+            }),
+            mock.patch.object(cli, "serial_command", probes),
+            mock.patch.object(cli.time, "monotonic", side_effect=[0.0, 0.0, 0.2, 0.4]),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            port = cli.wait_for_runtime_port(
+                location="1-2", serial_number="TT-001122334455", wait_seconds=1
+            )
+        self.assertEqual(port, "/dev/cu.runtime")
+        self.assertEqual(probes.call_count, 4)
 
     def test_migration_refuses_rom_mac_mismatch_before_flash(self):
         payloads = {

@@ -923,22 +923,28 @@ def wait_for_runtime_port(
             and isinstance(item.serial_number, str)
             and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
         ]
+        candidate = None
         if serial_number:
             same_serial = [item for item in candidates if item.serial_number == serial_number]
             if same_serial:
-                return same_serial[0].device
+                candidate = same_serial[0].device
             # The MAC-derived USB serial is the primary identity. Never accept
             # another board merely because macOS reused the same hub location.
-            time.sleep(0.25)
-            continue
-        if location:
+        elif location:
             at_same_location = [item for item in candidates if item.location == location]
             if at_same_location:
-                return at_same_location[0].device
-            time.sleep(0.25)
-            continue
-        if len(candidates) == 1:
-            return candidates[0].device
+                candidate = at_same_location[0].device
+        elif len(candidates) == 1:
+            candidate = candidates[0].device
+        if candidate:
+            try:
+                first = serial_command(candidate, "PING", timeout=1.5)
+                time.sleep(0.4)
+                second = serial_command(candidate, "PING", timeout=1.5)
+                if first[-1] == "PONG" and second[-1] == "PONG":
+                    return candidate
+            except ToolError as exc:
+                verbose(f"runtime port {candidate} is not stable yet: {exc}")
         time.sleep(0.25)
     raise ToolError(
         "Flashing finished, but the normal tinyTouch USB interface did not appear. Unplug "
