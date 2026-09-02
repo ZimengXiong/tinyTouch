@@ -109,10 +109,17 @@ static bool require_authorized(void) {
 
 static void touch_prompt(void) { reply("EVENT TOUCH"); }
 
+static void enroll_prompt(const char *state) {
+  char line[48];
+  snprintf(line, sizeof(line), "EVENT %s", state);
+  reply(line);
+}
+
 static void authorize(void) {
   int count = fingerprint_count();
+  if (count < 0) { reply("ERR AUTH sensor=offline"); return; }
   bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
-  if (!ok) { reply("ERR AUTH"); return; }
+  if (!ok) { reply("ERR AUTH no_match"); return; }
   authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
 }
@@ -205,7 +212,7 @@ static void fingerprint_command(char *arguments) {
   uint32_t slot = 0;
   bool ok = false;
   if (strncmp(arguments, "ENROLL ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
-    ok = fingerprint_enroll((uint16_t)slot, NULL);
+    ok = fingerprint_enroll((uint16_t)slot, enroll_prompt);
   } else if (strncmp(arguments, "DELETE ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
     ok = fingerprint_delete((uint16_t)slot) && device_config_set_fingerprint_profile_views(0);
   } else if (strcmp(arguments, "CLEAR") == 0) {

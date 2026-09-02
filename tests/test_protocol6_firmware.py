@@ -59,6 +59,12 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn("fingerprint_service_health", source)
         self.assertNotIn("usb_runtime", source)
 
+    def test_fingerprint_operations_report_each_required_touch(self) -> None:
+        console = self.source("config_console.c")
+        self.assertIn('"EVENT %s"', console)
+        self.assertIn("fingerprint_enroll((uint16_t)slot, enroll_prompt)", console)
+        self.assertIn('"ERR AUTH no_match"', console)
+
 
 if __name__ == "__main__":
     unittest.main()
