@@ -385,25 +385,37 @@ def exchange_serial(device, command: str, *, timeout: float) -> list[str]:
 
 @contextmanager
 def foreground_session(port: str):
+    """Open one verified CDC session for a foreground device operation."""
     global _active_serial
     try:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required. Run setup again.") from exc
     was_loaded = unload_helper()
-    port = current_port(port)
-    try:
-        device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
-        time.sleep(0.2)
-        device.reset_input_buffer()
-    except Exception as exc:
-        if "Device not configured" in str(exc):
+    deadline = time.monotonic() + 6.0
+    last_error: Exception | None = None
+    device = None
+    while time.monotonic() < deadline:
+        try:
+            port = current_port(port)
+            device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
+            time.sleep(0.2)
+            device.reset_input_buffer()
+            exchange_serial(device, "PING", timeout=3)
+            break
+        except Exception as exc:
+            last_error = exc
+            if device is not None:
+                device.close()
+                device = None
+            time.sleep(0.25)
+    if device is None:
+        if "Device not configured" in str(last_error):
             raise ToolError(
-                "tinyTouch's USB serial port became unavailable while this command was starting. "
-                "No fingerprint result was recorded. Wait two seconds and run the command again; "
+                "tinyTouch's USB serial port did not become ready. Wait two seconds and run the command again; "
                 "do not unplug it unless 'tinytouch status' cannot find the device."
-            ) from exc
-        raise ToolError(f"Could not communicate with tinyTouch on {port}: {exc}") from exc
+            ) from last_error
+        raise ToolError(f"Could not communicate with tinyTouch on {port}: {last_error}") from last_error
     _active_serial = device
     try:
         yield port
@@ -559,12 +571,9 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
     keychain_set(PAIRING_SERVICE, account, key.hex())
     password_for(account)
-    install_helper()
     current = status(port)
     if current.get("hosts", "0") == "0":
         raise ToolError("HID setup is incomplete: the device has no registered host.")
-    if not helper_loaded():
-        raise ToolError("HID setup is incomplete: the helper is not loaded.")
     if identifier not in host_list(port)[0]:
         raise ToolError("HID setup is incomplete: the device has no registered host.")
 
@@ -679,34 +688,39 @@ def command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    sensor_ready(device)
     # Setup starts from one known state. Remove the old HID service before
-    # opening the CDC port, then install a fresh service after HID pairing.
+    # opening the CDC port. Keep that port open through the entire setup.
     remove_helper()
-    if mode == "hid":
-        unlock(port)
-        configure_hid(port, device)
-        if device.get("mode") != "hid":
-            serial_command(port, "SET MODE HID", timeout=4)
-            device = fresh_status(port, {"mode": "hid"})
-    else:
-        unlock(port)
-        if device.get("mode") != "piv":
-            serial_command(port, "SET MODE PIV", timeout=4)
-            fresh_status(port, {"mode": "piv"})
-        if device.get("piv") != "ready":
-            serial_command(port, "PIV CREATE", timeout=15)
-            if status(port).get("piv") != "ready":
-                raise ToolError("Live verification failed: the PIV identity is not ready.")
-    enroll(port, args.skip_enroll)
-    device = status(port)
-    protocol6(device)
-    sensor_ready(device)
-    device = status(port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        sensor_ready(device)
+        if mode == "hid":
+            unlock(port)
+            configure_hid(port, device)
+            if device.get("mode") != "hid":
+                serial_command(port, "SET MODE HID", timeout=4)
+                device = fresh_status(port, {"mode": "hid"})
+        else:
+            unlock(port)
+            if device.get("mode") != "piv":
+                serial_command(port, "SET MODE PIV", timeout=4)
+                fresh_status(port, {"mode": "piv"})
+            if device.get("piv") != "ready":
+                serial_command(port, "PIV CREATE", timeout=15)
+                if status(port).get("piv") != "ready":
+                    raise ToolError("Live verification failed: the PIV identity is not ready.")
+        enroll(port, args.skip_enroll)
+        device = status(port)
+        protocol6(device)
+        sensor_ready(device)
+        device = status(port)
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete: the identity is not ready.")
+    if mode == "hid":
+        install_helper()
+        if not helper_loaded():
+            raise ToolError("HID setup is incomplete: the helper is not loaded.")
     if mode == "piv" and not args.no_pair:
         command_pair(args)
     say(f"tinyTouch is ready in {mode.upper()} mode. All changes are live; no restart is required.")
