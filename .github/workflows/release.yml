@@ -22,9 +22,6 @@ permissions:
   contents: write
   attestations: read
 
-env:
-  PUBLIC_SITE_ORIGIN: ${{ vars.TINYTOUCH_SITE_ORIGIN || 'https://tinytouch.alpacaengineer.ing' }}
-
 jobs:
   promote:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
@@ -80,14 +77,7 @@ jobs:
               else
                 release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag")"
                 test "$(jq -r .draft <<<"$release_json")" = false
-                test "$(jq '((.assets | length) == 13 or (.assets | length) == 14) and ([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
-                channel="$(gh api "repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json?ref=main" | jq -r .content | base64 --decode | jq -r .manifest)"
-                test "$channel" = "https://github.com/ZimengXiong/TinyTouch/releases/download/$release_tag/release-manifest.json"
-                curl -fsS --max-time 15 \
-                  "$PUBLIC_SITE_ORIGIN/release.json?release=$GITHUB_RUN_ID" \
-                  -o /tmp/live-release.json
-                test "$(jq -r .version /tmp/live-release.json)" = "${release_tag#v}"
-                test "$(jq -r .build /tmp/live-release.json)" = "${tag_sha:0:12}"
+                test "$(jq '([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("install.sh") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
                 echo "Version $release_tag is already published and active; no promotion is needed."
                 echo "promote=false" >> "$GITHUB_OUTPUT"
                 exit 0
@@ -191,7 +181,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_flags=(--verify-tag --generate-notes --draft)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
+          if [[ "$RELEASE_TAG" == *-* && "$RELEASE_TAG" != *-prod ]]; then
             release_flags+=(--prerelease)
           fi
           if release_json="$(gh release view "$RELEASE_TAG" \
@@ -250,46 +240,14 @@ jobs:
             release_state=published
           fi
           echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Commit verified docs release assets
-        if: steps.freshness.outputs.promote == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git fetch origin main
-          git checkout --detach origin/main
-          python packaging/sync-docs-release.py dist/candidate/publish docs/public \
-            --commit "$RELEASE_COMMIT"
-          test "$(jq -r .version docs/public/release.json)" = "${RELEASE_TAG#v}"
-          test "$(jq -r .build docs/public/release.json)" = "${RELEASE_COMMIT:0:12}"
-          for platform in macos-arm64 macos-x86_64; do
-            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' docs/public/release.json)"
-            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' docs/public/release.json)"
-            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' docs/public/release.json)"
-            test "$(stat -c %s "docs/public/cli/$file")" = "$size"
-            echo "$sha256  docs/public/cli/$file" | sha256sum --check --strict
-          done
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add docs/public/cli docs/public/flash/factory \
-            docs/public/flash/recovery docs/public/release.json
-          unexpected="$(git diff --cached --name-only | grep -Ev \
-            '^docs/public/(cli|flash/(factory|recovery))(/|$)|^docs/public/release\.json$' || true)"
-          test -z "$unexpected"
-          if git diff --cached --quiet; then
-            echo "The docs site already contains $RELEASE_TAG."
-          else
-            git commit -m "Publish tinyTouch ${RELEASE_TAG#v}"
-            git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
-              push "https://github.com/$GITHUB_REPOSITORY.git" HEAD:main
-          fi
-      - name: Verify production flasher and CLI
+      - name: Verify stable GitHub release
         if: steps.freshness.outputs.promote == 'true'
         run: |
-          base="$PUBLIC_SITE_ORIGIN"
-          deadline=$((SECONDS + 300))
+          base="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          deadline=$((SECONDS + 120))
           while (( SECONDS < deadline )); do
-            if curl -fsS --max-time 15 \
-              "$base/release.json?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$SECONDS" \
+            if curl -fsSL --max-time 30 \
+              "$base/release-manifest.json?release=$GITHUB_RUN_ID-$SECONDS" \
               -o dist/live-release.json && \
               test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}" && \
               test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"; then
@@ -300,63 +258,14 @@ jobs:
           test -s dist/live-release.json
           test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
-          find docs/public/flash/factory docs/public/flash/recovery docs/public/cli \
-            -type f -print0 | while IFS= read -r -d '' expected; do
-            public_relative="${expected#docs/public/}"
-            curl -fsSL --max-time 60 \
-              "$base/$public_relative?release=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-              -o dist/live-web-asset
-            expected_sha="$(sha256sum "$expected" | awk '{print $1}')"
-            echo "$expected_sha  dist/live-web-asset" | sha256sum --check --strict
-          done
-          curl -fsSL --max-time 30 "$base/flash?release=$GITHUB_RUN_ID" \
-            | grep -q '<title>Flash tinyTouch'
           for platform in macos-arm64 macos-x86_64; do
             file="$(jq -r --arg platform "$platform" '.cli[$platform].file' dist/live-release.json)"
             size="$(jq -r --arg platform "$platform" '.cli[$platform].size' dist/live-release.json)"
             sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' dist/live-release.json)"
-            curl -fsS --max-time 60 "$base/cli/$file" -o "dist/$file"
+            curl -fsSL --max-time 60 "$base/$file" -o "dist/$file"
             test "$(stat -c %s "dist/$file")" = "$size"
             echo "$sha256  dist/$file" | sha256sum --check --strict
           done
-      - name: Activate verified CLI update channel
-        if: steps.freshness.outputs.promote == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          channel_api="repos/$GITHUB_REPOSITORY/contents/channels/batch-0.json"
-          current="$(gh api "$channel_api?ref=main")"
-          channel_sha="$(jq -r .sha <<<"$current")"
-          jq -r .content <<<"$current" | base64 --decode > dist/current-channel.json
-          python - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          current = json.loads(Path("dist/current-channel.json").read_text())
-          value = current.get("manifest")
-          pattern = r"https://github\.com/ZimengXiong/TinyTouch/releases/download/v[^/]+/release-manifest\.json"
-          if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
-              raise SystemExit("current update channel is malformed; refusing to replace it")
-          desired = {
-              "manifest": (
-                  "https://github.com/ZimengXiong/TinyTouch/releases/download/"
-                  f"{os.environ['RELEASE_TAG']}/release-manifest.json"
-              )
-          }
-          Path("dist/next-channel.json").write_text(json.dumps(desired, indent=2) + "\n")
-          PY
-          if cmp -s dist/current-channel.json dist/next-channel.json; then
-            echo "Update channel already points to $RELEASE_TAG."
-          else
-            content="$(base64 < dist/next-channel.json | tr -d '\n')"
-            gh api "$channel_api" --method PUT \
-              -f message="Activate tinyTouch ${RELEASE_TAG#v}" \
-              -f content="$content" \
-              -f sha="$channel_sha" \
-              -f branch=main >/dev/null
-          fi
-          active="$(gh api "$channel_api?ref=main")"
-          jq -r .content <<<"$active" | base64 --decode > dist/active-channel.json
-          cmp dist/next-channel.json dist/active-channel.json
       - name: Record promotion benchmark
         if: always()
         run: |
