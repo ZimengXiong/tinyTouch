@@ -212,6 +212,11 @@ def choose_port(explicit: str | None) -> str:
         raise ToolError("Select one of the listed devices.") from exc
 
 
+def current_port(port: str) -> str:
+    """Use the current macOS CDC node after the device re-enumerates."""
+    return port if Path(port).exists() else choose_port(None)
+
+
 def is_terminal(command: str, line: str) -> bool:
     words = command.split()
     verb = words[0]
@@ -341,6 +346,7 @@ def serial_command(port: str, command: str, *, timeout: float = 20.0) -> list[st
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required. Run setup again.") from exc
+    port = current_port(port)
     was_loaded = unload_helper()
     lines: list[str] = []
     touch_prompted = False
