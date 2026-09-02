@@ -105,6 +105,12 @@ def authorize_macos(*, retain_password: bool = False) -> None:
             raise ToolError("A Mac password is required for this step.")
         try:
             try:
+                unlock = subprocess.run(
+                    ["security", "unlock-keychain", "-p", entered.decode("utf-8")],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=5,
+                )
+                if unlock.returncode:
+                    raise ToolError("Mac password did not unlock the login Keychain.")
                 _keychain().disable_user_interaction()
             except _keychain().KeychainError as exc:
                 raise ToolError("Could not disable Keychain dialogs for this setup.") from exc
@@ -467,13 +473,9 @@ def password_for(account: str) -> str:
 def configure_hid(port: str, device: dict[str, str]) -> None:
     authorize_macos(retain_password=True)
     account = device_account(port)
-    stored = keychain_get(PAIRING_SERVICE, account)
-    try:
-        key = bytes.fromhex(stored) if stored else b""
-    except ValueError:
-        key = b""
-    if len(key) != 32:
-        key = secrets.token_bytes(32)
+    key = hashlib.sha256(
+        f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
+    ).digest()
     identifier = host_id(key)
     registered, capacity = host_list(port)
     if identifier not in registered:
@@ -481,14 +483,7 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
             raise ToolError("This device has no free HID host slot. Remove an old host first.")
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
     keychain_set(PAIRING_SERVICE, account, key.hex())
-    if not keychain_exists(PASSWORD_SERVICE, account):
-        password_for(account)
-    else:
-        saved_password = keychain_get(PASSWORD_SERVICE, account)
-        # Recreate an item written by an older CLI so the background helper
-        # can read it too. This does not ask for the password again.
-        if saved_password is not None:
-            keychain_set(PASSWORD_SERVICE, account, saved_password)
+    password_for(account)
     install_helper()
     current = status(port)
     if current.get("hosts", "0") == "0":
