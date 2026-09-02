@@ -116,19 +116,30 @@ def _find(service: str, account: str, *, include_secret: bool):
     return status, item, length.value, secret
 
 
-def get_password(service: str, account: str) -> str | None:
+def get_password_bytes(service: str, account: str) -> bytearray | None:
+    """Copy a secret into caller-wipeable memory."""
     status, item, length, secret = _find(service, account, include_secret=True)
     if status == _NOT_FOUND:
         return None
     if status != 0:
         raise KeychainError("read", status)
     try:
-        return ctypes.string_at(secret, length).decode("utf-8")
+        return bytearray(ctypes.string_at(secret, length))
     finally:
         if secret:
             _SECURITY.SecKeychainItemFreeContent(None, secret)
         if item:
             _CORE_FOUNDATION.CFRelease(item)
+
+
+def get_password(service: str, account: str) -> str | None:
+    value = get_password_bytes(service, account)
+    if value is None:
+        return None
+    try:
+        return value.decode("utf-8")
+    finally:
+        value[:] = b"\x00" * len(value)
 
 
 def has_password(service: str, account: str) -> bool:

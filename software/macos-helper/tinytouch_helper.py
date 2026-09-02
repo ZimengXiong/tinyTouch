@@ -21,12 +21,12 @@ import serial
 import serial.tools.list_ports
 try:
     from tinytouch_keychain import (
-        KeychainError, get_password, has_password, set_background_mode, set_password,
+        KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from tinytouch_keychain import (
-        KeychainError, get_password, has_password, set_background_mode, set_password,
+        KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
 from tinytouch_runtime import (
     BackoffPolicy,
@@ -115,18 +115,18 @@ def keychain_set(password: str, device_id: str = ACCOUNT) -> None:
     set_password(SERVICE, device_id, password)
 
 
-def keychain_get(device_id: str = ACCOUNT) -> bytes:
-    value = get_password(SERVICE, device_id)
+def keychain_get(device_id: str = ACCOUNT) -> bytearray:
+    value = get_password_bytes(SERVICE, device_id)
     if value is None:
         raise KeyError(f"No Keychain password for {device_id}")
-    return value.encode("utf-8")
+    return value
 
 
 def fingerprint_account(device_id: str, slot: int) -> str:
     return f"{device_id}:fingerprint:{slot}"
 
 
-def load_passwords(device_id: str) -> dict[int, bytes]:
+def load_passwords(device_id: str) -> dict[int, bytearray]:
     passwords = {0: keychain_get(device_id)}
     for slot in range(1, 6):
         account = fingerprint_account(device_id, slot)
@@ -232,11 +232,14 @@ def pairing_keychain_set(key_hex: str, device_id: str = PREFERRED_SERIAL) -> Non
     set_password(PAIRING_SERVICE, device_id, key.hex())
 
 
-def pairing_keychain_get(device_id: str = PREFERRED_SERIAL) -> bytes:
-    value = get_password(PAIRING_SERVICE, device_id)
+def pairing_keychain_get(device_id: str = PREFERRED_SERIAL) -> bytearray:
+    value = get_password_bytes(PAIRING_SERVICE, device_id)
     if value is None:
         raise KeyError(f"No Keychain pairing key for {device_id}")
-    return parse_pairing_key(value)
+    try:
+        return bytearray(parse_pairing_key(value.decode("ascii")))
+    finally:
+        value[:] = b"\x00" * len(value)
 
 
 def mac_hex(pairing_key: bytes, message: str) -> str:
@@ -285,7 +288,10 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     try:
         if not data:
             return b""
-        input_buffer = ctypes.create_string_buffer(data, len(data))
+        if isinstance(data, bytearray):
+            input_buffer = (ctypes.c_ubyte * len(data)).from_buffer(data)
+        else:
+            input_buffer = ctypes.create_string_buffer(data, len(data))
         output_buffer = ctypes.create_string_buffer(len(data))
         moved = ctypes.c_size_t()
         status = common_crypto.CCCryptorUpdate(
@@ -586,8 +592,9 @@ def serve_port(
                             return
                 time.sleep(0.01)
     finally:
-        password = {slot: b"\x00" * len(value) for slot, value in password.items()}
-        pairing_key = b"\x00" * len(pairing_key)
+        for value in password.values():
+            value[:] = b"\x00" * len(value)
+        pairing_key[:] = b"\x00" * len(pairing_key)
 
 
 class DeviceEndpoint(NamedTuple):

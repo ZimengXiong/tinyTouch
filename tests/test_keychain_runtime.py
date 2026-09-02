@@ -33,6 +33,12 @@ class KeychainRuntimeTests(unittest.TestCase):
         self.assertFalse(error.transient)
         self.assertEqual(error.status_name, "authentication_failed")
 
+    def test_text_password_wrapper_wipes_raw_copy(self):
+        raw = bytearray(b"secret")
+        with mock.patch.object(keychain, "get_password_bytes", return_value=raw):
+            self.assertEqual(keychain.get_password("service", "account"), "secret")
+        self.assertEqual(raw, bytearray(b"\x00" * 6))
+
 
 if __name__ == "__main__":
     unittest.main()

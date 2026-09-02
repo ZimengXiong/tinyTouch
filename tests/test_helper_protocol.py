@@ -64,6 +64,20 @@ class HelperProtocolTests(unittest.TestCase):
         )
         self.assertEqual(plaintext, password)
 
+    def test_wipeable_secret_buffers_are_supported(self):
+        key = bytearray(range(32))
+        password = bytearray(b"wipe me")
+        nonce = "0d" * 16
+        event_mac = helper.mac_hex(key, f"EV|{nonce}|1|1|1")
+        response = helper.handle_event(
+            f"EV {nonce} 1 1 1 {event_mac}",
+            password,
+            key,
+            {"seen_nonces": []},
+            persist_state=False,
+        )
+        self.assertEqual(self.decrypt_response(key, nonce, response), password)
+
     def test_commoncrypto_matches_nist_aes_256_ctr_vector(self):
         key = bytes.fromhex(
             "603deb1015ca71be2b73aef0857d7781"
