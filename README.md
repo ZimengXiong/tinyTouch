@@ -224,11 +224,16 @@ when macos asks for the pin, touch the sensor.
 
 | part | used here | notes |
 | -- | -- | -- |
-| microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended |
-| fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol |
+| microcontroller | seeed studio esp32-s3 | needs native usb and hardware uart. secure boot + flash encryption strongly recommended. search: [xiao esp32s3](https://www.amazon.com/s?k=seeed+studio+xiao+esp32s3) / [esp32-s3 supermini](https://www.amazon.com/s?k=esp32+s3+supermini) |
+| fingerprint sensor | zw101-style uart sensor | uses the common `0xef01` packet protocol. search: [zw101 sensor](https://www.amazon.com/s?k=zw101+fingerprint+sensor) |
 | computer | macos | hid mode needs the helper. piv/pam mode needs macos smart card support |
 | case | printed top/bottom stl | `hardware/case/case_top.stl` and `hardware/case/case_bottom.stl` |
 | wiring/solder/etc | misc | whatever your build needs |
+
+these are amazon search links rather than links to individual listings, because
+sellers and listings for these parts come and go. check the specs on whatever you
+buy: the board needs native usb and a hardware uart, and the sensor needs to speak
+the `0xef01` uart protocol.
 
 other esp32-s3 boards should work if the usb and uart pins are available. other
 fingerprint sensors may work if they speak the same uart protocol. other
