@@ -2,8 +2,11 @@
 
 #include <string.h>
 
+#include "esp_log.h"
 #include "nvs.h"
 #include "mbedtls/sha256.h"
+
+static const char *TAG = "device_config";
 
 static device_mode_t current_mode = DEVICE_MODE_PIV;
 static device_hid_host_t hid_hosts[DEVICE_CONFIG_MAX_HID_HOSTS];
@@ -36,6 +39,23 @@ static void derive_key_id(const uint8_t key[32], uint8_t id[DEVICE_CONFIG_HID_KE
   mbedtls_sha256(key, 32, digest, 0);
   memcpy(id, digest, DEVICE_CONFIG_HID_KEY_ID_SIZE);
   memset(digest, 0, sizeof(digest));
+}
+
+static bool hid_hosts_valid(const device_hid_host_t *hosts, size_t count) {
+  if (!hosts || count == 0 || count > DEVICE_CONFIG_MAX_HID_HOSTS) return false;
+  for (size_t i = 0; i < count; i++) {
+    uint8_t expected_id[DEVICE_CONFIG_HID_KEY_ID_SIZE];
+    derive_key_id(hosts[i].key, expected_id);
+    bool id_matches = memcmp(hosts[i].id, expected_id, sizeof(expected_id)) == 0;
+    memset(expected_id, 0, sizeof(expected_id));
+    if (!id_matches) return false;
+    for (size_t previous = 0; previous < i; previous++) {
+      if (memcmp(hosts[i].id, hosts[previous].id, sizeof(hosts[i].id)) == 0) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 static bool save_hid_hosts(void) {
@@ -91,11 +111,16 @@ void device_config_reload(void) {
     touch_cooldown_ms = stored_u16;
   }
 
+  bool migrated_legacy_key = false;
   size_t hosts_length = sizeof(hid_hosts);
   if (nvs_get_blob(handle, "hid_hosts", hid_hosts, &hosts_length) == ESP_OK &&
       hosts_length > 0 && hosts_length % sizeof(hid_hosts[0]) == 0) {
     hid_host_count = hosts_length / sizeof(hid_hosts[0]);
-    if (hid_host_count > DEVICE_CONFIG_MAX_HID_HOSTS) hid_host_count = 0;
+    if (!hid_hosts_valid(hid_hosts, hid_host_count)) {
+      ESP_LOGE(TAG, "stored HID host records failed integrity validation");
+      memset(hid_hosts, 0, sizeof(hid_hosts));
+      hid_host_count = 0;
+    }
   } else {
     uint8_t legacy_key[32];
     size_t key_length = sizeof(legacy_key);
@@ -104,10 +129,23 @@ void device_config_reload(void) {
       derive_key_id(legacy_key, hid_hosts[0].id);
       memcpy(hid_hosts[0].key, legacy_key, sizeof(legacy_key));
       hid_host_count = 1;
+      migrated_legacy_key = true;
     }
     memset(legacy_key, 0, sizeof(legacy_key));
   }
   nvs_close(handle);
+
+  if (current_mode == DEVICE_MODE_HID && hid_host_count == 0) {
+    ESP_LOGE(TAG, "HID mode has no valid host credential; falling back to PIV mode");
+    current_mode = DEVICE_MODE_PIV;
+  }
+  if (migrated_legacy_key) {
+    if (save_hid_hosts()) {
+      ESP_LOGI(TAG, "migrated the legacy HID credential to the host registry");
+    } else {
+      ESP_LOGW(TAG, "could not persist the legacy HID credential migration");
+    }
+  }
 }
 
 void device_config_init(void) {

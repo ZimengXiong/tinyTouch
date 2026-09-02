@@ -213,6 +213,23 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("CONFIG_ESP_TASK_WDT_PANIC=y", defaults)
         self.assertIn("CONFIG_ESP_TASK_WDT_TIMEOUT_S=30", defaults)
 
+    def test_legacy_hid_credentials_migrate_and_corruption_fails_closed(self):
+        source = (MAIN / "device_config.c").read_text()
+        validation = source.split("static bool hid_hosts_valid", 1)[1].split(
+            "static bool save_hid_hosts", 1
+        )[0]
+        reload = source.split("void device_config_reload", 1)[1].split(
+            "void device_config_init", 1
+        )[0]
+
+        self.assertIn("derive_key_id(hosts[i].key, expected_id)", validation)
+        self.assertIn("memcmp(hosts[i].id, expected_id", validation)
+        self.assertIn("memcmp(hosts[i].id, hosts[previous].id", validation)
+        self.assertIn("migrated_legacy_key = true", reload)
+        self.assertIn("save_hid_hosts()", reload)
+        self.assertIn("current_mode == DEVICE_MODE_HID && hid_host_count == 0", reload)
+        self.assertIn("current_mode = DEVICE_MODE_PIV", reload)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]
