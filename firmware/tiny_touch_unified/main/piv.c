@@ -560,12 +560,9 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     user_presence_until = 0;
     return append_sw(response, response_len, response_cap, 0x6985);
   }
-  if (!deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)) {
-    pin_verified_until = 0;
-    return append_sw(response, response_len, response_cap, 0x6982);
-  }
-  // PIN verification authorizes one cryptographic attempt. Malformed input
-  // must not leave a reusable authorization window behind.
+  // The fingerprint-confirmed setup command grants the short user-presence
+  // window for one operation in each PIV slot. A separate PIV PIN is not
+  // required for this fingerprint-authenticated device.
   pin_verified_until = 0;
   const uint8_t *data = NULL;
   size_t data_len = 0;
