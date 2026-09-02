@@ -376,26 +376,40 @@ bool fingerprint_recover(void) {
 }
 
 static bool fingerprint_authorize_locked(void) {
-  // PS_AutoIdentify (0x32) is the sensor's documented verification command.
-  // It performs image capture, feature generation, and database search as one
-  // operation, waiting for an actual fingerprint instead of trusting GPIO2.
-  uint8_t params[] = {0x00, 0xff, 0xff, 0x00, 0x00};
-  uint8_t data[5] = {0};
-  size_t data_len = sizeof(data);
   uint8_t confirm = 0xff;
-  if (!fp_command(0x32, params, sizeof(params), &confirm, data, &data_len,
-                  FINGER_WAIT_MS) || confirm != 0x00 || data_len < 5) {
-    return false;
+  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
+  while (xTaskGetTickCount() < deadline) {
+    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 1000) && confirm == 0x00) {
+      return fingerprint_match_captured(false).slot != 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
   }
-  uint16_t slot = ((uint16_t)data[1] << 8) | data[2];
-  uint16_t score = ((uint16_t)data[3] << 8) | data[4];
-  return slot >= START_SLOT && slot <= END_SLOT && score > 0;
+  return false;
+}
+
+static bool clear_stale_fingerprint_image(void) {
+  unsigned clear_samples = 0;
+  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+  while (xTaskGetTickCount() < deadline) {
+    uint8_t confirm = 0xff;
+    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500) && confirm == 0x02) {
+      if (++clear_samples >= 3) return true;
+    } else {
+      clear_samples = 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(80));
+  }
+  return false;
 }
 
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   // Own the sensor before prompting. Otherwise the higher-priority background
   // authentication task can capture the prompted touch first.
   if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
+  if (!clear_stale_fingerprint_image()) {
+    fp_give();
+    return false;
+  }
   if (prompt) prompt();
   bool ok = fingerprint_authorize_locked();
   fp_give();
