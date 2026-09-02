@@ -8,6 +8,7 @@
 #include "firmware_update.h"
 #include "device_config.h"
 #include "piv.h"
+#include "runtime_health.h"
 #include "touch_pin_hid.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
@@ -327,18 +328,20 @@ static bool factory_reset(void) {
 }
 
 static void handle_command(void) {
-  char line[896];
+  char line[1536];
   if (strcmp(command, "PING") == 0) {
     send_line("PONG");
   } else if (strcmp(command, "STATUS") == 0) {
     char ota_info[480];
+    char runtime_info[320];
     ota_diagnostics(ota_info, sizeof(ota_info));
+    runtime_health_format(runtime_info, sizeof(runtime_info));
     int count = fingerprint_count();
     if (count < 0) {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=no_response fingerprints=unknown fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
-               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s",
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), (unsigned)device_config_fingerprint_profile_views(),
                piv_uses_provisioned_keys() ? "nvs" : "unconfigured",
@@ -346,13 +349,14 @@ static void handle_command(void) {
                (unsigned)device_config_hid_host_count(),
                (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
                (unsigned)device_config_touch_cooldown_ms(),
-               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID, ota_info);
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID,
+               ota_info, runtime_info);
       send_line(line);
     } else {
       snprintf(line, sizeof(line),
                "OK STATUS firmware=unified firmware_version=%s protocol=%d mode=%s "
                "sensor=ok fingerprints=%d fingerprint_profile=%u keys=%s hid_key=%s hid_hosts=%u "
-               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s",
+               "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u ota=%s build=%s %s %s",
                TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_PROTOCOL_VERSION,
                device_config_mode_name(), count,
                (unsigned)device_config_fingerprint_profile_views(),
@@ -361,7 +365,8 @@ static void handle_command(void) {
                (unsigned)device_config_hid_host_count(),
                (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1 : 0,
                (unsigned)device_config_touch_cooldown_ms(),
-               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID, ota_info);
+               firmware_update_supported() ? "ready" : "migration_required", TINYTOUCH_BUILD_ID,
+               ota_info, runtime_info);
       send_line(line);
     }
   } else if (strcmp(command, "VERSION") == 0) {

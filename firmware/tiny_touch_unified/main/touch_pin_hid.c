@@ -16,6 +16,7 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/md.h"
 #include "piv.h"
+#include "runtime_health.h"
 #include "usb_descriptors.h"
 
 static const char *TAG = "touch_hid";
@@ -328,14 +329,18 @@ static bool suspended_sensor_poll_available(void) {
 }
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
+  bool success = false;
   if (device_config_mode() == DEVICE_MODE_HID) {
     ESP_LOGI(TAG, "finger matched; requesting HID password");
-    if (!request_and_type_password(match)) ESP_LOGW(TAG, "HID helper request failed");
+    success = request_and_type_password(match);
+    if (!success) ESP_LOGW(TAG, "HID helper request failed");
   } else {
     ESP_LOGI(TAG, "finger matched; authorizing PIV and typing PIN");
     piv_note_user_presence();
-    if (!type_dummy_pin()) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
+    success = type_dummy_pin();
+    if (!success) ESP_LOGW(TAG, "HID report interrupted by USB suspend");
   }
+  runtime_health_note_auth(success);
 }
 
 static void touch_hid_task(void *arg) {
@@ -350,6 +355,7 @@ static void touch_hid_task(void *arg) {
     if (hid_reconnect_pending && !hid_suspended) {
       hid_reconnect_pending = false;
       ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
+      runtime_health_note_usb_reconnect();
       tud_disconnect();
       vTaskDelay(pdMS_TO_TICKS(250));
       tud_connect();
@@ -425,6 +431,7 @@ void touch_pin_hid_usb_attached(void) {
   hid_needs_release = true;
   hid_remote_wakeup_enabled = false;
   hid_remote_wakeup_attempted = false;
+  runtime_health_note_usb(RUNTIME_USB_ATTACHED);
 }
 
 // The host can suspend the USB bus while the HID task is between a key-down
@@ -438,6 +445,7 @@ void tud_suspend_cb(bool remote_wakeup_en) {
   hid_needs_release = true;
   hid_remote_wakeup_enabled = remote_wakeup_en;
   hid_remote_wakeup_attempted = false;
+  runtime_health_note_usb(RUNTIME_USB_SUSPENDED);
 }
 
 void tud_resume_cb(void) {
@@ -450,6 +458,7 @@ void tud_resume_cb(void) {
   hid_needs_release = true;
   hid_remote_wakeup_enabled = false;
   hid_remote_wakeup_attempted = false;
+  runtime_health_note_usb(RUNTIME_USB_ATTACHED);
 }
 
 bool touch_pin_hid_submit_response(const char *response) {

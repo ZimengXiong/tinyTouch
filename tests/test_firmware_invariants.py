@@ -173,6 +173,19 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertNotIn("tud_task();", sources)
         self.assertIn("tinyusb_driver_install", sources)
 
+    def test_runtime_health_is_exposed_in_status(self):
+        health = (MAIN / "runtime_health.c").read_text()
+        console = (MAIN / "config_console.c").read_text()
+        for field in (
+            "runtime_usb=%s",
+            "runtime_uptime_ms=%",
+            "runtime_reconnects=%",
+            "runtime_auth_fail=%",
+            "runtime_sensor_errors=%",
+        ):
+            self.assertIn(field, health)
+        self.assertIn("runtime_health_format", console)
+
     def test_enrollment_polls_sensor_instead_of_requiring_interrupt(self):
         source = (MAIN / "fingerprint.c").read_text()
         enrollment = source.split("bool fingerprint_enroll", 1)[1]

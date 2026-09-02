@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "runtime_health.h"
 
 static const char *TAG = "fingerprint";
 
@@ -96,6 +97,7 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       if (response[2] != 0xff || response[3] != 0xff ||
           response[4] != 0xff || response[5] != 0xff || resp_len < 2) {
         ESP_LOGW(TAG, "fingerprint response has invalid address/length");
+        runtime_health_note_sensor_protocol_error();
         return false;
       }
       if (expected > sizeof(response)) return false;
@@ -104,6 +106,7 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       size_t response_payload_len = resp_len - 2;
       if (!fp_response_checksum_valid(response, expected)) {
         ESP_LOGW(TAG, "fingerprint response checksum mismatch");
+        runtime_health_note_sensor_protocol_error();
         return false;
       }
 
