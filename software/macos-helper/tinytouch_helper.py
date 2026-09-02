@@ -41,7 +41,6 @@ from tinytouch_runtime import (
 SERVICE = "tinyTouch"
 ACCOUNT = "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
-PREFERRED_SERIAL = "B8F862FB478C"
 STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 SUSPEND_PATH = STATE_DIR / "helper-suspend"
 SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
@@ -109,7 +108,10 @@ def port_identity(port_name: str) -> str:
             identity = normalize_serial(port.serial_number)
             if identity:
                 return identity
-    return normalize_serial(Path(port_name).name) or PREFERRED_SERIAL
+    identity = normalize_serial(Path(port_name).name)
+    if not identity:
+        raise RuntimeError(f"tinyTouch port {port_name} has no stable device identity")
+    return identity
 
 
 def keychain_set(password: str, device_id: str = ACCOUNT) -> None:
@@ -228,12 +230,12 @@ def parse_pairing_key(key_hex: str) -> bytes:
     return key
 
 
-def pairing_keychain_set(key_hex: str, device_id: str = PREFERRED_SERIAL) -> None:
+def pairing_keychain_set(key_hex: str, device_id: str) -> None:
     key = parse_pairing_key(key_hex)
     set_password(PAIRING_SERVICE, device_id, key.hex())
 
 
-def pairing_keychain_get(device_id: str = PREFERRED_SERIAL) -> bytearray:
+def pairing_keychain_get(device_id: str) -> bytearray:
     value = get_password_bytes(PAIRING_SERVICE, device_id)
     if value is None:
         raise KeyError(f"No Keychain pairing key for {device_id}")
@@ -316,12 +318,14 @@ def encrypt_password(pairing_key: bytes, nonce_hex: str, password: bytes) -> tup
     return iv.hex(), ciphertext.hex()
 
 
-def state_path(device_id: str | None = None) -> Path:
-    suffix = normalize_serial(device_id or "legacy")
+def state_path(device_id: str) -> Path:
+    suffix = normalize_serial(device_id)
+    if not suffix:
+        raise ValueError("A stable tinyTouch device identity is required")
     return STATE_DIR / f"state-{suffix}.json"
 
 
-def load_state(device_id: str | None = None) -> dict:
+def load_state(device_id: str) -> dict:
     path = state_path(device_id)
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -336,11 +340,11 @@ def load_state(device_id: str | None = None) -> dict:
     return {"seen_nonces": [str(item).lower() for item in seen[-MAX_SEEN_NONCES:]]}
 
 
-def save_state(state: dict, device_id: str | None = None) -> None:
+def save_state(state: dict, device_id: str) -> None:
     atomic_write_json(state_path(device_id), state)
 
 
-def remember_nonce(state: dict, nonce: str, device_id: str | None = None) -> None:
+def remember_nonce(state: dict, nonce: str, device_id: str) -> None:
     seen_nonces = state.setdefault("seen_nonces", [])
     seen_nonces.append(nonce.lower())
     state["seen_nonces"] = seen_nonces[-MAX_SEEN_NONCES:]
@@ -830,7 +834,7 @@ def wait_for_cli_suspension() -> None:
         time.sleep(0.2)
 
 
-def self_test(device_id: str = PREFERRED_SERIAL) -> None:
+def self_test(device_id: str) -> None:
     password = keychain_get(device_id)
     pairing_key = pairing_keychain_get(device_id)
     nonce = "00" * 16
@@ -869,12 +873,14 @@ def self_test(device_id: str = PREFERRED_SERIAL) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port")
-    parser.add_argument("--device-id", default=PREFERRED_SERIAL)
+    parser.add_argument("--device-id", required=False)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
     if args.self_test:
+        if not args.device_id:
+            raise SystemExit("--device-id is required for --self-test")
         self_test(args.device_id)
         return
     set_background_mode()
