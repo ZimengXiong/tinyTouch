@@ -328,6 +328,19 @@ static bool suspended_sensor_poll_available(void) {
          !hid_remote_wakeup_attempted;
 }
 
+typedef enum {
+  AUTH_STATE_IDLE = 0,
+  AUTH_STATE_WAITING_FOR_HOST,
+  AUTH_STATE_WAITING_FOR_LIFT,
+} auth_state_t;
+
+typedef struct {
+  auth_state_t state;
+  fingerprint_match_t pending_match;
+  TickType_t state_started;
+  TickType_t last_poll;
+} auth_runtime_t;
+
 static void handle_fingerprint_match(fingerprint_match_t match) {
   bool success = false;
   if (device_config_mode() == DEVICE_MODE_HID) {
@@ -343,79 +356,109 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
   runtime_health_note_auth(success);
 }
 
+static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
+  runtime->state = AUTH_STATE_WAITING_FOR_LIFT;
+  runtime->pending_match = (fingerprint_match_t){0};
+  runtime->state_started = now;
+}
+
+static bool service_deferred_usb_reconnect(void) {
+  if (!hid_reconnect_pending || hid_suspended) return false;
+  hid_reconnect_pending = false;
+  ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
+  runtime_health_note_usb_reconnect();
+  tud_disconnect();
+  vTaskDelay(pdMS_TO_TICKS(250));
+  tud_connect();
+  hid_needs_release = true;
+  return true;
+}
+
+static void service_hid_release(void) {
+  if (!hid_needs_release || !tud_hid_ready()) return;
+  tud_hid_keyboard_report(0, 0, NULL);
+  hid_needs_release = false;
+}
+
+static TickType_t sensor_poll_interval(bool present) {
+  if (hid_suspended) return pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS);
+  return present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
+}
+
 static void touch_hid_task(void *arg) {
   (void)arg;
-  TickType_t last_success = 0;
-  TickType_t last_poll = 0;
-  TickType_t pending_since = 0;
-  bool wait_for_lift = false;
-  fingerprint_match_t pending_match = {0};
+  auth_runtime_t runtime = {
+    .state = AUTH_STATE_IDLE,
+    .pending_match = {0},
+    .state_started = xTaskGetTickCount(),
+    .last_poll = 0,
+  };
 
   while (true) {
-    if (hid_reconnect_pending && !hid_suspended) {
-      hid_reconnect_pending = false;
-      ESP_LOGW(TAG, "host resumed after long USB suspend; reconnecting");
-      runtime_health_note_usb_reconnect();
-      tud_disconnect();
-      vTaskDelay(pdMS_TO_TICKS(250));
-      tud_connect();
-      hid_needs_release = true;
+    if (service_deferred_usb_reconnect()) continue;
+    TickType_t now = xTaskGetTickCount();
+    service_hid_release();
+    bool present = fingerprint_present_hint();
+
+    if (runtime.state == AUTH_STATE_WAITING_FOR_HOST) {
+      if (!hid_suspended && tud_hid_ready()) {
+        handle_fingerprint_match(runtime.pending_match);
+        auth_wait_for_lift(&runtime, xTaskGetTickCount());
+        vTaskDelay(pdMS_TO_TICKS(250));
+        fingerprint_led_idle();
+      } else if ((TickType_t)(now - runtime.state_started) >=
+                 pdMS_TO_TICKS(USB_WAKE_TIMEOUT_MS)) {
+        ESP_LOGW(TAG, "host did not resume after fingerprint remote wake");
+        runtime_health_note_auth(false);
+        auth_wait_for_lift(&runtime, now);
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
-    TickType_t now = xTaskGetTickCount();
-    if (pending_match.slot && hid_suspended &&
-        (TickType_t)(now - pending_since) >= pdMS_TO_TICKS(USB_WAKE_TIMEOUT_MS)) {
-      ESP_LOGW(TAG, "host did not resume after fingerprint remote wake");
-      pending_match = (fingerprint_match_t){0};
-      last_success = now;
-      wait_for_lift = true;
+
+    if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
+      if (!present && (TickType_t)(now - runtime.state_started) >=
+                          pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
+        runtime.state = AUTH_STATE_IDLE;
+      }
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
     }
-    if (hid_needs_release && tud_hid_ready()) {
-      tud_hid_keyboard_report(0, 0, NULL);
-      hid_needs_release = false;
+
+    bool transport_ready = tud_hid_ready() || suspended_sensor_poll_available();
+    if (!transport_ready ||
+        (TickType_t)(now - runtime.last_poll) < sensor_poll_interval(present)) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
     }
-    if (pending_match.slot && !hid_suspended && tud_hid_ready()) {
-      handle_fingerprint_match(pending_match);
-      pending_match = (fingerprint_match_t){0};
-      last_success = xTaskGetTickCount();
-      wait_for_lift = true;
+
+    fingerprint_match_t match = fingerprint_authorize_poll_match();
+    runtime.last_poll = xTaskGetTickCount();
+    if (match.slot == 0) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    if (!hid_suspended) {
+      handle_fingerprint_match(match);
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
       vTaskDelay(pdMS_TO_TICKS(250));
       fingerprint_led_idle();
       continue;
     }
-    bool present = fingerprint_present_hint();
-    if (wait_for_lift && !present &&
-        (TickType_t)(now - last_success) >
-            pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
-      wait_for_lift = false;
+
+    // Match before requesting wake so an unrecognized touch cannot wake the
+    // host. Remote wake still requires permission from the host.
+    hid_remote_wakeup_attempted = true;
+    if (tud_remote_wakeup()) {
+      runtime.state = AUTH_STATE_WAITING_FOR_HOST;
+      runtime.pending_match = match;
+      runtime.state_started = xTaskGetTickCount();
+    } else {
+      ESP_LOGW(TAG, "finger matched, but USB remote wake failed");
+      runtime_health_note_auth(false);
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
     }
-    TickType_t min_interval = hid_suspended ? pdMS_TO_TICKS(SUSPENDED_SENSOR_POLL_MS) :
-                              present ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(50);
-    if (!wait_for_lift && !pending_match.slot &&
-        (tud_hid_ready() || suspended_sensor_poll_available()) &&
-        (TickType_t)(now - last_poll) >= min_interval) {
-      fingerprint_match_t match = fingerprint_authorize_poll_match();
-      if (match.slot == 0) {
-        last_poll = xTaskGetTickCount();
-        vTaskDelay(pdMS_TO_TICKS(10));
-        continue;
-      }
-      pending_match = match;
-      pending_since = xTaskGetTickCount();
-      if (hid_suspended) {
-        // Some supported sensor modules do not provide a usable touch signal.
-        // Match before requesting wake so an unrecognized touch cannot wake the
-        // host. Remote wake still requires host permission.
-        hid_remote_wakeup_attempted = true;
-        if (!tud_remote_wakeup()) {
-          ESP_LOGW(TAG, "finger matched, but USB remote wake failed");
-          pending_match = (fingerprint_match_t){0};
-          last_success = xTaskGetTickCount();
-          wait_for_lift = true;
-        }
-      }
-    }
-    last_poll = xTaskGetTickCount();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

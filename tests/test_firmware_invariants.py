@@ -163,9 +163,23 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn(
             "tud_hid_ready() || suspended_sensor_poll_available()", task
         )
+
+    def test_authentication_runtime_uses_explicit_states(self):
+        source = (MAIN / "touch_pin_hid.c").read_text()
+        for state in (
+            "AUTH_STATE_IDLE",
+            "AUTH_STATE_WAITING_FOR_HOST",
+            "AUTH_STATE_WAITING_FOR_LIFT",
+        ):
+            self.assertIn(state, source)
+        task = source.split("static void touch_hid_task", 1)[1].split(
+            "void touch_pin_hid_start", 1
+        )[0]
+        self.assertNotIn("bool wait_for_lift", task)
+        self.assertNotIn("TickType_t pending_since", task)
         self.assertLess(
             task.index("fingerprint_authorize_poll_match()"),
-            task.index("if (hid_suspended)"),
+            task.index("tud_remote_wakeup()"),
         )
 
     def test_tinyusb_has_one_service_task(self):
