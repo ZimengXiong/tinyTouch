@@ -19,6 +19,9 @@ idf_component_register(
 if(TINYTOUCH_RECOVERY_BUILD)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_RECOVERY_BUILD=1)
 endif()
+if(TINYTOUCH_LOCAL_OTA_TEST)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_LOCAL_OTA_TEST=1)
+endif()
 
 target_compile_definitions(
   ${COMPONENT_LIB} PRIVATE

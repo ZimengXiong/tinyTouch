@@ -434,6 +434,10 @@ static void handle_command(void) {
       }
     }
   } else if (strcmp(command, "UPDATE_UNLOCK") == 0) {
+#ifdef TINYTOUCH_LOCAL_OTA_TEST
+    update_authorized_until = esp_timer_get_time() + 30LL * 1000000LL;
+    send_line("OK UPDATE_UNLOCK local_test seconds=30");
+#else
     int count = fingerprint_count();
     if (count < 0) {
       send_line("ERR UPDATE_UNLOCK sensor");
@@ -451,6 +455,7 @@ static void handle_command(void) {
         send_line("ERR UPDATE_UNLOCK fingerprint");
       }
     }
+#endif
   } else if (strncmp(command, "MODE ", 5) == 0) {
     if (!require_config_authorization()) return;
     bool ok = false;

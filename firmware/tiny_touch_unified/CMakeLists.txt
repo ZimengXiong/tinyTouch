@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 option(TINYTOUCH_RECOVERY_BUILD "Build one-time destructive recovery firmware" OFF)
+option(TINYTOUCH_LOCAL_OTA_TEST "Bypass OTA fingerprint authorization for local testing" OFF)
 
 set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
