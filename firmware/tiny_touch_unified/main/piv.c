@@ -76,6 +76,7 @@ static uint8_t chained_p1;
 static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
+static uint8_t user_presence_slots_used;
 static TickType_t pairing_mode_until;
 
 static bool deadline_active(TickType_t deadline, TickType_t maximum_window) {
@@ -450,14 +451,23 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
                                              USER_PRESENCE_WINDOW_TICKS);
   bool pairing_mode_valid = deadline_active(pairing_mode_until,
                                             PAIRING_MODE_WINDOW_TICKS);
-  if (!user_presence_valid && !pairing_mode_valid) {
+  uint8_t slot_bit = apdu[3] == 0x9d ? 0x02 : 0x01;
+  bool slot_already_used = (user_presence_slots_used & slot_bit) != 0;
+  if ((!user_presence_valid || slot_already_used) && !pairing_mode_valid) {
     pin_verified_until = 0;
-    user_presence_until = 0;
+    if (!user_presence_valid) {
+      user_presence_until = 0;
+      user_presence_slots_used = 0;
+    }
     return append_sw(response, response_len, response_cap, 0x6982);
   }
-  // One touch authorizes one private-key operation, regardless of slot.
-  // Pairing mode remains the explicit, time-limited provisioning exception.
-  if (!pairing_mode_valid) user_presence_until = 0;
+  // A macOS login can use 9a for authentication and then 9d to unlock the
+  // login Keychain. One touch permits at most one operation in each slot; it
+  // never permits repeated operations in either slot.
+  if (!pairing_mode_valid) {
+    user_presence_slots_used |= slot_bit;
+    if (user_presence_slots_used == 0x03) user_presence_until = 0;
+  }
 
   uint8_t sig[256];
   size_t sig_len = sizeof(sig);
@@ -576,12 +586,14 @@ void piv_reset_transport_state(void) {
   chained_apdu_data_len = 0;
   pin_verified_until = 0;
   user_presence_until = 0;
+  user_presence_slots_used = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 
 void piv_note_user_presence(void) {
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
+  user_presence_slots_used = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
 

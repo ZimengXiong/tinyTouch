@@ -47,13 +47,29 @@ class FirmwareInvariantTests(unittest.TestCase):
         self.assertIn("apdu[3] == 0x9a || apdu[3] == 0x9d", body)
         self.assertNotRegex(body, r"if\s*\(\s*apdu\[3\]\s*==\s*0x9a\s*\)")
         self.assertIn("deadline_active(user_presence_until", body)
-        self.assertIn("if (!user_presence_valid && !pairing_mode_valid)", body)
+        self.assertIn(
+            "if ((!user_presence_valid || slot_already_used) && !pairing_mode_valid)",
+            body,
+        )
 
-        presence_gate = body.index("if (!user_presence_valid && !pairing_mode_valid)")
-        denied_path = body[presence_gate:body.index("}", presence_gate)]
+        presence_gate = body.index(
+            "if ((!user_presence_valid || slot_already_used) && !pairing_mode_valid)"
+        )
+        denied_path = body[presence_gate:body.index("uint8_t sig", presence_gate)]
         self.assertIn("0x6982", denied_path)
         self.assertLess(presence_gate, body.index("mbedtls_rsa_private"))
         self.assertLess(presence_gate, body.index("mbedtls_pk_sign"))
+
+    def test_one_touch_allows_keychain_unlock_without_reusing_a_slot(self):
+        source = (MAIN / "piv.c").read_text()
+        body = source.split("static bool handle_general_authenticate", 1)[1].split(
+            "void piv_init", 1
+        )[0]
+        self.assertIn("user_presence_slots_used", body)
+        self.assertIn("slot_already_used", body)
+        self.assertIn("user_presence_slots_used |= slot_bit", body)
+        self.assertIn("user_presence_slots_used == 0x03", body)
+        self.assertIn("apdu[3] == 0x9d ? 0x02 : 0x01", body)
 
     def test_piv_command_chaining_accumulates_every_segment(self):
         source = (MAIN / "piv.c").read_text()
