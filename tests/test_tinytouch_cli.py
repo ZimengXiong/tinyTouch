@@ -80,6 +80,29 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertNotIn("PROVISION_BEGIN", " ".join(commands))
         self.assertNotIn("HOST ADD", " ".join(command for command in commands if command == "HOST LIST"))
 
+    def test_piv_setup_stops_the_hid_helper_before_authorization(self):
+        args = SimpleNamespace(port="/dev/cu.TT-1234", mode="piv", skip_enroll=True, no_pair=True)
+        calls = []
+        device = {
+            "firmware": "unified", "protocol": "6", "mode": "hid", "sensor": "ready",
+            "piv": "ready", "fingerprints": "0",
+        }
+        with (
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_mode", return_value="piv"),
+            mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "status", return_value=device),
+            mock.patch.object(cli, "protocol6"),
+            mock.patch.object(cli, "sensor_ready"),
+            mock.patch.object(cli, "remove_helper", side_effect=lambda: calls.append("remove_helper")),
+            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("unlock")),
+            mock.patch.object(cli, "serial_command", return_value=["OK SET MODE"]),
+            mock.patch.object(cli, "fresh_status", return_value={"mode": "piv"}),
+            mock.patch.object(cli, "enroll"),
+        ):
+            cli.command_setup(args)
+        self.assertEqual(calls, ["remove_helper", "unlock"])
+
     def test_hid_host_list_preserves_eight_host_capacity(self):
         with mock.patch.object(
             cli, "serial_command",

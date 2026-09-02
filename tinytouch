@@ -463,6 +463,10 @@ def command_setup(args: argparse.Namespace) -> None:
     device = status(port)
     protocol6(device)
     sensor_ready(device)
+    # HID owns the same CDC port. Release it before PIV authorization so the
+    # foreground request has one owner for the complete mode transition.
+    if mode == "piv":
+        remove_helper()
     unlock(port)
     if mode == "hid":
         configure_hid(port, device)
@@ -477,7 +481,6 @@ def command_setup(args: argparse.Namespace) -> None:
             serial_command(port, "PIV CREATE", timeout=15)
             if status(port).get("piv") != "ready":
                 raise ToolError("Live verification failed: the PIV identity is not ready.")
-        remove_helper()
     enroll(port, args.skip_enroll)
     device = status(port)
     protocol6(device)
