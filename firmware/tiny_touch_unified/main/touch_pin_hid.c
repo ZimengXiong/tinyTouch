@@ -317,7 +317,6 @@ typedef enum {
 
 typedef struct {
   auth_state_t state;
-  fingerprint_match_t pending_match;
   TickType_t state_started;
 } auth_runtime_t;
 
@@ -337,7 +336,6 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
 
 static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
   runtime->state = AUTH_STATE_WAITING_FOR_LIFT;
-  runtime->pending_match = (fingerprint_match_t){0};
   runtime->state_started = now;
 }
 
@@ -345,7 +343,6 @@ static void touch_hid_task(void *arg) {
   (void)arg;
   auth_runtime_t runtime = {
     .state = AUTH_STATE_IDLE,
-    .pending_match = {0},
     .state_started = xTaskGetTickCount(),
   };
 

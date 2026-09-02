@@ -106,28 +106,8 @@ bool device_config_set_mode(device_mode_t mode) {
   bool ok = replace_locked(&candidate); unlock(); return ok;
 }
 
-bool device_config_hid_key_configured(void) { return device_config_hid_host_count() != 0; }
-
-bool device_config_get_hid_key(uint8_t key[32]) {
-  if (!key) return false;
-  lock(); bool ok = config.hid_host_count != 0;
-  if (ok) memcpy(key, config.hid_hosts[0].key, 32); unlock(); return ok;
-}
-
-bool device_config_set_hid_key(const uint8_t key[32]) {
-  if (!key) return false;
-  uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE]; derive_key_id(key, id);
-  bool ok = device_config_add_hid_host(id, key); memset(id, 0, sizeof(id)); return ok;
-}
-
 size_t device_config_hid_host_count(void) {
   lock(); size_t value = config.hid_host_count; unlock(); return value;
-}
-
-bool device_config_get_hid_host(size_t index, device_hid_host_t *host) {
-  if (!host) return false;
-  lock(); bool ok = index < config.hid_host_count;
-  if (ok) *host = config.hid_hosts[index]; unlock(); return ok;
 }
 
 size_t device_config_copy_hid_hosts(device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS]) {
@@ -166,10 +146,6 @@ bool device_config_remove_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZ
                                     sizeof(candidate.hid_hosts[0]));
   if (candidate.mode == DEVICE_MODE_HID && candidate.hid_host_count == 0) candidate.mode = DEVICE_MODE_PIV;
   bool ok = replace_locked(&candidate); unlock(); return ok;
-}
-
-uint8_t device_config_fingerprint_profile_views(void) {
-  lock(); uint8_t value = config.fingerprint_profile_views; unlock(); return value;
 }
 
 bool device_config_set_fingerprint_profile_views(uint8_t views) {

@@ -309,10 +309,6 @@ fingerprint_match_t fingerprint_authorize_poll_match(void) {
   return match;
 }
 
-bool fingerprint_authorize_poll_once(void) {
-  return fingerprint_authorize_poll_match().slot != 0;
-}
-
 void fingerprint_init(void) {
   gpio_config_t io = {
     .pin_bit_mask = 1ULL << FP_INT_PIN,
@@ -379,13 +375,6 @@ static bool fingerprint_authorize_locked(void) {
   }
 
   return fingerprint_match_captured(false).slot != 0;
-}
-
-bool fingerprint_authorize_once(void) {
-  if (!fp_take(FINGER_WAIT_MS + 1000)) return false;
-  bool ok = fingerprint_authorize_locked();
-  fp_give();
-  return ok;
 }
 
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
