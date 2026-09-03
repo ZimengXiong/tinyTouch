@@ -42,6 +42,8 @@ LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
+OTA_CHUNK_SIZE = 3072
+OTA_WRITE_WINDOW = 8
 RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
@@ -50,11 +52,10 @@ VERBOSE = False
 HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
-_lease: ForegroundLease | None = None
 _sudo_session_ready = False
 _setup_password: bytearray | None = None
 _helper_suppressed = False
@@ -267,24 +268,24 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
 
 
 def unload_helper() -> bool:
-    global _lease
     if _helper_suppressed:
         return False
-    if _lease is not None:
-        return True
+    should_restart = LAUNCH_AGENT.exists()
     loaded = subprocess.run(
         ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
     if not loaded:
-        return False
-    lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
-    try:
-        lease.acquire(wait_for_ack=True)
-    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
-        raise ToolError(f"Could not pause the HID helper: {exc}") from exc
-    _lease = lease
-    return True
+        return should_restart
+    result = subprocess.run(
+        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0 and helper_loaded():
+        raise ToolError("Could not stop the HID background service.")
+    HELPER_SUSPEND.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+    return should_restart
 
 
 def helper_loaded() -> bool:
@@ -298,23 +299,15 @@ def helper_loaded() -> bool:
 
 
 def load_helper() -> None:
-    global _lease
     if _helper_suppressed:
         return
-    if _lease is not None:
-        _lease.release()
-        _lease = None
     if not helper_loaded():
         run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
 
 
 def remove_helper() -> None:
-    global _lease
     global _helper_suppressed
     _helper_suppressed = True
-    if _lease is not None:
-        _lease.release()
-        _lease = None
     if LAUNCH_AGENT.exists():
         process = subprocess.Popen(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
@@ -496,11 +489,13 @@ def sensor_ready(device: dict[str, str]) -> None:
         raise ToolError("The fingerprint sensor is not ready. Resolve that before setup.")
 
 
-def unlock(port: str) -> None:
+def unlock(port: str, *, explain_pin: bool = False) -> None:
     deadline = time.monotonic() + 6.0
     while True:
         try:
             serial_command(port, "AUTH", timeout=15)
+            if explain_pin:
+                explain_piv_pin()
             return
         except ToolError as exc:
             if "USB serial port became unavailable while this command was starting" not in str(exc):
@@ -727,16 +722,17 @@ def command_setup(args: argparse.Namespace) -> None:
             and paired_piv_identities()
         ):
             say("PIV is already set up on this Mac.")
+            explain_piv_pin()
             return
         if device.get("mode") != mode:
-            unlock(port)
+            unlock(port, explain_pin=mode == "piv")
             serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
             mode_changed = True
         elif mode == "hid":
             unlock(port)
             configure_hid(port, device)
         else:
-            unlock(port)
+            unlock(port, explain_pin=True)
             if device.get("piv") != "ready":
                 serial_command(port, "PIV CREATE", timeout=45)
                 piv_rescan_needed = True
@@ -779,7 +775,7 @@ def command_mode(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    unlock(port)
+    unlock(port, explain_pin=args.mode == "piv")
     serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
     if args.mode == "piv":
         remove_helper()
@@ -789,6 +785,8 @@ def command_mode(args: argparse.Namespace) -> None:
     say("Waiting for the device...")
     reconnected_port = wait_for_reconnect(port)
     fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    if args.mode == "hid":
+        install_helper()
     say(f"{args.mode.upper()} mode is active.")
 
 
@@ -913,11 +911,20 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
                 offset = response_next(lines, "OTA")
                 say("Uploading firmware: 0%")
                 next_progress = 10
-                for start in range(offset, len(image), 360):
-                    payload = base64.b64encode(image[start:start + 360]).decode()
-                    command = f"OTA WRITE {token} {start} {payload}"
-                    lines = serial_exchange(device, command)
-                    offset = response_next(lines, "OTA")
+                starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
+                for index in range(0, len(starts), OTA_WRITE_WINDOW):
+                    commands = []
+                    for start in starts[index:index + OTA_WRITE_WINDOW]:
+                        payload = base64.b64encode(
+                            image[start:start + OTA_CHUNK_SIZE]
+                        ).decode()
+                        command = f"OTA WRITE {token} {start} {payload}"
+                        device.write((command + "\n").encode("ascii"))
+                        commands.append(command)
+                    device.flush()
+                    for command in commands:
+                        lines = serial_response(device, command)
+                        offset = response_next(lines, "OTA")
                     progress = min(100, offset * 100 // len(image))
                     if progress >= next_progress:
                         say(f"Uploading firmware: {progress}%")
@@ -941,6 +948,11 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
 def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
     device.write((command + "\n").encode("ascii"))
     device.flush()
+    return serial_response(device, command, timeout=timeout)
+
+
+def serial_response(device, command: str, *, timeout: float = 8.0) -> list[str]:
+    """Read one terminal response for a command already sent to the device."""
     lines: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1114,7 +1126,7 @@ def command_pair(args: argparse.Namespace) -> None:
     # terminal password prompt can outlive firmware's short PIV authorization.
     authorize_macos()
     port = choose_port(args.port)
-    unlock(port)
+    unlock(port, explain_pin=True)
     try:
         run(["sudo", "-n", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
     except ToolError:
@@ -1125,7 +1137,6 @@ def command_pair(args: argparse.Namespace) -> None:
         if identity not in paired_after:
             raise
     say("PIV is paired with this Mac. The device was not restarted.")
-    explain_piv_pin()
 
 
 def parser() -> argparse.ArgumentParser:

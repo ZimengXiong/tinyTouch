@@ -23,6 +23,15 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn("tiny_touch_hid_configuration_descriptor", descriptors)
         self.assertNotIn("tiny_touch_piv_configuration_descriptor", descriptors)
 
+    def test_usb_resume_reenumerates_without_restarting_firmware(self) -> None:
+        defaults = (MAIN.parent / "sdkconfig.defaults").read_text()
+        usb = self.source("usb_ccid.c")
+        self.assertIn("CONFIG_TINYUSB_RESUME_CALLBACK=y", defaults)
+        self.assertIn("TINYUSB_EVENT_RESUMED", usb)
+        self.assertIn("resume_reconnect_task", usb)
+        self.assertIn("tud_disconnect();", usb)
+        self.assertIn("tud_connect();", usb)
+
     def test_persistence_swaps_one_live_config_blob(self) -> None:
         source = self.source("device_config.c")
         self.assertIn('CONFIG_NAMESPACE "tt6"', source)

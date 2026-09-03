@@ -104,7 +104,9 @@ class ProtocolSixTests(unittest.TestCase):
                 __exit__=mock.Mock(return_value=False),
             )),
             mock.patch.object(cli, "remove_helper", side_effect=lambda: calls.append("remove_helper")),
-            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("unlock")),
+            mock.patch.object(
+                cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("unlock")
+            ),
             mock.patch.object(cli, "serial_command", return_value=["OK SET MODE"]),
             mock.patch.object(cli, "fresh_status", return_value={"mode": "piv"}),
             mock.patch.object(cli, "enroll"),
@@ -124,13 +126,23 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]),
             mock.patch.object(cli, "authorize_macos", side_effect=lambda: calls.append("sudo")),
             mock.patch.object(cli, "choose_port", return_value=args.port),
-            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("touch")),
+            mock.patch.object(
+                cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("touch")
+            ) as unlock,
             mock.patch.object(cli, "run", side_effect=cli.ToolError("sc_auth failed")),
             mock.patch.object(cli, "say") as output,
         ):
             cli.command_pair(args)
         self.assertEqual(calls, ["sudo", "touch"])
-        output.assert_any_call("When macOS asks for the smart-card PIN, enter 111111.")
+        self.assertTrue(unlock.call_args.kwargs["explain_pin"])
+
+    def test_piv_unlock_prints_pin_before_macos_can_prompt(self):
+        with (
+            mock.patch.object(cli, "serial_command", return_value=["OK AUTH"]),
+            mock.patch.object(cli, "explain_piv_pin") as explain,
+        ):
+            cli.unlock("/dev/cu.TT-1234", explain_pin=True)
+        explain.assert_called_once_with()
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
         with mock.patch.object(
@@ -233,6 +245,9 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertTrue(writes[0].startswith("OTA BEGIN "))
         self.assertTrue(writes[-1].startswith("OTA COMMIT "))
         self.assertNotIn("RESET", " ".join(writes))
+        write_commands = [command for command in writes if command.startswith("OTA WRITE ")]
+        self.assertEqual(len(write_commands), 1)
+        self.assertEqual(len(base64.b64decode(write_commands[0].split()[4])), len(image))
         output = [call.args[0] for call in say.call_args_list]
         self.assertIn("Uploading firmware: 0%", output)
         self.assertIn("Uploading firmware: 100%", output)
@@ -282,6 +297,64 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.stage_ota("/dev/cu.TT-1234", image, digest)
         self.assertTrue(writes[-1].startswith("OTA ABORT "))
+
+    def test_ota_writes_are_windowed(self):
+        try:
+            import serial  # type: ignore
+        except ImportError:
+            self.skipTest("pyserial is not installed")
+
+        activity = []
+
+        class WindowedSerial:
+            def __init__(self, *_args, **_kwargs):
+                self.responses = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def write(self, payload):
+                command = payload.decode("ascii").strip()
+                words = command.split()
+                activity.append(("write", command))
+                if words[:2] == ["OTA", "BEGIN"]:
+                    self.responses.append(b"OK OTA BEGIN next=0\n")
+                elif words[:2] == ["OTA", "WRITE"]:
+                    offset = int(words[3])
+                    size = len(base64.b64decode(words[4]))
+                    self.responses.append(f"OK OTA WRITE next={offset + size}\n".encode())
+                elif words[:2] == ["OTA", "COMMIT"]:
+                    self.responses.append(b"OK OTA STAGED power_cycle=required\n")
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                activity.append(("read", ""))
+                return self.responses.pop(0) if self.responses else b""
+
+        image = bytes(range(256)) * 40
+        digest = hashlib.sha256(image).hexdigest()
+        with (
+            mock.patch.object(serial, "Serial", WindowedSerial),
+            mock.patch.object(cli, "serial_command", return_value=["OK"]),
+            mock.patch.object(cli, "unload_helper", return_value=False),
+            mock.patch.object(cli, "say"),
+        ):
+            cli.stage_ota("/dev/cu.TT-1234", image, digest)
+
+        begin = next(index for index, item in enumerate(activity) if "OTA BEGIN" in item[1])
+        first_read = next(
+            index for index, item in enumerate(activity[begin + 2:], begin + 2)
+            if item[0] == "read"
+        )
+        writes_before_read = [
+            item for item in activity[begin + 2:first_read] if item[0] == "write"
+        ]
+        self.assertGreater(len(writes_before_read), 1)
 
     def test_rom_flow_only_prompts_for_a_physical_reconnect(self):
         args = SimpleNamespace(port=None)
