@@ -76,6 +76,13 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
             piv,
         )
 
+    def test_piv_token_identifier_changes_with_the_identity(self) -> None:
+        piv = self.source("piv.c")
+        console = self.source("config_console.c")
+        self.assertIn("set_chuid_guid(cert_9a_der, cert_9a_der_len)", piv)
+        self.assertIn("set_chuid_guid(mac, sizeof(mac))", piv)
+        self.assertIn("usb_ccid_rescan();", console)
+
     def test_piv_configuration_allows_bounded_keychain_wrapping(self) -> None:
         piv = self.source("piv.c")
         console = self.source("config_console.c")

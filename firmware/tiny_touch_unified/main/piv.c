@@ -105,6 +105,17 @@ static void secure_wipe(void *data, size_t length) {
   while (length--) *cursor++ = 0;
 }
 
+static void set_chuid_guid(const uint8_t *identity, size_t identity_len) {
+  uint8_t identity_hash[32];
+  mbedtls_sha256(identity, identity_len, identity_hash, 0);
+  memcpy(CHUID_OBJECT + CHUID_GUID_OFFSET, identity_hash, 16);
+  CHUID_OBJECT[CHUID_GUID_OFFSET + 6] =
+      (CHUID_OBJECT[CHUID_GUID_OFFSET + 6] & 0x0f) | 0x40;
+  CHUID_OBJECT[CHUID_GUID_OFFSET + 8] =
+      (CHUID_OBJECT[CHUID_GUID_OFFSET + 8] & 0x3f) | 0x80;
+  secure_wipe(identity_hash, sizeof(identity_hash));
+}
+
 static void wipe_stored_identity(void) {
   secure_wipe(stored_cert_9a, sizeof(stored_cert_9a));
   secure_wipe(stored_key_9a, sizeof(stored_key_9a));
@@ -664,14 +675,10 @@ void piv_init(void) {
   if (!piv_mutex) piv_mutex = xSemaphoreCreateMutex();
   configASSERT(piv_mutex);
   uint8_t mac[6];
-  uint8_t device_hash[32];
   if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
-    mbedtls_sha256(mac, sizeof(mac), device_hash, 0);
-    memcpy(CHUID_OBJECT + CHUID_GUID_OFFSET, device_hash, 16);
-    CHUID_OBJECT[CHUID_GUID_OFFSET + 6] =
-      (CHUID_OBJECT[CHUID_GUID_OFFSET + 6] & 0x0f) | 0x40;
-    CHUID_OBJECT[CHUID_GUID_OFFSET + 8] =
-      (CHUID_OBJECT[CHUID_GUID_OFFSET + 8] & 0x3f) | 0x80;
+    // Give an unconfigured board a stable temporary token identifier. Once an
+    // identity exists, its authentication certificate becomes the identifier.
+    set_chuid_guid(mac, sizeof(mac));
   }
 
   const char *cert_9a_pem = NULL;
@@ -729,6 +736,12 @@ void piv_init(void) {
   bool cert_9d_ok = key_mgmt_ok && load_certificate_for_key(
       cert_9d_pem, &key_mgmt_key, cert_9d_der, sizeof(cert_9d_der), &cert_9d_der_len);
   using_provisioned_keys = auth_ok && key_mgmt_ok && cert_9a_ok && cert_9d_ok;
+  if (using_provisioned_keys) {
+    // CryptoTokenKit caches objects by the PIV token identifier. Tie that
+    // identifier to the generated identity so factory reset cannot place new
+    // certificates inside a token macOS believes it has already cached.
+    set_chuid_guid(cert_9a_der, cert_9a_der_len);
+  }
   wipe_stored_identity();
   if (!using_provisioned_keys) {
     ESP_LOGW(TAG, "provisioned PIV material is incomplete or unusable");
