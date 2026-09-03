@@ -1173,6 +1173,16 @@ def command_factory_reset(args: argparse.Namespace) -> None:
         raise ToolError("Factory reset cancelled.")
     remove_helper()
     unlock(port, reason="confirm the factory reset")
+    paired_identities = paired_piv_identities()
+    if paired_identities:
+        authorize_macos()
+        for identity in paired_identities:
+            run(
+                [
+                    "sudo", "-n", "sc_auth", "unpair", "-u",
+                    getpass.getuser(), "-h", identity,
+                ]
+            )
     serial_command(port, "RESET FACTORY", timeout=15)
     cleared = status(port)
     for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
@@ -1569,12 +1579,18 @@ def command_pair(
                 ) from exc
             raise
     if keychain_warning:
-        say("PIV is paired with this Mac.")
-        say(
-            "macOS could not add Login Keychain unlock. After a smart-card "
-            "login, enter your Mac password if the keychain asks for it."
+        # Do not retain a pairing that cannot unlock the Login Keychain. The
+        # user would otherwise receive a password prompt after every PIV login.
+        run(
+            [
+                "sudo", "-n", "sc_auth", "unpair", "-u", getpass.getuser(),
+                "-h", identity,
+            ]
         )
-        return
+        raise ToolError(
+            "macOS could not finish Login Keychain setup. The incomplete "
+            "pairing was removed. Run setup again."
+        )
     say("PIV is paired with this Mac.")
 
 

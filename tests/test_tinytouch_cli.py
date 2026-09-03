@@ -352,7 +352,7 @@ class ProtocolSixTests(unittest.TestCase):
             ):
                 cli.command_pair(args)
 
-    def test_piv_pair_preserves_pairing_when_keychain_wrapping_is_unavailable(self):
+    def test_piv_pair_removes_pairing_when_keychain_wrapping_is_unavailable(self):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         result = SimpleNamespace(
@@ -371,13 +371,11 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "run", return_value=result) as run,
-            mock.patch.object(cli, "say") as output,
         ):
-            cli.command_pair(args)
-        self.assertEqual(run.call_count, 1)
-        text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("PIV is paired with this Mac.", text)
-        self.assertIn("enter your Mac password if the keychain asks", text)
+            with self.assertRaisesRegex(cli.ToolError, "incomplete pairing was removed"):
+                cli.command_pair(args)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("unpair", run.call_args.args[0])
 
     def test_piv_identity_selection_recommends_the_default(self):
         identities = ["A" * 40, "B" * 40]
@@ -524,6 +522,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "ask", return_value="y"),
             mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "paired_piv_identities", return_value=[]),
             mock.patch.object(cli, "serial_command", side_effect=lambda _p, command, **_k: calls.append(command) or ["OK RESET FACTORY"]),
             mock.patch.object(cli, "remove_helper"),
             mock.patch.object(cli, "device_account", return_value="TT-1234"),
@@ -533,6 +532,34 @@ class ProtocolSixTests(unittest.TestCase):
             cli.command_factory_reset(args)
         self.assertEqual(calls, ["RESET FACTORY"])
         output.assert_called_once_with("Factory reset completed.")
+
+    def test_factory_reset_unpairs_the_live_piv_identity_before_erasing_it(self):
+        args = SimpleNamespace(port="/dev/cu.TT-1234")
+        identity = "A" * 40
+        statuses = iter([
+            {"firmware": "unified", "protocol": "6", "mode": "piv", "fingerprints": "4"},
+            {"firmware": "unified", "protocol": "6", "mode": "piv", "fingerprints": "0", "hosts": "0", "piv": "unconfigured"},
+        ])
+        events = []
+        with (
+            mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
+            mock.patch.object(cli, "protocol6"),
+            mock.patch.object(cli, "ask", return_value="y"),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "paired_piv_identities", return_value=[identity]),
+            mock.patch.object(cli, "authorize_macos", side_effect=lambda: events.append("authorize")),
+            mock.patch.object(cli, "run", side_effect=lambda command, **_kwargs: events.append(command)),
+            mock.patch.object(cli, "serial_command", side_effect=lambda *_args, **_kwargs: events.append("reset") or ["OK RESET FACTORY"]),
+            mock.patch.object(cli, "remove_helper"),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
+            mock.patch.object(cli, "keychain_delete"),
+            mock.patch.object(cli, "say"),
+        ):
+            cli.command_factory_reset(args)
+        self.assertEqual(events[0], "authorize")
+        self.assertIn("unpair", events[1])
+        self.assertEqual(events[2], "reset")
 
     def test_mode_verifies_the_live_mode_without_reconnect_command(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234", mode="hid")
