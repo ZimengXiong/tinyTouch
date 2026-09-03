@@ -54,6 +54,7 @@ MAX_PASSWORD_BYTES = 160
 MAX_EVENT_AUTHENTICATORS = 8
 MAX_COUNTER = (1 << 64) - 1
 MAX_SCORE = (1 << 31) - 1
+REATTACHED_DEVICES: set[str] = set()
 
 # macOS virtual key codes for the physical keys used by TinyUSB's US ASCII map.
 _MAC_KEYCODES = {
@@ -568,6 +569,14 @@ def serve_port(
     try:
         with open_serial(port) as ser:
             require_startup_status(ser, device_id, port)
+            if device_id not in REATTACHED_DEVICES:
+                # A new login creates a new helper process. Ask the firmware to
+                # re-enumerate once so macOS rebuilds stale CDC and HID endpoints.
+                REATTACHED_DEVICES.add(device_id)
+                ser.write(b"USB RECONNECT\n")
+                ser.flush()
+                diagnostic("worker.usb_reattach_requested", device_id=device_id, port=port)
+                raise serial.SerialException("USB reattach requested")
             diagnostic("worker.connected", device_id=device_id, port=port)
             while True:
                 if stop_event is not None and stop_event.is_set():
