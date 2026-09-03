@@ -76,6 +76,40 @@ def say(message: str = "") -> None:
     print(message, flush=True)
 
 
+def terminal_style(text: str, code: str) -> str:
+    """Apply restrained terminal styling when the terminal supports it."""
+    if (
+        not sys.stdout.isatty()
+        or os.environ.get("NO_COLOR") is not None
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def show_startup_mark(command: str) -> None:
+    """Show the original Alpaca mark and one command section divider."""
+    if not sys.stdout.isatty():
+        return
+    mark = (
+        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣰⣷⣼⣇⡀⠀",
+        "⠀⠀⠀⠀⢀⣀⣀⡀⠀⠀⣿⣿⡟⠟⢡⡄",
+        "⠀⠀⠀⣤⣿⣯⣽⢿⣤⠀⣿⣿⣿⡟⠋⠀",
+        "⠀⣰⣟⡛⢛⡛⢛⣛⢛⣻⣿⣿⣿⡇⠀⠀",
+        "⠸⣿⣿⣷⣿⣿⣾⣿⣾⣿⣿⣿⣿⡇⠀⠀",
+        "⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠃⠀⠀",
+        "⠀⢸⣿⣿⣿⡿⠉⠉⣿⣿⡏⣿⠁⠀⠀⠀",
+        "⠀⠀⢸⡇⣿⡇⠀⠀⢸⣿⢸⡇⠀⠀⠀⠀",
+    )
+    for line in mark:
+        say(terminal_style(line, "36"))
+    say(f"          tinyTouch {terminal_style(CLI_VERSION, '2')}")
+    say("")
+    title = command.replace("-", " ").title()
+    say(terminal_style(f"── {title} ────────────────────", "2"))
+    say("")
+
+
 def verbose(message: str) -> None:
     if VERBOSE:
         say(f"[verbose] {message}")
@@ -1433,6 +1467,7 @@ def main() -> int:
         return 0
     args = parser().parse_args()
     VERBOSE = args.verbose
+    show_startup_mark(args.command)
     try:
         args.func(args)
     except KeyboardInterrupt:

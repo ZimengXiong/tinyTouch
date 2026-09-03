@@ -21,6 +21,25 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_startup_mark_shows_version_and_command_section(self):
+        with (
+            mock.patch.object(cli.sys.stdout, "isatty", return_value=True),
+            mock.patch.dict(cli.os.environ, {}, clear=True),
+            mock.patch.object(cli, "say") as output,
+        ):
+            cli.show_startup_mark("factory-reset")
+        text = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("⣰⣷⣼⣇", text)
+        self.assertIn(cli.CLI_VERSION, text)
+        self.assertIn("Factory Reset", text)
+
+    def test_terminal_style_respects_no_color(self):
+        with (
+            mock.patch.object(cli.sys.stdout, "isatty", return_value=True),
+            mock.patch.dict(cli.os.environ, {"NO_COLOR": "1"}, clear=True),
+        ):
+            self.assertEqual(cli.terminal_style("Setup", "36"), "Setup")
+
     def test_mode_prompt_explains_hid_and_piv(self):
         with (
             mock.patch.object(cli, "say") as output,
