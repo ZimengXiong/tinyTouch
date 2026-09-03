@@ -27,12 +27,14 @@ command -v docker >/dev/null || { print -u2 "Docker is required."; exit 1; }
 }
 
 started=$SECONDS
+release_commit="$(git -C "$project_dir" rev-parse HEAD)"
 print "Building firmware..."
 mkdir -p "$firmware_build"
 docker run --rm \
   -v "$project_dir:$project_dir" \
   -w "$project_dir" \
   -e TINYTOUCH_FIRMWARE_DIR="$firmware_dir" \
+  -e GITHUB_SHA="$release_commit" \
   espressif/idf:release-v5.3 \
   bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C "$TINYTOUCH_FIRMWARE_DIR" -B "$TINYTOUCH_FIRMWARE_DIR/build-local" -D SDKCONFIG="$TINYTOUCH_FIRMWARE_DIR/build-local/sdkconfig" build'
 
