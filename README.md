@@ -236,10 +236,39 @@ microcontroller families can work, but are not currently supported.
 
 ## wiring
 
-the fingerprint sensor connects over uart to pins 6 and 7 for tx and rx.
+the pin numbers below are the silkscreen labels on the seeed studio xiao
+esp32s3 (`d0` through `d10`), not raw gpio numbers. the constants at the top of
+`main/fingerprint.c` are gpio numbers, which is why the two sets look nothing
+alike.
 
-the interrupt pin can be connected anywhere. in firmware, it is connected to pin
-1.
+| sensor wire | xiao pad | esp32-s3 gpio | firmware constant |
+| -- | -- | -- | -- |
+| sensor tx | `d7` | gpio44 | `FP_RX_PIN` |
+| sensor rx | `d6` | gpio43 | `FP_TX_PIN` |
+| touch / interrupt out | `d1` | gpio2 | `FP_INT_PIN` |
+| vcc | `3v3` | | |
+| gnd | `gnd` | | |
+
+tx and rx cross over. the sensor's tx goes to the board's rx pad, and the
+sensor's rx goes to the board's tx pad.
+
+with the usb-c connector facing up, `d1` is the second pad down the left side,
+`d6` is the bottom of the left side, and `d7` is the bottom of the right side.
+the pin list on the [xiao esp32s3
+wiki](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/) has the full
+map.
+
+the interrupt pin can be moved anywhere by editing `FP_INT_PIN`. it is
+configured as an input with a pull-down and read as active high, so the sensor
+has to drive it high on touch.
+
+some zw101 modules have a separate touch power pin, often labelled `vt` or
+`3v3t`, next to the main `vcc`. the touch output stays dead unless that pin is
+powered as well.
+
+on a different esp32-s3 board, only the gpio numbers matter. wire gpio43,
+gpio44, and gpio2 to whichever pads your board exposes, or change the constants
+in `main/fingerprint.c` to match your wiring.
 
 ## notes
 
