@@ -911,11 +911,18 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
             try:
                 lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
                 offset = response_next(lines, "OTA")
+                say("Uploading firmware: 0%")
+                next_progress = 10
                 for start in range(offset, len(image), 360):
                     payload = base64.b64encode(image[start:start + 360]).decode()
                     command = f"OTA WRITE {token} {start} {payload}"
                     lines = serial_exchange(device, command)
                     offset = response_next(lines, "OTA")
+                    progress = min(100, offset * 100 // len(image))
+                    if progress >= next_progress:
+                        say(f"Uploading firmware: {progress}%")
+                        next_progress = progress + 10
+                say("Verifying firmware...")
                 commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
             except BaseException:
                 try:
