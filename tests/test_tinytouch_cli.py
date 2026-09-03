@@ -37,12 +37,12 @@ class ProtocolSixTests(unittest.TestCase):
         )
 
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
-        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.11-prod"
-        manifest = {"version": "0.1.11-prod", "ota": {}}
+        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.12-prod"
+        manifest = {"version": "0.1.12-prod", "ota": {}}
         args = SimpleNamespace(port=None, firmware_only=False, release_version=None)
         installer_result = SimpleNamespace(returncode=0)
         version_result = SimpleNamespace(
-            returncode=0, stdout="tinyTouch CLI 0.1.11-prod\n"
+            returncode=0, stdout="tinyTouch CLI 0.1.12-prod\n"
         )
         with (
             mock.patch.object(cli, "update_release", return_value=(root, manifest)),
@@ -64,7 +64,7 @@ class ProtocolSixTests(unittest.TestCase):
                 "update",
                 "--firmware-only",
                 "--release-version",
-                "0.1.11-prod",
+                "0.1.12-prod",
             ],
         )
 
@@ -414,6 +414,32 @@ class ProtocolSixTests(unittest.TestCase):
         source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
         self.assertNotIn("PREFERRED_SERIAL", source)
         self.assertNotIn("protocol-v5-compatible", source)
+
+    def test_helper_retries_login_keychain_without_a_long_delay(self):
+        source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        self.assertIn("KEYCHAIN_RETRY_SECONDS = 0.5", source)
+        self.assertIn("maximum=MAX_WORKER_RETRY_SECONDS", source)
+
+    def test_launch_agent_is_latency_sensitive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(cli, "SUPPORT_DIR", root / "support"),
+                mock.patch.object(cli, "LOG_DIR", root / "logs"),
+                mock.patch.object(cli, "LAUNCH_AGENT", root / "agent.plist"),
+                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/cli")),
+                mock.patch.object(cli, "unload_helper"),
+                mock.patch.object(cli, "load_helper"),
+                mock.patch.object(cli, "helper_loaded", return_value=True),
+                mock.patch.object(cli, "atomic_write_bytes") as write,
+                mock.patch.object(cli, "FROZEN", True),
+                mock.patch.object(cli.sys, "executable", "/cli"),
+            ):
+                cli.install_helper()
+        payload = write.call_args.args[1]
+        launch_agent = cli.plistlib.loads(payload)
+        self.assertEqual(launch_agent["ProcessType"], "Interactive")
+        self.assertEqual(launch_agent["ThrottleInterval"], 1)
 
 
 if __name__ == "__main__":

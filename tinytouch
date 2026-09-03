@@ -347,7 +347,8 @@ def install_helper() -> None:
     arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
     payload = {
         "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
-        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Background",
+        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+        "ThrottleInterval": 1,
         "StandardOutPath": str(LOG_DIR / "helper.log"),
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
         "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},

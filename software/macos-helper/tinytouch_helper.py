@@ -48,6 +48,8 @@ MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
 STARTUP_STATUS_TIMEOUT_SECONDS = 2.0
+KEYCHAIN_RETRY_SECONDS = 0.5
+MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
@@ -744,7 +746,7 @@ def run_manager() -> None:
     workers: dict[str, Worker] = {}
     failures: dict[str, int] = {}
     retry_after: dict[str, float] = {}
-    backoff = BackoffPolicy(initial=0.25, maximum=30.0)
+    backoff = BackoffPolicy(initial=0.25, maximum=MAX_WORKER_RETRY_SECONDS)
     lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
     active_lease_nonce: str | None = None
     phase = ManagerPhase.STARTING
@@ -842,7 +844,9 @@ def run_manager() -> None:
                 continue
             if not configured:
                 diagnostic("worker.credentials_missing", level="warning", device_id=device_id)
-                retry_after[device_id] = now + 30
+                # The login Keychain can briefly report no items while macOS
+                # finishes opening the user's session. Check again promptly.
+                retry_after[device_id] = now + KEYCHAIN_RETRY_SECONDS
                 continue
             worker = Worker(endpoint)
             workers[device_id] = worker
