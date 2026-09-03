@@ -39,6 +39,7 @@ static int64_t authorized_until;
 static int64_t ota_last_activity;
 static SemaphoreHandle_t write_lock;
 static volatile bool piv_create_active;
+static volatile bool usb_reconnect_active;
 
 static void wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -272,6 +273,25 @@ static void piv_create(void) {
   reply("EVENT PIV_CREATE");
 }
 
+static void usb_reconnect_task(void *argument) {
+  (void)argument;
+  vTaskDelay(pdMS_TO_TICKS(100));
+  usb_ccid_rescan();
+  usb_reconnect_active = false;
+  vTaskDelete(NULL);
+}
+
+static void usb_reconnect(void) {
+  if (usb_reconnect_active) { reply("ERR USB BUSY"); return; }
+  usb_reconnect_active = true;
+  if (xTaskCreate(usb_reconnect_task, "usb_reconnect", 2048, NULL, 2, NULL) != pdPASS) {
+    usb_reconnect_active = false;
+    reply("ERR USB RECONNECT");
+    return;
+  }
+  reply("OK USB RECONNECT");
+}
+
 static void ota_begin(char *arguments) {
   if (!require_authorized() || ota_token[0]) { if (ota_token[0]) reply("ERR OTA BUSY"); return; }
   char *size = strchr(arguments, ' ');
@@ -315,6 +335,7 @@ static void handle_command(void) {
   if (strcmp(command, "PING") == 0) reply("PONG 6");
   else if (strcmp(command, "STATUS") == 0) status();
   else if (strcmp(command, "LOGS") == 0) touch_pin_hid_send_logs();
+  else if (strcmp(command, "USB RECONNECT") == 0) usb_reconnect();
   else if (strcmp(command, "AUTH") == 0) authorize();
   else if (strncmp(command, "SET MODE ", 9) == 0) set_mode(command + 9);
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);
