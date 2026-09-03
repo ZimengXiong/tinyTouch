@@ -21,6 +21,53 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_update_release_refetches_latest_from_immutable_version(self):
+        latest = json.dumps({"version": "0.1.10-prod"}).encode()
+        exact = json.dumps({"version": "0.1.10-prod", "ota": {}}).encode()
+        with mock.patch.object(cli, "download", side_effect=[latest, exact]) as download:
+            root, manifest = cli.update_release()
+        self.assertEqual(
+            root,
+            "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.10-prod",
+        )
+        self.assertEqual(manifest["version"], "0.1.10-prod")
+        self.assertIn("?nocache=", download.call_args_list[0].args[0])
+        self.assertEqual(
+            download.call_args_list[1].args[0], f"{root}/release-manifest.json"
+        )
+
+    def test_cli_update_pins_installer_and_firmware_to_one_release(self):
+        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.11-prod"
+        manifest = {"version": "0.1.11-prod", "ota": {}}
+        args = SimpleNamespace(port=None, firmware_only=False, release_version=None)
+        installer_result = SimpleNamespace(returncode=0)
+        version_result = SimpleNamespace(
+            returncode=0, stdout="tinyTouch CLI 0.1.11-prod\n"
+        )
+        with (
+            mock.patch.object(cli, "update_release", return_value=(root, manifest)),
+            mock.patch.object(cli, "download", return_value=b"installer") as download,
+            mock.patch.object(
+                cli.subprocess, "run", side_effect=[installer_result, version_result]
+            ) as run,
+            mock.patch.object(cli.shutil, "which", return_value="/usr/local/bin/tinytouch"),
+            mock.patch.object(cli.os, "execv", side_effect=RuntimeError("exec")) as execv,
+            self.assertRaisesRegex(RuntimeError, "exec"),
+        ):
+            cli.command_update(args)
+        download.assert_called_once_with(f"{root}/install.sh")
+        self.assertEqual(run.call_args_list[0].kwargs["env"]["TINYTOUCH_RELEASE_ROOT"], root)
+        execv.assert_called_once_with(
+            "/usr/local/bin/tinytouch",
+            [
+                "/usr/local/bin/tinytouch",
+                "update",
+                "--firmware-only",
+                "--release-version",
+                "0.1.11-prod",
+            ],
+        )
+
     def test_protocol_six_is_required(self):
         cli.protocol6({"firmware": "unified", "protocol": "6"})
         with self.assertRaisesRegex(cli.ToolError, "protocol 6"):

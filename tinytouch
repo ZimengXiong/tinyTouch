@@ -45,8 +45,8 @@ PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
 OTA_CHUNK_SIZE = 3072
 OTA_WRITE_WINDOW = 8
-RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
-INSTALLER_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh"
+RELEASE_DOWNLOAD_URL = "https://github.com/ZimengXiong/tinyTouch/releases/download"
+LATEST_RELEASE_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download"
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
@@ -974,11 +974,43 @@ def serial_response(device, command: str, *, timeout: float = 8.0) -> list[str]:
 
 def download(url: str) -> bytes:
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": f"tinytouch/{CLI_VERSION}"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "User-Agent": f"tinytouch/{CLI_VERSION}",
+            },
+        )
         with urllib.request.urlopen(request, timeout=20, context=TLS) as response:
             return response.read()
     except OSError as exc:
-        raise ToolError("Could not download the firmware release.") from exc
+        raise ToolError("Could not download the tinyTouch release.") from exc
+
+
+def release_root(version: str) -> str:
+    """Return the immutable asset root for a validated production version."""
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-prod", version) is None:
+        raise ToolError("The release manifest has an invalid production version.")
+    return f"{RELEASE_DOWNLOAD_URL}/v{version}"
+
+
+def update_release(version: str | None = None) -> tuple[str, dict]:
+    """Resolve latest once, then verify and use its immutable release assets."""
+    if version is None:
+        nonce = time.time_ns()
+        latest = json.loads(
+            download(f"{LATEST_RELEASE_URL}/release-manifest.json?nocache={nonce}").decode()
+        )
+        version = latest.get("version") if isinstance(latest, dict) else None
+        if not isinstance(version, str):
+            raise ToolError("The release manifest has no valid version.")
+
+    root = release_root(version)
+    manifest = json.loads(download(f"{root}/release-manifest.json").decode())
+    if not isinstance(manifest, dict) or manifest.get("version") != version:
+        raise ToolError("The release assets do not match the selected version.")
+    return root, manifest
 
 
 def package_test() -> None:
@@ -991,7 +1023,7 @@ def package_test() -> None:
 def network_test() -> None:
     """Check the latest stable release and one downloadable OTA asset."""
     try:
-        manifest = json.loads(download(RELEASE_MANIFEST_URL).decode("utf-8"))
+        root, manifest = update_release()
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ToolError("release manifest is not valid JSON") from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
@@ -1015,27 +1047,38 @@ def network_test() -> None:
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
         raise ToolError("release manifest has an invalid OTA asset")
-    image = download(urljoin(RELEASE_MANIFEST_URL, filename))
+    image = download(f"{root}/{filename}")
     if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
         raise ToolError("release OTA asset does not match its manifest")
     say("network ok")
 
 
 def command_update(args: argparse.Namespace) -> None:
-    manifest = json.loads(download(RELEASE_MANIFEST_URL).decode())
-    release_version = manifest.get("version") if isinstance(manifest, dict) else None
-    if not isinstance(release_version, str):
-        raise ToolError("The release manifest has no valid version.")
+    root, manifest = update_release(getattr(args, "release_version", None))
+    release_version = manifest["version"]
     if not getattr(args, "firmware_only", False) and release_version != CLI_VERSION:
         say(f"Updating tinyTouch CLI to {release_version}...")
-        installer = download(INSTALLER_URL)
-        result = subprocess.run(["/bin/sh"], input=installer, check=False)
+        installer = download(f"{root}/install.sh")
+        environment = os.environ.copy()
+        environment["TINYTOUCH_RELEASE_ROOT"] = root
+        result = subprocess.run(["/bin/sh"], input=installer, check=False, env=environment)
         if result.returncode != 0:
             raise ToolError("The CLI update failed. Firmware was not changed.")
         executable = shutil.which("tinytouch")
         if executable is None:
             raise ToolError("The new CLI was installed but is not on this terminal's PATH.")
-        command = [executable, "update", "--firmware-only"]
+        installed = subprocess.run(
+            [executable, "--version"], capture_output=True, check=False, text=True
+        )
+        if installed.returncode != 0 or not installed.stdout.rstrip().endswith(release_version):
+            raise ToolError("The installed CLI version does not match the selected release.")
+        command = [
+            executable,
+            "update",
+            "--firmware-only",
+            "--release-version",
+            release_version,
+        ]
         if args.port:
             command.extend(["--port", args.port])
         os.execv(executable, command)
@@ -1046,7 +1089,7 @@ def command_update(args: argparse.Namespace) -> None:
     metadata = manifest.get("ota") if isinstance(manifest, dict) else None
     if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
         raise ToolError("The release manifest has no verified firmware asset.")
-    image = download(urljoin(RELEASE_MANIFEST_URL, str(metadata["file"])))
+    image = download(f"{root}/{metadata['file']}")
     digest = hashlib.sha256(image).hexdigest()
     if digest != metadata["sha256"]:
         raise ToolError("The downloaded firmware digest does not match the release manifest.")
@@ -1203,6 +1246,7 @@ def parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update")
     update.add_argument("--port")
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
+    update.add_argument("--release-version", help=argparse.SUPPRESS)
     update.set_defaults(func=command_update)
     rom = sub.add_parser("rom", aliases=["bootloader"], help="prepare a physical ROM flash")
     rom.add_argument("--port")
