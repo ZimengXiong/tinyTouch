@@ -1,0 +1,71 @@
+#!/bin/zsh
+set -euo pipefail
+
+project_dir="${0:A:h:h}"
+firmware_dir="$project_dir/firmware/tiny_touch_unified"
+release_dir="$project_dir/dist/local"
+support_dir="$HOME/Library/Application Support/tinyTouch"
+install_dir="${TINYTOUCH_INSTALL_DIR:-$HOME/.local/bin}"
+flash=0
+
+if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --flash ]]; }; then
+  print "Usage: packaging/local-deploy [--flash]"
+  print "Build and install a local CLI and firmware. --flash writes the ROM device."
+  exit 2
+fi
+[[ "${1:-}" = --flash ]] && flash=1
+
+[[ "$(uname -s)" = Darwin && "$(uname -m)" = arm64 ]] || {
+  print -u2 "Local deployment currently requires an Apple silicon Mac."
+  exit 1
+}
+command -v docker >/dev/null || { print -u2 "Docker is required."; exit 1; }
+[[ -s "$firmware_dir/secure_boot_signing_key.pem" ]] || {
+  print -u2 "The local development firmware signing key is missing."
+  exit 1
+}
+
+started=$SECONDS
+print "Building firmware..."
+docker run --rm \
+  -v "$project_dir:$project_dir" \
+  -w "$project_dir" \
+  espressif/idf:release-v5.3 \
+  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C firmware/tiny_touch_unified build'
+
+print "Building CLI..."
+TINYTOUCH_SIGNING_IDENTITY=- "$project_dir/packaging/build-standalone-macos.sh" >/dev/null
+
+print "Assembling firmware..."
+"$project_dir/.venv/bin/python" "$project_dir/packaging/assemble-release.py" \
+  --firmware-build "$firmware_dir/build" \
+  --output "$release_dir"
+
+bundle="$support_dir/cli-local"
+staged_bundle="$support_dir/.cli-local-new"
+rm -rf "$staged_bundle"
+mkdir -p "$support_dir" "$install_dir"
+ditto "$project_dir/build/distribution/bin/tinytouch" "$staged_bundle"
+rm -rf "$bundle"
+mv "$staged_bundle" "$bundle"
+ln -sfn "$bundle/tinytouch" "$install_dir/.tinytouch.new"
+mv -f "$install_dir/.tinytouch.new" "$install_dir/tinytouch"
+
+if (( flash )); then
+  ports=(/dev/cu.usbmodem*(N))
+  (( ${#ports} == 1 )) || {
+    print -u2 "Connect exactly one tinyTouch in ROM mode and retry."
+    exit 1
+  }
+  print "Flashing ${ports[1]}..."
+  "$project_dir/.venv/bin/python" -m esptool \
+    --chip esp32s3 --port "${ports[1]}" --baud 921600 \
+    write-flash 0x0 "$release_dir/factory/tiny_touch_factory_full.bin"
+fi
+
+print "Local deployment completed in $((SECONDS - started))s."
+print "CLI: $install_dir/tinytouch"
+print "Firmware: $release_dir/factory/tiny_touch_factory_full.bin"
+if (( ! flash )); then
+  print "Run 'packaging/local-deploy --flash' with the device in ROM mode to flash it."
+fi
