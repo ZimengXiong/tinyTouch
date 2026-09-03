@@ -1398,9 +1398,17 @@ def command_pair(
                 ) from exc
             raise
     if keychain_warning:
+        # Pairing is transactional from the user's perspective. Do not leave a
+        # half-configured account that a later setup run mistakes for success.
+        run(
+            [
+                "sudo", "-n", "sc_auth", "unpair", "-u", getpass.getuser(),
+                "-h", identity,
+            ]
+        )
         raise ToolError(
-            "macOS paired PIV but could not configure Login Keychain unlock. "
-            "Run 'tinytouch update', then run setup again."
+            "macOS could not finish Login Keychain setup. The incomplete "
+            "pairing was removed. Run setup again."
         )
     say("PIV is paired with this Mac.")
 

@@ -76,6 +76,17 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
             piv,
         )
 
+    def test_piv_configuration_allows_bounded_keychain_wrapping(self) -> None:
+        piv = self.source("piv.c")
+        console = self.source("config_console.c")
+        self.assertIn("CONFIGURATION_PRESENCE_WINDOW_TICKS", piv)
+        self.assertIn("CONFIGURATION_PIV_OPERATION_LIMIT", piv)
+        self.assertIn("user_presence_operations_left", piv)
+        self.assertIn("user_presence_allows_repeated_slots", piv)
+        self.assertIn("piv_note_configuration_presence", console)
+        self.assertIn('"piv_crypto_ok"', piv)
+        self.assertIn('"piv_crypto_rejected"', piv)
+
     def test_fingerprint_auth_requires_presence(self) -> None:
         source = self.source("touch_pin_hid.c")
         self.assertIn("if (!present || !runtime.presence_armed)", source)

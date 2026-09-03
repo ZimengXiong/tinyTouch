@@ -35,7 +35,7 @@ static size_t device_log_next;
 static size_t device_log_count;
 static portMUX_TYPE device_log_lock = portMUX_INITIALIZER_UNLOCKED;
 
-static void log_event(const char *event, int value) {
+void touch_pin_hid_log_event(const char *event, int value) {
   taskENTER_CRITICAL(&device_log_lock);
   device_log[device_log_next] = (device_log_entry_t) {
     .milliseconds = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
@@ -363,7 +363,7 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
   if (device_config_mode() == DEVICE_MODE_HID) {
     ESP_LOGI(TAG, "finger matched; requesting HID password");
     bool success = request_and_type_password(match);
-    log_event(success ? "hid_typed" : "hid_failed", match.slot);
+    touch_pin_hid_log_event(success ? "hid_typed" : "hid_failed", match.slot);
     if (!success) ESP_LOGW(TAG, "HID helper request failed");
   } else {
     // The PIV applet accepts this PIN. Emit it only after a verified background
@@ -372,7 +372,7 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
     piv_note_user_presence();
     bool typed = type_ascii(piv_pin, sizeof(piv_pin));
-    log_event(typed ? "piv_pin_typed" : "piv_pin_failed", match.slot);
+    touch_pin_hid_log_event(typed ? "piv_pin_typed" : "piv_pin_failed", match.slot);
     if (!typed) ESP_LOGW(TAG, "PIV PIN typing failed");
   }
 }
@@ -390,7 +390,7 @@ static void touch_hid_task(void *arg) {
     .presence_armed = false,
   };
   TickType_t next_recovery = 0;
-  log_event("task_started", 0);
+  touch_pin_hid_log_event("task_started", 0);
 
   while (true) {
     // Console commands such as PIV setup own the fingerprint session. Do not
@@ -410,7 +410,8 @@ static void touch_hid_task(void *arg) {
       // Match the helper's successful post-enumeration STATUS probe. The
       // sensor may finish booting after USB, so retry only until it responds.
       int count = fingerprint_count();
-      log_event(count >= 0 ? "sensor_probe_ok" : "sensor_probe_failed", count);
+      touch_pin_hid_log_event(
+          count >= 0 ? "sensor_probe_ok" : "sensor_probe_failed", count);
       if (count >= 0) {
         usb_sensor_probe_pending = false;
       } else {
@@ -440,7 +441,8 @@ static void touch_hid_task(void *arg) {
       // path so a disconnected sensor cannot monopolize the task.
       if (now >= next_recovery) {
         next_recovery = now + pdMS_TO_TICKS(2000);
-        log_event(fingerprint_recover() ? "sensor_recovered" : "sensor_recover_failed", 0);
+        touch_pin_hid_log_event(
+            fingerprint_recover() ? "sensor_recovered" : "sensor_recover_failed", 0);
       }
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -455,17 +457,17 @@ static void touch_hid_task(void *arg) {
     }
 
     runtime.presence_armed = false;
-    log_event("touch_detected", 0);
+    touch_pin_hid_log_event("touch_detected", 0);
     fingerprint_match_t match = fingerprint_authorize_poll_match();
     if (match.slot == 0) {
-      log_event("finger_no_match", 0);
+      touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(350));
       fingerprint_led_idle();
       continue;
     }
 
-    log_event("finger_matched", match.slot);
+    touch_pin_hid_log_event("finger_matched", match.slot);
     // Keep result feedback bounded. Host communication must not leave the
     // sensor green when a helper, USB endpoint, or PIN field is unavailable.
     vTaskDelay(pdMS_TO_TICKS(350));
@@ -483,7 +485,7 @@ void touch_pin_hid_start(void) {
 }
 
 void touch_pin_hid_usb_attached(void) {
-  log_event("usb_attached", 0);
+  touch_pin_hid_log_event("usb_attached", 0);
   usb_sensor_probe_pending = true;
   usb_sensor_probe_at = xTaskGetTickCount() + pdMS_TO_TICKS(500);
 }

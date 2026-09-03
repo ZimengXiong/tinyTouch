@@ -313,10 +313,12 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "authorize_macos"),
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "unlock"),
-            mock.patch.object(cli, "run", return_value=result),
+            mock.patch.object(cli, "run", return_value=result) as run,
         ):
-            with self.assertRaisesRegex(cli.ToolError, "Login Keychain unlock"):
+            with self.assertRaisesRegex(cli.ToolError, "incomplete pairing was removed"):
                 cli.command_pair(args)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("unpair", run.call_args.args[0])
 
     def test_piv_identity_selection_recommends_the_default(self):
         identities = ["A" * 40, "B" * 40]

@@ -130,7 +130,7 @@ static void authorize(void) {
   bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
   if (!ok) { reply("ERR AUTH no_match"); return; }
   authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
-  piv_note_user_presence();
+  piv_note_configuration_presence();
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
 }
 
