@@ -357,7 +357,7 @@ static void handle_command(void) {
 
 static void console_task(void *arg) {
   (void)arg;
-  char buffer[128];
+  char buffer[1024];
   while (true) {
     if (ota_token[0] && esp_timer_get_time() - ota_last_activity > OTA_WINDOW_US) {
       firmware_update_abort(); clear_ota();
