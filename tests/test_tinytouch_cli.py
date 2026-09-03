@@ -338,6 +338,10 @@ class ProtocolSixTests(unittest.TestCase):
             "tinyTouch is ready in PIV mode.",
             [call.args[0] for call in output.call_args_list],
         )
+        self.assertIn(
+            "Setting up PIV certificates. This may take up to 30 seconds.",
+            [call.args[0] for call in output.call_args_list],
+        )
 
     def test_macos_authorization_explains_hidden_password_input(self):
         results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]

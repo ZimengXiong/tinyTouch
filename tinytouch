@@ -835,7 +835,7 @@ def command_setup(args: argparse.Namespace) -> None:
         else:
             if device.get("piv") != "ready":
                 say("")
-                say("Setting up PIV certificates. This may take a moment.")
+                say("Setting up PIV certificates. This may take up to 30 seconds.")
                 unlock(
                     port,
                     reason="create your PIV identity",
