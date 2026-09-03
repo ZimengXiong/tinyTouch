@@ -326,7 +326,9 @@ static void handle_command(void) {
   else if (strcmp(command, "RESET FACTORY") == 0) factory_reset();
   else if (strncmp(command, "OTA BEGIN ", 10) == 0) ota_begin(command + 10);
   else if (strncmp(command, "OTA WRITE ", 10) == 0) ota_write(command + 10);
-  else if (strncmp(command, "OTA ABORT ", 10) == 0 && token_matches(command + 10)) {
+  else if (strcmp(command, "OTA ABORT") == 0) {
+    firmware_update_abort(); clear_ota(); reply("OK OTA ABORT");
+  } else if (strncmp(command, "OTA ABORT ", 10) == 0 && token_matches(command + 10)) {
     firmware_update_abort(); clear_ota(); reply("OK OTA ABORT");
   } else if (strncmp(command, "OTA COMMIT ", 11) == 0) ota_commit(command + 11);
   else reply("ERR COMMAND");
