@@ -28,11 +28,13 @@ command -v docker >/dev/null || { print -u2 "Docker is required."; exit 1; }
 
 started=$SECONDS
 print "Building firmware..."
+mkdir -p "$firmware_build"
 docker run --rm \
   -v "$project_dir:$project_dir" \
   -w "$project_dir" \
+  -e TINYTOUCH_FIRMWARE_DIR="$firmware_dir" \
   espressif/idf:release-v5.3 \
-  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C firmware/tiny_touch_unified -B build-local -D SDKCONFIG=build-local/sdkconfig build'
+  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C "$TINYTOUCH_FIRMWARE_DIR" -B "$TINYTOUCH_FIRMWARE_DIR/build-local" -D SDKCONFIG="$TINYTOUCH_FIRMWARE_DIR/build-local/sdkconfig" build'
 
 print "Building CLI..."
 TINYTOUCH_SIGNING_IDENTITY=- "$project_dir/packaging/build-standalone-macos.sh" >/dev/null
