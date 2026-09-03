@@ -707,6 +707,8 @@ def enroll(port: str, skip: bool) -> None:
 def command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
+    if mode == "piv":
+        say("Setting up PIV certificates. This may take a moment.")
     port = choose_port(args.port)
     # Setup starts from one known state. Remove the old HID service before
     # opening the CDC port. Keep that port open through the entire setup.
@@ -1055,7 +1057,11 @@ def paired_piv_identities() -> list[str]:
     return piv_identities()[0]
 
 
-def command_pair(_args: argparse.Namespace) -> None:
+def explain_piv_pin() -> None:
+    say("When macOS asks for the smart-card PIN, enter 111111.")
+
+
+def command_pair(args: argparse.Namespace) -> None:
     require_macos()
     deadline = time.monotonic() + 10.0
     paired: list[str] = []
@@ -1067,6 +1073,7 @@ def command_pair(_args: argparse.Namespace) -> None:
         time.sleep(0.25)
     if paired:
         say("PIV is already paired with this Mac.")
+        explain_piv_pin()
         return
     if not available:
         raise ToolError("macOS has not discovered a PIV identity. Select PIV mode, then try again.")
@@ -1081,8 +1088,22 @@ def command_pair(_args: argparse.Namespace) -> None:
             raise ToolError("Invalid identity selection.") from exc
     else:
         identity = available[0]
-    run_sudo(["sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
+    # Obtain sudo first, then grant fresh device presence. Enrollment and a
+    # terminal password prompt can outlive firmware's short PIV authorization.
+    authorize_macos()
+    port = choose_port(args.port)
+    unlock(port)
+    try:
+        run(["sudo", "-n", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
+    except ToolError:
+        # sc_auth can persist the user pairing before a later card proof fails.
+        # Treat that partial command result as success only when macOS confirms
+        # that it paired the identity selected above.
+        paired_after, _ = piv_identities()
+        if identity not in paired_after:
+            raise
     say("PIV is paired with this Mac. The device was not restarted.")
+    explain_piv_pin()
 
 
 def parser() -> argparse.ArgumentParser:
