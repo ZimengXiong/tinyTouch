@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_dir="${0:A:h:h}"
 firmware_dir="$project_dir/firmware/tiny_touch_unified"
+firmware_build="$firmware_dir/build-local"
 release_dir="$project_dir/dist/local"
 support_dir="$HOME/Library/Application Support/tinyTouch"
 install_dir="${TINYTOUCH_INSTALL_DIR:-$HOME/.local/bin}"
@@ -31,14 +32,14 @@ docker run --rm \
   -v "$project_dir:$project_dir" \
   -w "$project_dir" \
   espressif/idf:release-v5.3 \
-  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C firmware/tiny_touch_unified build'
+  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C firmware/tiny_touch_unified -B build-local -D SDKCONFIG=build-local/sdkconfig build'
 
 print "Building CLI..."
 TINYTOUCH_SIGNING_IDENTITY=- "$project_dir/packaging/build-standalone-macos.sh" >/dev/null
 
 print "Assembling firmware..."
 "$project_dir/.venv/bin/python" "$project_dir/packaging/assemble-release.py" \
-  --firmware-build "$firmware_dir/build" \
+  --firmware-build "$firmware_build" \
   --output "$release_dir"
 
 bundle="$support_dir/cli-local"

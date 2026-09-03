@@ -6,6 +6,7 @@ firmware/tiny_touch_unified/main/secrets.h
 
 # ESP-IDF and packaging outputs
 firmware/tiny_touch_unified/build/
+firmware/tiny_touch_unified/build-local/
 firmware/tiny_touch_unified/build-recovery/
 firmware/tiny_touch_unified/.cache/
 firmware/tiny_touch_unified/managed_components/
