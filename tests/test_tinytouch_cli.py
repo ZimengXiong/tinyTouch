@@ -104,7 +104,9 @@ class ProtocolSixTests(unittest.TestCase):
                 __exit__=mock.Mock(return_value=False),
             )),
             mock.patch.object(cli, "remove_helper", side_effect=lambda: calls.append("remove_helper")),
-            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("unlock")),
+            mock.patch.object(
+                cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("unlock")
+            ),
             mock.patch.object(cli, "serial_command", return_value=["OK SET MODE"]),
             mock.patch.object(cli, "fresh_status", return_value={"mode": "piv"}),
             mock.patch.object(cli, "enroll"),
@@ -124,13 +126,23 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]),
             mock.patch.object(cli, "authorize_macos", side_effect=lambda: calls.append("sudo")),
             mock.patch.object(cli, "choose_port", return_value=args.port),
-            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("touch")),
+            mock.patch.object(
+                cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("touch")
+            ) as unlock,
             mock.patch.object(cli, "run", side_effect=cli.ToolError("sc_auth failed")),
             mock.patch.object(cli, "say") as output,
         ):
             cli.command_pair(args)
         self.assertEqual(calls, ["sudo", "touch"])
-        output.assert_any_call("When macOS asks for the smart-card PIN, enter 111111.")
+        self.assertTrue(unlock.call_args.kwargs["explain_pin"])
+
+    def test_piv_unlock_prints_pin_before_macos_can_prompt(self):
+        with (
+            mock.patch.object(cli, "serial_command", return_value=["OK AUTH"]),
+            mock.patch.object(cli, "explain_piv_pin") as explain,
+        ):
+            cli.unlock("/dev/cu.TT-1234", explain_pin=True)
+        explain.assert_called_once_with()
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
         with mock.patch.object(

@@ -498,11 +498,13 @@ def sensor_ready(device: dict[str, str]) -> None:
         raise ToolError("The fingerprint sensor is not ready. Resolve that before setup.")
 
 
-def unlock(port: str) -> None:
+def unlock(port: str, *, explain_pin: bool = False) -> None:
     deadline = time.monotonic() + 6.0
     while True:
         try:
             serial_command(port, "AUTH", timeout=15)
+            if explain_pin:
+                explain_piv_pin()
             return
         except ToolError as exc:
             if "USB serial port became unavailable while this command was starting" not in str(exc):
@@ -729,16 +731,17 @@ def command_setup(args: argparse.Namespace) -> None:
             and paired_piv_identities()
         ):
             say("PIV is already set up on this Mac.")
+            explain_piv_pin()
             return
         if device.get("mode") != mode:
-            unlock(port)
+            unlock(port, explain_pin=mode == "piv")
             serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
             mode_changed = True
         elif mode == "hid":
             unlock(port)
             configure_hid(port, device)
         else:
-            unlock(port)
+            unlock(port, explain_pin=True)
             if device.get("piv") != "ready":
                 serial_command(port, "PIV CREATE", timeout=45)
                 piv_rescan_needed = True
@@ -781,7 +784,7 @@ def command_mode(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    unlock(port)
+    unlock(port, explain_pin=args.mode == "piv")
     serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
     if args.mode == "piv":
         remove_helper()
@@ -1130,7 +1133,7 @@ def command_pair(args: argparse.Namespace) -> None:
     # terminal password prompt can outlive firmware's short PIV authorization.
     authorize_macos()
     port = choose_port(args.port)
-    unlock(port)
+    unlock(port, explain_pin=True)
     try:
         run(["sudo", "-n", "sc_auth", "pair", "-u", getpass.getuser(), "-h", identity])
     except ToolError:
@@ -1141,7 +1144,6 @@ def command_pair(args: argparse.Namespace) -> None:
         if identity not in paired_after:
             raise
     say("PIV is paired with this Mac. The device was not restarted.")
-    explain_piv_pin()
 
 
 def parser() -> argparse.ArgumentParser:
