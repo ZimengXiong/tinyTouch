@@ -352,7 +352,7 @@ class ProtocolSixTests(unittest.TestCase):
             ):
                 cli.command_pair(args)
 
-    def test_piv_pair_reports_missing_keychain_wrapping(self):
+    def test_piv_pair_preserves_pairing_when_keychain_wrapping_is_unavailable(self):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         result = SimpleNamespace(
@@ -371,11 +371,13 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "run", return_value=result) as run,
+            mock.patch.object(cli, "say") as output,
         ):
-            with self.assertRaisesRegex(cli.ToolError, "incomplete pairing was removed"):
-                cli.command_pair(args)
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("unpair", run.call_args.args[0])
+            cli.command_pair(args)
+        self.assertEqual(run.call_count, 1)
+        text = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("PIV is paired with this Mac.", text)
+        self.assertIn("enter your Mac password if the keychain asks", text)
 
     def test_piv_identity_selection_recommends_the_default(self):
         identities = ["A" * 40, "B" * 40]
