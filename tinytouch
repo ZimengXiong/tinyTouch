@@ -895,19 +895,34 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required for OTA.") from exc
+    # An interrupted older client may have left an incomplete upload active.
+    # Aborting is safe because committed firmware is already in another slot.
+    try:
+        serial_command(port, "OTA ABORT", timeout=2)
+    except (ToolError, SerialTimeout):
+        # Firmware before 0.1.1 does not support an unscoped abort.
+        pass
+    say("Wait for the prompt before touching the fingerprint sensor.")
     serial_command(port, "AUTH", timeout=15)
     token = secrets.token_hex(16)
     was_loaded = unload_helper()
     try:
         with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
-            lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
-            offset = response_next(lines, "OTA")
-            for start in range(offset, len(image), 360):
-                payload = base64.b64encode(image[start:start + 360]).decode()
-                command = f"OTA WRITE {token} {start} {payload}"
-                lines = serial_exchange(device, command)
+            try:
+                lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
                 offset = response_next(lines, "OTA")
-            commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
+                for start in range(offset, len(image), 360):
+                    payload = base64.b64encode(image[start:start + 360]).decode()
+                    command = f"OTA WRITE {token} {start} {payload}"
+                    lines = serial_exchange(device, command)
+                    offset = response_next(lines, "OTA")
+                commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
+            except BaseException:
+                try:
+                    serial_exchange(device, f"OTA ABORT {token}", timeout=2)
+                except (ToolError, SerialTimeout):
+                    pass
+                raise
     finally:
         if was_loaded:
             load_helper()

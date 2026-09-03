@@ -44,6 +44,7 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertIn("OK OTA STAGED power_cycle=required", console)
         self.assertIn("esp_ota_set_boot_partition", update)
         self.assertIn("firmware_update_staged", update)
+        self.assertIn('strcmp(command, "OTA ABORT") == 0', console)
         self.assertNotIn("fingerprint_prepare_for_restart", console)
 
     def test_piv_create_is_live_and_status_reports_readiness(self) -> None:

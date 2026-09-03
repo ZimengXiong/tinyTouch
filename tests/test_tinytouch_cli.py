@@ -223,13 +223,60 @@ class ProtocolSixTests(unittest.TestCase):
         digest = hashlib.sha256(image).hexdigest()
         with (
             mock.patch.object(serial, "Serial", FakeSerial),
-            mock.patch.object(cli, "serial_command", return_value=["OK AUTH"]),
+            mock.patch.object(cli, "serial_command", return_value=["OK"]) as command,
             mock.patch.object(cli, "unload_helper", return_value=False),
         ):
             cli.stage_ota("/dev/cu.TT-1234", image, digest)
+        self.assertEqual(command.call_args_list[0].args, ("/dev/cu.TT-1234", "OTA ABORT"))
+        self.assertEqual(command.call_args_list[1].args, ("/dev/cu.TT-1234", "AUTH"))
         self.assertTrue(writes[0].startswith("OTA BEGIN "))
         self.assertTrue(writes[-1].startswith("OTA COMMIT "))
         self.assertNotIn("RESET", " ".join(writes))
+
+    def test_interrupted_ota_aborts_its_session(self):
+        try:
+            import serial  # type: ignore
+        except ImportError:
+            self.skipTest("pyserial is not installed")
+
+        writes = []
+
+        class InterruptedSerial:
+            def __init__(self, *_args, **_kwargs):
+                self.responses = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def write(self, payload):
+                command = payload.decode("ascii").strip()
+                writes.append(command)
+                if command.startswith("OTA BEGIN "):
+                    self.responses.append(b"OK OTA BEGIN next=0\n")
+                elif command.startswith("OTA WRITE "):
+                    raise KeyboardInterrupt
+                elif command.startswith("OTA ABORT "):
+                    self.responses.append(b"OK OTA ABORT\n")
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                return self.responses.pop(0) if self.responses else b""
+
+        image = bytes(range(64))
+        digest = hashlib.sha256(image).hexdigest()
+        with (
+            mock.patch.object(serial, "Serial", InterruptedSerial),
+            mock.patch.object(cli, "serial_command", return_value=["OK"]),
+            mock.patch.object(cli, "unload_helper", return_value=False),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            cli.stage_ota("/dev/cu.TT-1234", image, digest)
+        self.assertTrue(writes[-1].startswith("OTA ABORT "))
 
     def test_rom_flow_only_prompts_for_a_physical_reconnect(self):
         args = SimpleNamespace(port=None)
