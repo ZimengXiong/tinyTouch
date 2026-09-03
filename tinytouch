@@ -1084,6 +1084,10 @@ def command_update(args: argparse.Namespace) -> None:
             command.extend(["--port", args.port])
         os.execv(executable, command)
 
+    if LAUNCH_AGENT.exists():
+        say("Updating the HID background service...")
+        install_helper()
+
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)

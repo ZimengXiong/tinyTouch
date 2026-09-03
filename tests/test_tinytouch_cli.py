@@ -37,12 +37,12 @@ class ProtocolSixTests(unittest.TestCase):
         )
 
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
-        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.12-prod"
-        manifest = {"version": "0.1.12-prod", "ota": {}}
+        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.13-prod"
+        manifest = {"version": "0.1.13-prod", "ota": {}}
         args = SimpleNamespace(port=None, firmware_only=False, release_version=None)
         installer_result = SimpleNamespace(returncode=0)
         version_result = SimpleNamespace(
-            returncode=0, stdout="tinyTouch CLI 0.1.12-prod\n"
+            returncode=0, stdout="tinyTouch CLI 0.1.13-prod\n"
         )
         with (
             mock.patch.object(cli, "update_release", return_value=(root, manifest)),
@@ -64,9 +64,35 @@ class ProtocolSixTests(unittest.TestCase):
                 "update",
                 "--firmware-only",
                 "--release-version",
-                "0.1.12-prod",
+                "0.1.13-prod",
             ],
         )
+
+    def test_firmware_update_refreshes_an_existing_hid_helper(self):
+        image = b"firmware"
+        digest = hashlib.sha256(image).hexdigest()
+        manifest = {
+            "version": cli.CLI_VERSION,
+            "ota": {"file": "tiny_touch_unified.bin", "sha256": digest},
+        }
+        args = SimpleNamespace(
+            port=None, firmware_only=True, release_version=cli.CLI_VERSION
+        )
+        launch_agent = mock.MagicMock()
+        launch_agent.exists.return_value = True
+        with (
+            mock.patch.object(cli, "update_release", return_value=("https://release", manifest)),
+            mock.patch.object(cli, "LAUNCH_AGENT", launch_agent),
+            mock.patch.object(cli, "install_helper") as install_helper,
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT-1234"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "x"}),
+            mock.patch.object(cli, "protocol6"),
+            mock.patch.object(cli, "download", return_value=image),
+            mock.patch.object(cli, "stage_ota"),
+            mock.patch.object(cli, "notify"),
+        ):
+            cli.command_update(args)
+        install_helper.assert_called_once_with()
 
     def test_protocol_six_is_required(self):
         cli.protocol6({"firmware": "unified", "protocol": "6"})
