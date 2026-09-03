@@ -225,6 +225,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(serial, "Serial", FakeSerial),
             mock.patch.object(cli, "serial_command", return_value=["OK"]) as command,
             mock.patch.object(cli, "unload_helper", return_value=False),
+            mock.patch.object(cli, "say") as say,
         ):
             cli.stage_ota("/dev/cu.TT-1234", image, digest)
         self.assertEqual(command.call_args_list[0].args, ("/dev/cu.TT-1234", "OTA ABORT"))
@@ -232,6 +233,10 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertTrue(writes[0].startswith("OTA BEGIN "))
         self.assertTrue(writes[-1].startswith("OTA COMMIT "))
         self.assertNotIn("RESET", " ".join(writes))
+        output = [call.args[0] for call in say.call_args_list]
+        self.assertIn("Uploading firmware: 0%", output)
+        self.assertIn("Uploading firmware: 100%", output)
+        self.assertIn("Verifying firmware...", output)
 
     def test_interrupted_ota_aborts_its_session(self):
         try:
