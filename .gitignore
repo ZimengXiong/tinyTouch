@@ -20,5 +20,6 @@ __pycache__/
 .DS_Store
 __MACOSX/
 .venv/
+.venv-x86_64/
 .vercel
 .env*

@@ -2,20 +2,22 @@
 set -euo pipefail
 
 project_dir="${0:A:h:h}"
-build_dir="$project_dir/build/distribution"
+build_dir="${TINYTOUCH_BUILD_DIR:-$project_dir/build/distribution}"
 dist_dir="$project_dir/dist"
-venv_python="$project_dir/.venv/bin/python"
+venv_dir="${TINYTOUCH_VENV_DIR:-$project_dir/.venv}"
+venv_python="$venv_dir/bin/python"
+bootstrap_python="${TINYTOUCH_PYTHON:-python3}"
 version="${TINYTOUCH_VERSION:-$(tr -d '[:space:]' < "$project_dir/VERSION")}"
-output="$dist_dir/tinytouch.tar.gz"
+output="${TINYTOUCH_OUTPUT:-$dist_dir/tinytouch.tar.gz}"
 signing_identity="${TINYTOUCH_SIGNING_IDENTITY:-}"
 
 if [[ ! -x "$venv_python" ]]; then
-  python3 -m venv "$project_dir/.venv"
+  "$bootstrap_python" -m venv "$venv_dir"
 fi
 
 # PEP 517 backends installed in the build environment are executables. Add the
 # environment's bin directory so source distributions can invoke them.
-export PATH="$project_dir/.venv/bin:$PATH"
+export PATH="$venv_dir/bin:$PATH"
 
 "$venv_python" -m pip install -q --require-hashes \
   -r "$project_dir/software/macos-helper/requirements-bootstrap.txt"
