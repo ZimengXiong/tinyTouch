@@ -67,6 +67,11 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
     def test_fingerprint_auth_requires_presence(self) -> None:
         source = self.source("touch_pin_hid.c")
         self.assertIn("if (!present || !runtime.presence_armed)", source)
+        auth_pause = source.index("if (fingerprint_prompted_authorization_active())")
+        auth_resume = source.index("TickType_t now", auth_pause)
+        paused_source = source[auth_pause:auth_resume]
+        self.assertIn("runtime.presence_armed = false", paused_source)
+        self.assertIn("auth_wait_for_lift", paused_source)
         self.assertIn("if (!fingerprint_is_ready())", source)
         self.assertIn("wait_hid_ready()", source)
         self.assertNotIn("fingerprint_service_health", source)

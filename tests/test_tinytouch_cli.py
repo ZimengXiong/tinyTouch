@@ -37,12 +37,12 @@ class ProtocolSixTests(unittest.TestCase):
         )
 
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
-        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.13-prod"
-        manifest = {"version": "0.1.13-prod", "ota": {}}
+        root = "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.14-prod"
+        manifest = {"version": "0.1.14-prod", "ota": {}}
         args = SimpleNamespace(port=None, firmware_only=False, release_version=None)
         installer_result = SimpleNamespace(returncode=0)
         version_result = SimpleNamespace(
-            returncode=0, stdout="tinyTouch CLI 0.1.13-prod\n"
+            returncode=0, stdout="tinyTouch CLI 0.1.14-prod\n"
         )
         with (
             mock.patch.object(cli, "update_release", return_value=(root, manifest)),
@@ -64,7 +64,7 @@ class ProtocolSixTests(unittest.TestCase):
                 "update",
                 "--firmware-only",
                 "--release-version",
-                "0.1.13-prod",
+                "0.1.14-prod",
             ],
         )
 

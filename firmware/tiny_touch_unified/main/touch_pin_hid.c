@@ -397,6 +397,11 @@ static void touch_hid_task(void *arg) {
     // let background HID/PIV handling capture the same finger or type into
     // macOS while that command is awaiting its explicit authorization.
     if (fingerprint_prompted_authorization_active()) {
+      // The foreground command may finish while its authorization finger is
+      // still touching the sensor. Disarm that touch until a lift is observed
+      // so it cannot become a second background match and type into the CLI.
+      runtime.presence_armed = false;
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
