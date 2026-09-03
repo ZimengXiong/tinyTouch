@@ -16,6 +16,7 @@ import pty
 import re
 import select
 import secrets
+import shutil
 import ssl
 import subprocess
 import sys
@@ -45,6 +46,7 @@ CURRENT_PROTOCOL = 6
 OTA_CHUNK_SIZE = 3072
 OTA_WRITE_WINDOW = 8
 RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
+INSTALLER_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh"
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
@@ -1020,10 +1022,27 @@ def network_test() -> None:
 
 
 def command_update(args: argparse.Namespace) -> None:
+    manifest = json.loads(download(RELEASE_MANIFEST_URL).decode())
+    release_version = manifest.get("version") if isinstance(manifest, dict) else None
+    if not isinstance(release_version, str):
+        raise ToolError("The release manifest has no valid version.")
+    if not getattr(args, "firmware_only", False) and release_version != CLI_VERSION:
+        say(f"Updating tinyTouch CLI to {release_version}...")
+        installer = download(INSTALLER_URL)
+        result = subprocess.run(["/bin/sh"], input=installer, check=False)
+        if result.returncode != 0:
+            raise ToolError("The CLI update failed. Firmware was not changed.")
+        executable = shutil.which("tinytouch")
+        if executable is None:
+            raise ToolError("The new CLI was installed but is not on this terminal's PATH.")
+        command = [executable, "update", "--firmware-only"]
+        if args.port:
+            command.extend(["--port", args.port])
+        os.execv(executable, command)
+
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    manifest = json.loads(download(RELEASE_MANIFEST_URL).decode())
     metadata = manifest.get("ota") if isinstance(manifest, dict) else None
     if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
         raise ToolError("The release manifest has no verified firmware asset.")
@@ -1183,6 +1202,7 @@ def parser() -> argparse.ArgumentParser:
     reset.set_defaults(func=command_factory_reset)
     update = sub.add_parser("update")
     update.add_argument("--port")
+    update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
     update.set_defaults(func=command_update)
     rom = sub.add_parser("rom", aliases=["bootloader"], help="prepare a physical ROM flash")
     rom.add_argument("--port")
