@@ -960,6 +960,7 @@ def command_setup(args: argparse.Namespace) -> None:
     remove_helper()
     piv_rescan_needed = False
     created_piv_identities = None
+    previous_piv_identities: set[str] = set()
     mode_changed = False
     with foreground_session(port):
         device = status(port)
@@ -989,6 +990,8 @@ def command_setup(args: argparse.Namespace) -> None:
             if device.get("piv") != "ready":
                 say("")
                 say("Setting up PIV certificates. This may take up to 30 seconds.")
+                paired, available = piv_identities()
+                previous_piv_identities = set(paired + available)
                 unlock(
                     port,
                     reason="create your PIV identity",
@@ -1027,6 +1030,7 @@ def command_setup(args: argparse.Namespace) -> None:
         say("")
         created_piv_identities = wait_for_piv_identities(
             timeout=30.0,
+            excluding=previous_piv_identities,
             message=(
                 "Waiting for macOS to discover your PIV identity. "
                 "Please do not touch the sensor."
@@ -1468,6 +1472,7 @@ def explain_piv_pin() -> None:
 
 def wait_for_piv_identities(
     timeout: float = 20.0,
+    excluding: set[str] | None = None,
     message: str = (
         "Configuring PIV. This may take up to 20 seconds. "
         "Please do not touch the sensor."
@@ -1486,6 +1491,9 @@ def wait_for_piv_identities(
                 print(f"\r{frames[frame % len(frames)]} {message}", end="", flush=True)
                 frame += 1
             paired, available = piv_identities()
+            if excluding is not None:
+                paired = [identity for identity in paired if identity not in excluding]
+                available = [identity for identity in available if identity not in excluding]
             if paired or available:
                 return paired, available
             time.sleep(0.25)

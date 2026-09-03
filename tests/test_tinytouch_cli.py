@@ -421,6 +421,9 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "unlock") as unlock,
             mock.patch.object(cli, "serial_command") as command,
             mock.patch.object(
+                cli, "piv_identities", return_value=([], ["OLD" * 10 + "0" * 10])
+            ),
+            mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=identities
             ) as wait,
             mock.patch.object(cli, "fresh_status", return_value={"piv": "ready"}),
@@ -431,6 +434,9 @@ class ProtocolSixTests(unittest.TestCase):
             cli.command_setup(args)
         self.assertNotIn("explain_pin", unlock.call_args.kwargs)
         self.assertEqual(wait.call_args.kwargs["timeout"], 30.0)
+        self.assertEqual(
+            wait.call_args.kwargs["excluding"], {"OLD" * 10 + "0" * 10}
+        )
         create_call = next(
             call for call in command.call_args_list if call.args[1] == "PIV CREATE"
         )
@@ -445,6 +451,24 @@ class ProtocolSixTests(unittest.TestCase):
             "Setting up PIV certificates. This may take up to 30 seconds.",
             [call.args[0] for call in output.call_args_list],
         )
+
+    def test_piv_identity_wait_ignores_the_identity_replaced_by_create(self):
+        old_identity = "A" * 40
+        new_identity = "B" * 40
+        with (
+            mock.patch.object(
+                cli,
+                "piv_identities",
+                side_effect=[([], [old_identity]), ([], [new_identity])],
+            ),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            paired, available = cli.wait_for_piv_identities(
+                timeout=1.0,
+                excluding={old_identity},
+            )
+        self.assertEqual(paired, [])
+        self.assertEqual(available, [new_identity])
 
     def test_macos_authorization_explains_hidden_password_input(self):
         results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
