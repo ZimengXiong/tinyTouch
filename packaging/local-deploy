@@ -36,7 +36,7 @@ docker run --rm \
   -e TINYTOUCH_FIRMWARE_DIR="$firmware_dir" \
   -e GITHUB_SHA="$release_commit" \
   espressif/idf:release-v5.3 \
-  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C "$TINYTOUCH_FIRMWARE_DIR" -B "$TINYTOUCH_FIRMWARE_DIR/build-local" -D SDKCONFIG="$TINYTOUCH_FIRMWARE_DIR/build-local/sdkconfig" build'
+  bash -lc 'source /opt/esp/idf/export.sh >/dev/null 2>&1 && idf.py -C "$TINYTOUCH_FIRMWARE_DIR" -B "$TINYTOUCH_FIRMWARE_DIR/build-local" -D SDKCONFIG="$TINYTOUCH_FIRMWARE_DIR/build-local/sdkconfig" reconfigure build'
 
 print "Building CLI..."
 TINYTOUCH_SIGNING_IDENTITY=- "$project_dir/packaging/build-standalone-macos.sh" >/dev/null
