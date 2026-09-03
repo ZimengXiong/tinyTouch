@@ -52,11 +52,10 @@ VERBOSE = False
 HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
-_lease: ForegroundLease | None = None
 _sudo_session_ready = False
 _setup_password: bytearray | None = None
 _helper_suppressed = False
@@ -269,24 +268,24 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
 
 
 def unload_helper() -> bool:
-    global _lease
     if _helper_suppressed:
         return False
-    if _lease is not None:
-        return True
+    should_restart = LAUNCH_AGENT.exists()
     loaded = subprocess.run(
         ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
     if not loaded:
-        return False
-    lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
-    try:
-        lease.acquire(wait_for_ack=True)
-    except (LeaseBusyError, LeaseProtocolError, OSError) as exc:
-        raise ToolError(f"Could not pause the HID helper: {exc}") from exc
-    _lease = lease
-    return True
+        return should_restart
+    result = subprocess.run(
+        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0 and helper_loaded():
+        raise ToolError("Could not stop the HID background service.")
+    HELPER_SUSPEND.unlink(missing_ok=True)
+    HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+    return should_restart
 
 
 def helper_loaded() -> bool:
@@ -300,23 +299,15 @@ def helper_loaded() -> bool:
 
 
 def load_helper() -> None:
-    global _lease
     if _helper_suppressed:
         return
-    if _lease is not None:
-        _lease.release()
-        _lease = None
     if not helper_loaded():
         run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
 
 
 def remove_helper() -> None:
-    global _lease
     global _helper_suppressed
     _helper_suppressed = True
-    if _lease is not None:
-        _lease.release()
-        _lease = None
     if LAUNCH_AGENT.exists():
         process = subprocess.Popen(
             ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
@@ -794,6 +785,8 @@ def command_mode(args: argparse.Namespace) -> None:
     say("Waiting for the device...")
     reconnected_port = wait_for_reconnect(port)
     fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    if args.mode == "hid":
+        install_helper()
     say(f"{args.mode.upper()} mode is active.")
 
 
