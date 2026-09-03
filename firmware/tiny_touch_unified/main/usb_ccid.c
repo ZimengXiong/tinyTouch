@@ -25,10 +25,31 @@ static uint8_t tx_buf[CCID_BUF_SIZE];
 static uint8_t rhport_active;
 static ccid_apdu_handler_t apdu_handler;
 static bool in_busy;
+static volatile bool resume_reconnect_active;
+
+static void resume_reconnect_task(void *argument) {
+  (void)argument;
+  // macOS can retain the device node after wake while its composite endpoints
+  // no longer transfer. Re-enumerate USB without restarting the firmware.
+  vTaskDelay(pdMS_TO_TICKS(100));
+  tud_disconnect();
+  vTaskDelay(pdMS_TO_TICKS(250));
+  tud_connect();
+  resume_reconnect_active = false;
+  vTaskDelete(NULL);
+}
 
 static void usb_event_cb(tinyusb_event_t *event, void *arg) {
   (void)arg;
   if (event->id == TINYUSB_EVENT_ATTACHED) touch_pin_hid_usb_attached();
+#ifdef CONFIG_TINYUSB_RESUME_CALLBACK
+  else if (event->id == TINYUSB_EVENT_RESUMED && !resume_reconnect_active) {
+    resume_reconnect_active = true;
+    if (xTaskCreate(resume_reconnect_task, "usb_resume", 2048, NULL, 2, NULL) != pdPASS) {
+      resume_reconnect_active = false;
+    }
+  }
+#endif
 }
 
 static uint32_t le32(const uint8_t *p) {

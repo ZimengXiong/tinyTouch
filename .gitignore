@@ -21,5 +21,6 @@ __pycache__/
 __MACOSX/
 .venv/
 .venv-x86_64/
+.python-x86_64/
 .vercel
 .env*

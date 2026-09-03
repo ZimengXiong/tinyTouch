@@ -1,0 +1,57 @@
+#!/bin/zsh
+set -euo pipefail
+
+project_dir="${0:A:h:h}"
+cd "$project_dir"
+
+version="$(tr -d '[:space:]' < VERSION)"
+tag="v$version"
+commit="$(git rev-parse HEAD)"
+publish_root="$project_dir/dist/local-publish"
+x86_python_root="$project_dir/.python-x86_64"
+x86_python="$x86_python_root/cpython-3.13.7-macos-x86_64-none/bin/python3.13"
+x86_venv="$project_dir/.venv-x86_64"
+
+git diff --quiet -- && git diff --cached --quiet -- || {
+  print -u2 "Tracked files must be committed before a local production release."
+  exit 1
+}
+git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null && {
+  print -u2 "Tag $tag already exists."
+  exit 1
+}
+command -v gh >/dev/null || { print -u2 "GitHub CLI is required."; exit 1; }
+command -v uv >/dev/null || { print -u2 "uv is required for the Intel CLI build."; exit 1; }
+
+started=$SECONDS
+packaging/local-deploy
+mkdir -p "$publish_root"
+cp dist/tinytouch.tar.gz "$publish_root/tinytouch-macos-arm64.tar.gz"
+
+if [[ ! -x "$x86_python" ]]; then
+  uv python install cpython-3.13.7-macos-x86_64-none --install-dir "$x86_python_root"
+fi
+if [[ ! -x "$x86_venv/bin/pip" ]]; then
+  uv venv --python "$x86_python" --clear --seed "$x86_venv"
+fi
+arch -x86_64 /usr/bin/env \
+  TINYTOUCH_VENV_DIR="$x86_venv" \
+  TINYTOUCH_BUILD_DIR="$project_dir/build/distribution-x86_64" \
+  TINYTOUCH_OUTPUT="$publish_root/tinytouch-macos-x86_64.tar.gz" \
+  TINYTOUCH_SIGNING_IDENTITY=- \
+  /bin/zsh packaging/build-standalone-macos.sh >/dev/null
+
+python packaging/attach-cli.py dist/local \
+  --arm64 "$publish_root/tinytouch-macos-arm64.tar.gz" \
+  --x86-64 "$publish_root/tinytouch-macos-x86_64.tar.gz"
+python packaging/release_integrity.py assembled dist/local --commit "$commit"
+python packaging/finalize-release.py dist/local \
+  --output "$publish_root/assets" --commit "$commit"
+
+git tag -a "$tag" -m "tinyTouch $version"
+git push origin "refs/tags/$tag"
+gh release create "$tag" "$publish_root/assets/"* \
+  --repo ZimengXiong/tinyTouch --verify-tag --generate-notes --draft
+gh release edit "$tag" --repo ZimengXiong/tinyTouch --draft=false --latest
+
+print "Published $tag locally in $((SECONDS - started))s."
