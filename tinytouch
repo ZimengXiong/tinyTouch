@@ -42,6 +42,8 @@ LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
 PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
+OTA_CHUNK_SIZE = 3072
+OTA_WRITE_WINDOW = 8
 RELEASE_MANIFEST_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download/release-manifest.json"
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
@@ -913,11 +915,20 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
                 offset = response_next(lines, "OTA")
                 say("Uploading firmware: 0%")
                 next_progress = 10
-                for start in range(offset, len(image), 360):
-                    payload = base64.b64encode(image[start:start + 360]).decode()
-                    command = f"OTA WRITE {token} {start} {payload}"
-                    lines = serial_exchange(device, command)
-                    offset = response_next(lines, "OTA")
+                starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
+                for index in range(0, len(starts), OTA_WRITE_WINDOW):
+                    commands = []
+                    for start in starts[index:index + OTA_WRITE_WINDOW]:
+                        payload = base64.b64encode(
+                            image[start:start + OTA_CHUNK_SIZE]
+                        ).decode()
+                        command = f"OTA WRITE {token} {start} {payload}"
+                        device.write((command + "\n").encode("ascii"))
+                        commands.append(command)
+                    device.flush()
+                    for command in commands:
+                        lines = serial_response(device, command)
+                        offset = response_next(lines, "OTA")
                     progress = min(100, offset * 100 // len(image))
                     if progress >= next_progress:
                         say(f"Uploading firmware: {progress}%")
@@ -941,6 +952,11 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
 def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
     device.write((command + "\n").encode("ascii"))
     device.flush()
+    return serial_response(device, command, timeout=timeout)
+
+
+def serial_response(device, command: str, *, timeout: float = 8.0) -> list[str]:
+    """Read one terminal response for a command already sent to the device."""
     lines: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
