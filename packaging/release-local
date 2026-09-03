@@ -41,11 +41,11 @@ arch -x86_64 /usr/bin/env \
   TINYTOUCH_SIGNING_IDENTITY=- \
   /bin/zsh packaging/build-standalone-macos.sh >/dev/null
 
-python packaging/attach-cli.py dist/local \
+"$project_dir/.venv/bin/python" packaging/attach-cli.py dist/local \
   --arm64 "$publish_root/tinytouch-macos-arm64.tar.gz" \
   --x86-64 "$publish_root/tinytouch-macos-x86_64.tar.gz"
-python packaging/release_integrity.py assembled dist/local --commit "$commit"
-python packaging/finalize-release.py dist/local \
+"$project_dir/.venv/bin/python" packaging/release_integrity.py assembled dist/local --commit "$commit"
+"$project_dir/.venv/bin/python" packaging/finalize-release.py dist/local \
   --output "$publish_root/assets" --commit "$commit"
 
 git tag -a "$tag" -m "tinyTouch $version"
