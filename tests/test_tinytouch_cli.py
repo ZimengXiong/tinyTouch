@@ -115,6 +115,23 @@ class ProtocolSixTests(unittest.TestCase):
                 cli.command_setup(args)
         self.assertEqual(calls, ["remove_helper", "unlock"])
 
+    def test_piv_pair_refreshes_presence_after_sudo_and_accepts_persisted_pairing(self):
+        identity = "A" * 40
+        args = SimpleNamespace(port="/dev/cu.TT-1234")
+        calls = []
+        with (
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]),
+            mock.patch.object(cli, "authorize_macos", side_effect=lambda: calls.append("sudo")),
+            mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "unlock", side_effect=lambda _port: calls.append("touch")),
+            mock.patch.object(cli, "run", side_effect=cli.ToolError("sc_auth failed")),
+            mock.patch.object(cli, "say") as output,
+        ):
+            cli.command_pair(args)
+        self.assertEqual(calls, ["sudo", "touch"])
+        output.assert_any_call("When macOS asks for the smart-card PIN, enter 111111.")
+
     def test_hid_host_list_preserves_eight_host_capacity(self):
         with mock.patch.object(
             cli, "serial_command",

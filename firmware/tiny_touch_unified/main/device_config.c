@@ -51,7 +51,6 @@ static bool valid(const stored_config_t *value) {
       value->typing_delay_ms < 1 || value->typing_delay_ms > 100 ||
       value->touch_cooldown_ms < 100 || value->touch_cooldown_ms > 5000 ||
       value->hid_host_count > DEVICE_CONFIG_MAX_HID_HOSTS) return false;
-  if (value->mode == DEVICE_MODE_HID && value->hid_host_count == 0) return false;
   for (size_t i = 0; i < value->hid_host_count; i++) {
     uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE];
     derive_key_id(value->hid_hosts[i].key, id);

@@ -30,6 +30,7 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertIn("device_config_factory_reset", source)
         self.assertNotIn('"hid_key"', source)
         self.assertNotIn('"hid_hosts"', source)
+        self.assertNotIn("mode == DEVICE_MODE_HID && value->hid_host_count == 0", source)
 
     def test_host_listing_is_read_only_and_uses_lowercase_ids(self) -> None:
         console = self.source("config_console.c")
