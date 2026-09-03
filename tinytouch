@@ -79,6 +79,28 @@ def verbose(message: str) -> None:
         say(f"[verbose] {message}")
 
 
+SOUND_DIR = Path("/System/Library/Sounds")
+TOUCH_SOUND = "Tink"
+LIFT_SOUND = "Pop"
+DONE_SOUND = "Glass"
+
+
+def chime(name: str) -> None:
+    """Play a macOS system sound as non-blocking feedback. Never fails loudly."""
+    if sys.platform != "darwin" or os.environ.get("TINYTOUCH_NO_SOUND"):
+        return
+    sound = SOUND_DIR / f"{name}.aiff"
+    if not sound.exists():
+        return
+    try:
+        subprocess.Popen(
+            ["afplay", str(sound)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        verbose(f"sound unavailable: {name}")
+
+
 def run(command: list[str], **kwargs):
     verbose("run: " + " ".join(command))
     try:
@@ -100,8 +122,11 @@ def authorize_macos() -> None:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     if cached.returncode:
-        say("Authorize macOS in this terminal.")
-        validated = subprocess.run(["sudo", "-v"], check=False)
+        say()
+        say("macOS needs to authorize this step. Your password is not saved.")
+        say("Enter your Mac login password. Nothing appears as you type \u2014 that is normal.")
+        validated = subprocess.run(["sudo", "-v", "-p", "Mac password: "], check=False)
+        say()
         if validated.returncode:
             raise ToolError("macOS authorization failed.")
     _sudo_session_ready = True
@@ -110,7 +135,10 @@ def authorize_macos() -> None:
 def prepare_hid_password() -> None:
     """Capture the HID password and unlock Keychain without requiring sudo."""
     global _setup_password
+    say()
+    say("Enter your Mac login password. Nothing appears as you type \u2014 that is normal.")
     entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
+    say()
     if not entered:
         raise ToolError("A Mac password is required for HID mode.")
     try:
@@ -373,12 +401,15 @@ def exchange_serial(device, command: str, *, timeout: float) -> list[str]:
         lines.append(line)
         verbose("device: " + line)
         if line == "EVENT TOUCH" and not touch_prompted:
-            say("Touch the fingerprint sensor now.")
+            chime(TOUCH_SOUND)
+            say("   touch the sensor")
             touch_prompted = True
         elif line == "EVENT LIFT":
-            say("Lift your finger from the sensor.")
+            chime(LIFT_SOUND)
+            say("   lift your finger")
         elif line == "EVENT TOUCH_AGAIN":
-            say("Touch the same finger again now.")
+            chime(TOUCH_SOUND)
+            say("   touch again")
         if is_terminal(command, line):
             break
     if not lines or not is_terminal(command, lines[-1]):
@@ -552,6 +583,7 @@ def password_for(account: str) -> str:
     global _setup_password
     say("HID mode types this password after a fingerprint match.")
     say("It is stored in this Mac user's Keychain for this device.")
+    say()
     if _setup_password is not None:
         try:
             value = _setup_password.decode("utf-8")
@@ -562,8 +594,10 @@ def password_for(account: str) -> str:
         finally:
             _setup_password[:] = b"\x00" * len(_setup_password)
             _setup_password = None
+    say("Nothing appears as you type \u2014 that is normal.")
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Password again: ")
+    say()
     if not first or first != second:
         raise ToolError("Passwords must be non-empty and match.")
     if len(first.encode()) > 160:
@@ -691,9 +725,16 @@ def enroll(port: str, skip: bool) -> None:
         if ask("Replace the existing fingerprint enrollment? [y/N] ").lower() not in {"y", "yes"}:
             raise ToolError("Fingerprint enrollment was not changed.")
     unlock(port)
+    say()
+    say("Enrolling your fingerprint. Use the same finger for all four scans.")
     for slot in range(1, 5):
-        say(f"Touch the sensor for view {slot} of 4.")
+        say()
+        say(f"Scan {slot} of 4")
         serial_command(port, f"FINGER ENROLL {slot}", timeout=45)
+    chime(DONE_SOUND)
+    say()
+    say("Fingerprint enrolled.")
+    say()
     current = status(port)
     if current.get("fingerprints") != "4":
         raise ToolError("Live verification failed: the four-view fingerprint profile was not reported.")
