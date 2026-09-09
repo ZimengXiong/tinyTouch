@@ -71,6 +71,8 @@ static void reset(void) {
   memset(commands, 0, sizeof(commands));
   write_phase = releases = response_len = 0;
   fp_mutex = (void *)1;
+  prompted_authorization_active = false;
+  foreground_generation = 0;
   set_sensor_ready(true);
 }
 
@@ -131,6 +133,32 @@ int main(void) {
   reset();
   fingerprint_match_t match = fingerprint_authorize_poll_match();
   assert(match.slot == 2 && match.score == 100);
+
+  reset();
+  set_foreground_active(true);
+  assert(fingerprint_prompted_authorization_active());
+  assert(fingerprint_foreground_generation() == 1);
+  poll = fingerprint_poll(true);
+  assert(poll.presence == FINGERPRINT_POLL_UNKNOWN && !commands[1]);
+  match = fingerprint_authorize_poll_match();
+  assert(match.slot == 2 && match.score == 100);
+  set_foreground_active(false);
+  assert(!fingerprint_prompted_authorization_active());
+  assert(fingerprint_foreground_generation() == 2);
+
+  reset();
+  busy = true;
+  assert(!fingerprint_background_led_idle() && !commands[0x3c]);
+  busy = false;
+  set_foreground_active(true);
+  assert(!fingerprint_background_led_idle() && !commands[0x3c]);
+  set_foreground_active(false);
+  assert(fingerprint_background_led_idle() && commands[0x3c] == 1);
+
+  reset();
+  assert(fingerprint_authorize_prompted(NULL));
+  assert(!fingerprint_prompted_authorization_active());
+  assert(fingerprint_foreground_generation() == 2);
   puts("Polling behavior checks passed");
   return 0;
 }
