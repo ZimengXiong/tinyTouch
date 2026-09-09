@@ -36,6 +36,7 @@ static bool ready, active, match_success, inject_feedback, inject_poll;
 static bool inject_between, injected;
 static TickType_t active_until;
 static bool hold_foreground;
+static unsigned led_busy_calls;
 static int mode;
 static unsigned scenario;
 static jmp_buf completed;
@@ -49,7 +50,7 @@ void vTaskDelay(TickType_t ticks) {
     generation++;
   }
   if (!injected && ((inject_feedback && ticks == 350) ||
-      (inject_between && sample_index == 3 && ticks == 10))) {
+      (inject_between && sample_index == 1 && ticks == 10))) {
     generation += hold_foreground ? 1 : 2;
     if (hold_foreground) {
       active = true;
@@ -83,6 +84,7 @@ fingerprint_poll_t fingerprint_poll(bool match_image) {
 void fingerprint_led_idle(void) { idle_leds++; idle_time = now; }
 bool fingerprint_background_led_idle(void) {
   assert(!active);
+  if (led_busy_calls) { led_busy_calls--; return false; }
   fingerprint_led_idle();
   return true;
 }
@@ -114,6 +116,7 @@ static void reset(const sample_t *script, size_t count) {
   active = inject_feedback = inject_poll = inject_between = injected = false;
   hold_foreground = false;
   active_until = 0;
+  led_busy_calls = 0;
   mode = DEVICE_MODE_HID;
 }
 #define RESET(...) do { const sample_t script[] = {__VA_ARGS__}; \
@@ -121,72 +124,84 @@ static void reset(const sample_t *script, size_t count) {
 static void run(void) { if (setjmp(completed) == 0) touch_hid_task(NULL); }
 
 int main(void) {
-  RESET(A, A, A, M, P, P, P, P);
+  RESET(A, M, P, P, P, P);
   run();
   assert(typed == 1 && touches == 1 && matches == 1 && idle_leds == 1);
   assert(idle_time - match_time == 350 && type_time == idle_time);
 
-  // Neither a held finger nor errors between absent samples can rearm.
-  RESET(P, U, A, A, U, A, A, P, A, A, A, M, A, A, U, A, A, P);
+  // A held finger and unknown sensor results must never rearm.
+  RESET(P, U, P, U, A, M, P, U, P, U, P);
   run();
   assert(typed == 1);
 
-  RESET(A, A, A, M, A, A, A, M);
+  RESET(A, M, A, M);
   run();
   assert(typed == 2 && idle_leds == 2);
+  assert(poll_times[3] - poll_times[2] == 100);
 
-  RESET(A, A, A, M, A, A, A, A, A, A, M);
+  RESET(A, M, A, A, A, A, A, A, M);
   cooldown = 500;
   run();
-  assert(typed == 2 && poll_times[3] == 400);
-  assert(poll_times[10] - poll_times[3] == 950);
+  assert(typed == 2 && poll_times[1] == 200);
+  assert(poll_times[8] - poll_times[1] == 950);
 
-  RESET(A, A, A, I, I, I);
+  RESET(A, I, I, I, I, I);
   run();
   assert(!typed && !idle_leds && !touches);
   for (size_t i = 0; i < sample_count; i++) assert(poll_times[i] == (i + 1) * 100);
 
-  RESET(A, A, A, M, P, P);
+  RESET(A, M, P, P);
   match_success = false;
   run();
   assert(!typed && no_matches == 1 && idle_leds == 1);
 
-  RESET(A, A, A, M, P, P);
+  RESET(A, M, P, P);
   inject_feedback = true;
   run();
   assert(injected && !typed && idle_leds == 1);
 
   // A canceled match must restore blue after foreground ownership ends.
-  RESET(A, A, A, M, P, P);
+  RESET(A, M, P, P);
   inject_feedback = hold_foreground = true;
   run();
   assert(!typed && idle_leds == 1 && idle_time >= active_until);
 
-  RESET(A, A, A, M, P, P);
+  RESET(A, M, P, P);
   inject_poll = true;
   run();
   assert(!typed && !touches && idle_leds == 1);
 
-  RESET(A, A, A, P, P, A, A, A, M);
+  RESET(A, P, P, A, M);
   inject_between = true;
   run();
   assert(injected && typed == 1);
 
-  RESET(P, P, A, A, A, M);
+  RESET(P, P, A, M);
   ready = false;
   run();
   assert(recovered == 1 && typed == 1);
 
-  RESET(A, A, A, M);
+  RESET(A, M);
   active = true;
   active_until = 500;
   run();
   assert(poll_times[0] >= 500 && typed == 1);
 
-  RESET(A, A, A, M, P);
+  RESET(A, M, P);
   mode = DEVICE_MODE_PIV;
   run();
   assert(typed == 1 && presence == 1 && idle_leds == 1);
+  // LED contention cannot discard an already verified touch.
+  RESET(A, M, P);
+  led_busy_calls = 3;
+  run();
+  assert(typed == 1 && idle_leds == 1 && type_time < idle_time);
+
+  // Even the maximum configured cooldown does not delay initial arming.
+  RESET(A, M);
+  cooldown = 60000;
+  run();
+  assert(typed == 1 && poll_times[0] == 100 && poll_times[1] == 200);
   puts("Touch task behavior checks passed");
   return 0;
 }
