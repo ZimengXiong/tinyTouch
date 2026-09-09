@@ -110,7 +110,8 @@ class BetaChannelTests(unittest.TestCase):
                 self.beta.require_device_access()
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.args[0][0:2], ["launchctl", "print"])
-        self.assertIn("launchctl bootstrap", str(error.exception))
+        self.assertIn("tinytouch-beta exit", str(error.exception))
+        self.assertNotIn("launchctl", str(error.exception))
         with mock.patch.object(channel.subprocess, "run") as run:
             self.production.require_device_access()
             run.assert_not_called()
