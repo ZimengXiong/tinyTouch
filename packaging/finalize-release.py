@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import tarfile
 from pathlib import Path
@@ -20,6 +21,23 @@ def copy_once(source: Path, destination: Path) -> None:
             raise SystemExit(f"public filename has conflicting contents: {destination.name}")
         return
     shutil.copy2(source, destination)
+
+
+def write_installer(destination: Path, version: str) -> None:
+    source = ROOT / "packaging" / "install.sh"
+    if "-beta." not in version:
+        copy_once(source, destination)
+        return
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+", version):
+        raise SystemExit("invalid beta installer version")
+    installer = source.read_text(encoding="utf-8")
+    installer = installer.replace("installer_version=''", f"installer_version='{version}'")
+    installer = installer.replace(
+        "https://github.com/ZimengXiong/tinyTouch/releases/latest/download",
+        f"https://github.com/ZimengXiong/tinyTouch/releases/download/v{version}",
+    )
+    destination.write_text(installer, encoding="utf-8")
+    shutil.copymode(source, destination)
 
 
 def main() -> None:
@@ -41,7 +59,7 @@ def main() -> None:
             copy_once(release / kind / metadata["file"], output / metadata["file"])
     for metadata in (manifest["ota"], *manifest["cli"].values()):
         copy_once(release / metadata["file"], output / metadata["file"])
-    copy_once(ROOT / "packaging" / "install.sh", output / "install.sh")
+    write_installer(output / "install.sh", manifest["version"])
 
     with tarfile.open(output / "tinytouch-firmware.tar.gz", "w:gz") as archive:
         for name in ("factory", "release-manifest.json"):

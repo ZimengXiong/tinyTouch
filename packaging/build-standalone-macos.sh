@@ -41,6 +41,7 @@ mkdir -p "$build_dir" "$dist_dir"
   --hidden-import tinytouch_helper \
   --hidden-import tinytouch_keychain \
   --hidden-import tinytouch_runtime \
+  --hidden-import tinytouch_channel \
   --hidden-import serial.tools.list_ports \
   --collect-all esptool \
   --add-data "$project_dir/VERSION:." \

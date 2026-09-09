@@ -2,6 +2,8 @@
 # tinyTouch installer for macOS.
 set -eu
 
+# Release packaging pins beta installers to their immutable version.
+installer_version=''
 release_root="${TINYTOUCH_RELEASE_ROOT:-https://github.com/ZimengXiong/tinyTouch/releases/latest/download}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
@@ -23,6 +25,15 @@ esac
 
 curl -fsSL "$release_root/release-manifest.json" -o "$work_dir/release.json"
 version="$(plutil -extract version raw -o - "$work_dir/release.json")"
+if [ -n "$installer_version" ] && [ "$version" != "$installer_version" ]; then
+  echo 'The downloaded release does not match this installer version.' >&2
+  exit 1
+fi
+command_name='tinytouch'
+support_name='tinyTouch'
+case "$version" in
+  *-beta.*) command_name='tinytouch-beta'; support_name='tinyTouch-beta' ;;
+esac
 release_file="$(plutil -extract "cli.$cli_key.file" raw -o - "$work_dir/release.json")"
 release_sha256="$(plutil -extract "cli.$cli_key.sha256" raw -o - "$work_dir/release.json")"
 case "$version" in
@@ -51,10 +62,10 @@ path_contains() {
 
 if [ -n "${TINYTOUCH_INSTALL_DIR:-${TINTOUCH_INSTALL_DIR:-}}" ]; then
   install_dir="${TINYTOUCH_INSTALL_DIR:-$TINTOUCH_INSTALL_DIR}"
-elif existing_command="$(command -v tinytouch 2>/dev/null)"; then
+elif existing_command="$(command -v "$command_name" 2>/dev/null)"; then
   case "$existing_command" in
-    "$HOME/.local/bin/tinytouch"|/opt/homebrew/bin/tinytouch|/usr/local/bin/tinytouch)
-      install_dir="${existing_command%/tinytouch}"
+    "$HOME/.local/bin/$command_name"|"/opt/homebrew/bin/$command_name"|"/usr/local/bin/$command_name")
+      install_dir="${existing_command%/*}"
       ;;
     *) existing_command='' ;;
   esac
@@ -87,7 +98,7 @@ fi
 tar -C "$work_dir" -xzf "$work_dir/tinytouch.tar.gz"
 test -x "$work_dir/tinytouch/tinytouch"
 test -d "$work_dir/tinytouch/_internal"
-support_dir="$HOME/Library/Application Support/tinyTouch"
+support_dir="$HOME/Library/Application Support/$support_name"
 bundle="$support_dir/cli-$(printf %.16s "$release_sha256")"
 mkdir -p "$support_dir"
 if [ ! -d "$bundle" ]; then
@@ -98,13 +109,13 @@ xattr -dr com.apple.quarantine "$bundle" 2>/dev/null || true
 if { [ -d "$install_dir" ] && [ -w "$install_dir" ]; } || \
    { [ ! -e "$install_dir" ] && [ -w "${install_dir%/*}" ]; }; then
   mkdir -p "$install_dir"
-  ln -sfn "$bundle/tinytouch" "$install_dir/.tinytouch.new"
-  mv -f "$install_dir/.tinytouch.new" "$install_dir/tinytouch"
+  ln -sfn "$bundle/tinytouch" "$install_dir/.$command_name.new"
+  mv -f "$install_dir/.$command_name.new" "$install_dir/$command_name"
 else
   echo "Installing to $install_dir requires your Mac administrator password."
   sudo mkdir -p "$install_dir"
-  sudo ln -sfn "$bundle/tinytouch" "$install_dir/.tinytouch.new"
-  sudo mv -f "$install_dir/.tinytouch.new" "$install_dir/tinytouch"
+  sudo ln -sfn "$bundle/tinytouch" "$install_dir/.$command_name.new"
+  sudo mv -f "$install_dir/.$command_name.new" "$install_dir/$command_name"
 fi
 
-echo 'tinyTouch installed. Run: tinytouch setup'
+echo "tinyTouch installed. Run: $command_name setup"
