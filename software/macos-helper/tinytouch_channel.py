@@ -48,10 +48,12 @@ class Channel:
         if loaded:
             raise RuntimeError(
                 "The production tinyTouch helper is running. Stop it before using beta: "
-                f"launchctl bootout {target}. "
+                f"launchctl disable {target}, then launchctl bootout {target}. "
                 "Do not run production commands while beta is using the device. "
                 "When finished, stop the beta helper with "
-                f"launchctl bootout gui/{os.getuid()}/{self.label}, then restore production with "
+                f"launchctl disable gui/{os.getuid()}/{self.label}, then "
+                f"launchctl bootout gui/{os.getuid()}/{self.label}. Restore production with "
+                f"launchctl enable {target}, then "
                 f"launchctl bootstrap gui/{os.getuid()} "
                 '"$HOME/Library/LaunchAgents/com.tinytouch.helper.plist". '
                 "This does not remove either installation or its credentials."

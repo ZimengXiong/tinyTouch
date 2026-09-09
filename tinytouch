@@ -543,6 +543,8 @@ def install_helper() -> None:
     }
     unload_helper()
     atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
+    if CHANNEL.beta:
+        run(["launchctl", "enable", f"gui/{os.getuid()}/{CHANNEL.label}"])
     load_helper()
     if not helper_loaded():
         raise ToolError("The HID helper did not load.")
@@ -1474,7 +1476,7 @@ def command_update(args: argparse.Namespace) -> None:
     if digest != metadata["sha256"]:
         raise ToolError("The downloaded firmware digest does not match the release manifest.")
     stage_ota(port, image, digest)
-    notify("tinyTouch update staged", "Unplug tinyTouch, reconnect it, then run tinytouch status.")
+    notify("tinyTouch update staged", f"Unplug tinyTouch, reconnect it, then run {CHANNEL.command} status.")
     say("OTA firmware is staged in the inactive slot.")
     say("Unplug tinyTouch and reconnect it once to boot the new firmware.")
 
