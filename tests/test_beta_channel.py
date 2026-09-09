@@ -26,6 +26,17 @@ class BetaChannelTests(unittest.TestCase):
         self.beta = channel.Channel("0.1.25-beta.1")
         self.production = channel.Channel("0.1.24-prod")
 
+    def test_build_smoke_commands_do_not_require_device_access(self):
+        for argument, function in (("_package_test", "package_test"),
+                                   ("_network_test", "network_test")):
+            with self.subTest(argument=argument), mock.patch.object(
+                cli.sys, "argv", ["tinytouch-beta", argument]
+            ), mock.patch.object(cli, function) as smoke, mock.patch.object(
+                cli, "require_device_access", side_effect=AssertionError("device access")
+            ):
+                self.assertEqual(cli.main(), 0)
+                smoke.assert_called_once_with()
+
     def test_channel_identities_are_separate(self):
         for actual, expected in (
             (self.beta.command, "tinytouch-beta"),
