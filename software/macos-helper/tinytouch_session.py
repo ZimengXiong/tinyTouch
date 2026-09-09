@@ -82,6 +82,23 @@ def _start(label: str, *, required: bool) -> None:
 
 
 @contextmanager
+def command_lock():
+    """Reject overlapping beta commands, including activation and exit."""
+    directory = Path.home() / "Library" / "Application Support" / "tinyTouch-beta"
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(directory / "helper-command.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(descriptor, "a+b") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SessionError("Another beta command is running. Wait for it to finish and retry.") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
 def _locked_session():
     directory = Path.home() / "Library" / "Application Support" / "tinyTouch-beta"
     directory.mkdir(parents=True, exist_ok=True)
