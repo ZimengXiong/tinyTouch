@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -14,8 +13,6 @@ static const char *TAG = "fingerprint";
 static const uart_port_t FP_UART = UART_NUM_1;
 static const int FP_TX_PIN = 43;
 static const int FP_RX_PIN = 44;
-static const int FP_INT_PIN = 2;
-static const int INT_ACTIVE_VALUE = 1;
 static const uint16_t START_SLOT = 1;
 static const uint16_t END_SLOT = 5;
 static const uint32_t FINGER_WAIT_MS = 7000;
@@ -25,7 +22,8 @@ static const uint8_t FP_LED_RED = 0x04;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
 
 static SemaphoreHandle_t fp_mutex;
-static volatile bool prompted_authorization_active;
+static bool prompted_authorization_active;
+static uint32_t foreground_generation;
 static bool sensor_ready;
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -211,14 +209,6 @@ void fingerprint_led_idle(void) {
   fp_give();
 }
 
-static bool finger_present(void) {
-  return gpio_get_level(FP_INT_PIN) == INT_ACTIVE_VALUE;
-}
-
-bool fingerprint_present_hint(void) {
-  return finger_present();
-}
-
 static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   fingerprint_match_t no_match = {0};
   uint8_t confirm = 0xff;
@@ -289,30 +279,38 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   return no_match;
 }
 
-fingerprint_match_t fingerprint_authorize_poll_match(void) {
-  fingerprint_match_t no_match = {0};
-  if (!fp_take(0)) return no_match;
-  uint8_t confirm = 0xff;
-  if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
+static fingerprint_poll_t poll_sensor(bool match_image, bool background) {
+  fingerprint_poll_t result = {0};
+  if (!fp_take(0)) return result;
+  if (background && fingerprint_prompted_authorization_active()) {
     fp_give();
-    return no_match;
+    return result;
   }
-  fingerprint_match_t match = fingerprint_match_captured(true);
-  if (match.slot) set_aura(FP_LED_GREEN);
+  uint8_t confirm = 0xff;
+  if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350)) {
+    if (confirm == 0x02) {
+      result.presence = FINGERPRINT_POLL_ABSENT;
+    } else if (confirm == 0x00) {
+      result.presence = FINGERPRINT_POLL_PRESENT;
+      if (match_image) {
+        result.match = fingerprint_match_captured(true);
+        if (result.match.slot) set_aura(FP_LED_GREEN);
+      }
+    }
+  }
   fp_give();
-  return match;
+  return result;
+}
+
+fingerprint_poll_t fingerprint_poll(bool match_image) {
+  return poll_sensor(match_image, true);
+}
+
+fingerprint_match_t fingerprint_authorize_poll_match(void) {
+  return poll_sensor(true, false).match;
 }
 
 void fingerprint_init(void) {
-  gpio_config_t io = {
-    .pin_bit_mask = 1ULL << FP_INT_PIN,
-    .mode = GPIO_MODE_INPUT,
-    .pull_up_en = GPIO_PULLUP_DISABLE,
-    .pull_down_en = GPIO_PULLDOWN_ENABLE,
-    .intr_type = GPIO_INTR_DISABLE,
-  };
-  ESP_ERROR_CHECK(gpio_config(&io));
-
   uart_config_t cfg = {
     .baud_rate = 57600,
     .data_bits = UART_DATA_8_BITS,
@@ -369,11 +367,15 @@ bool fingerprint_recover(void) {
   return ok;
 }
 
+static void set_foreground_active(bool active) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  prompted_authorization_active = active;
+  foreground_generation++;
+  portEXIT_CRITICAL(&sensor_state_lock);
+}
+
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  // TOUCH_OUT is not reliable enough to gate a foreground capture on every
-  // supported module. Reuse HID's quiet matcher and keep polling until the
-  // user presents a valid enrolled finger or the authorization window ends.
-  prompted_authorization_active = true;
+  set_foreground_active(true);
   if (prompt) prompt();
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
   bool ok = false;
@@ -384,12 +386,22 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
     }
     vTaskDelay(pdMS_TO_TICKS(120));
   }
-  prompted_authorization_active = false;
+  set_foreground_active(false);
   return ok;
 }
 
 bool fingerprint_prompted_authorization_active(void) {
-  return prompted_authorization_active;
+  portENTER_CRITICAL(&sensor_state_lock);
+  bool active = prompted_authorization_active;
+  portEXIT_CRITICAL(&sensor_state_lock);
+  return active;
+}
+
+uint32_t fingerprint_foreground_generation(void) {
+  portENTER_CRITICAL(&sensor_state_lock);
+  uint32_t generation = foreground_generation;
+  portEXIT_CRITICAL(&sensor_state_lock);
+  return generation;
 }
 
 int fingerprint_count(void) {
@@ -451,7 +463,12 @@ static bool wait_finger_removed(uint32_t timeout_ms) {
 }
 
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
-  if (slot < START_SLOT || slot > END_SLOT || !fp_take(1000)) return false;
+  if (slot < START_SLOT || slot > END_SLOT) return false;
+  set_foreground_active(true);
+  if (!fp_take(1000)) {
+    set_foreground_active(false);
+    return false;
+  }
   bool ok = false;
   set_aura(FP_LED_BLUE);
   if (prompt) prompt("TOUCH");
@@ -470,6 +487,7 @@ bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
 done:
   show_result(ok);
   fp_give();
+  set_foreground_active(false);
   return ok;
 }
 

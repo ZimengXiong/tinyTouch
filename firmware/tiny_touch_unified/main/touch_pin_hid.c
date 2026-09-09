@@ -352,12 +352,13 @@ typedef enum {
 typedef struct {
   auth_state_t state;
   TickType_t state_started;
-  // A capture is allowed only after the touch line has been observed inactive.
-  // GPIO2 is optional on some boards and can idle high when it is not wired.
-  // Treating a static high level as a touch makes the device capture without a
-  // user and can leave the sensor showing a failure result.
-  bool presence_armed;
+  TickType_t last_poll;
+  uint32_t foreground_generation;
+  unsigned absent_samples;
 } auth_runtime_t;
+
+#define SENSOR_POLL_MS 100
+#define RELEASE_SAMPLES 3
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
   if (device_config_mode() == DEVICE_MODE_HID) {
@@ -380,28 +381,34 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
 static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
   runtime->state = AUTH_STATE_WAITING_FOR_LIFT;
   runtime->state_started = now;
+  runtime->absent_samples = 0;
+}
+
+static bool foreground_interrupted(auth_runtime_t *runtime) {
+  uint32_t generation = fingerprint_foreground_generation();
+  bool interrupted = fingerprint_prompted_authorization_active() ||
+                     generation != runtime->foreground_generation;
+  runtime->foreground_generation = generation;
+  if (interrupted) auth_wait_for_lift(runtime, xTaskGetTickCount());
+  return interrupted;
 }
 
 static void touch_hid_task(void *arg) {
   (void)arg;
   auth_runtime_t runtime = {
-    .state = AUTH_STATE_IDLE,
+    .state = AUTH_STATE_WAITING_FOR_LIFT,
     .state_started = xTaskGetTickCount(),
-    .presence_armed = false,
+    .last_poll = xTaskGetTickCount(),
+    .foreground_generation = fingerprint_foreground_generation(),
+    .absent_samples = 0,
   };
   TickType_t next_recovery = 0;
   touch_pin_hid_log_event("task_started", 0);
 
   while (true) {
-    // Console commands such as PIV setup own the fingerprint session. Do not
-    // let background HID/PIV handling capture the same finger or type into
-    // macOS while that command is awaiting its explicit authorization.
-    if (fingerprint_prompted_authorization_active()) {
-      // The foreground command may finish while its authorization finger is
-      // still touching the sensor. Disarm that touch until a lift is observed
-      // so it cannot become a second background match and type into the CLI.
-      runtime.presence_armed = false;
-      auth_wait_for_lift(&runtime, xTaskGetTickCount());
+    // Foreground authorization and enrollment own their touches. A generation
+    // change also catches sessions that finish between background polls.
+    if (foreground_interrupted(&runtime)) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -418,24 +425,6 @@ static void touch_hid_task(void *arg) {
         usb_sensor_probe_at = now + pdMS_TO_TICKS(1000);
       }
     }
-    bool present = fingerprint_present_hint();
-
-    // Require an observed release before accepting the next asserted level.
-    // This turns the touch signal into an edge, rather than continuously
-    // trusting its level. It also makes an unwired or floating GPIO harmless.
-    if (!present) runtime.presence_armed = true;
-
-    if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
-      if (!present && (TickType_t)(now - runtime.state_started) >=
-                          pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
-        runtime.state = AUTH_STATE_IDLE;
-      }
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
-
-    // Presence is the sole trigger for a capture. Idle operation never sends
-    // sensor commands and therefore never flashes a failure indication.
     if (!fingerprint_is_ready()) {
       // Recover in the background after a transient UART error. Throttle this
       // path so a disconnected sensor cannot monopolize the task.
@@ -448,22 +437,40 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    // Fingerprint capture must not depend on macOS having polled the HID
-    // endpoint. A fresh USB connection can delay that poll until a serial
-    // command runs; wait_hid_ready() handles delivery only after a match.
-    if (!present || !runtime.presence_armed) {
+    if ((TickType_t)(now - runtime.last_poll) < pdMS_TO_TICKS(SENSOR_POLL_MS)) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
 
-    runtime.presence_armed = false;
+    // UART capture detects both presence and release. Empty polls and release
+    // checks leave the LED unchanged and never request a host password.
+    fingerprint_poll_t poll = fingerprint_poll(runtime.state == AUTH_STATE_IDLE);
+    runtime.last_poll = xTaskGetTickCount();
+    if (foreground_interrupted(&runtime)) continue;
+
+    if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
+      if (poll.presence == FINGERPRINT_POLL_ABSENT) {
+        if (runtime.absent_samples < RELEASE_SAMPLES) runtime.absent_samples++;
+        if (runtime.absent_samples >= RELEASE_SAMPLES &&
+            (TickType_t)(runtime.last_poll - runtime.state_started) >=
+                pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
+          runtime.state = AUTH_STATE_IDLE;
+        }
+      } else {
+        // Errors and contention are not evidence that the finger lifted.
+        runtime.absent_samples = 0;
+      }
+      continue;
+    }
+
+    if (poll.presence != FINGERPRINT_POLL_PRESENT) continue;
     touch_pin_hid_log_event("touch_detected", 0);
-    fingerprint_match_t match = fingerprint_authorize_poll_match();
+    fingerprint_match_t match = poll.match;
     if (match.slot == 0) {
       touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(350));
-      fingerprint_led_idle();
+      if (!foreground_interrupted(&runtime)) fingerprint_led_idle();
       continue;
     }
 
@@ -471,7 +478,9 @@ static void touch_hid_task(void *arg) {
     // Keep result feedback bounded. Host communication must not leave the
     // sensor green when a helper, USB endpoint, or PIN field is unavailable.
     vTaskDelay(pdMS_TO_TICKS(350));
+    if (foreground_interrupted(&runtime)) continue;
     fingerprint_led_idle();
+    if (foreground_interrupted(&runtime)) continue;
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());
   }
