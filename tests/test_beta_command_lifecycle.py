@@ -36,6 +36,7 @@ class BetaCommandLifecycleTests(unittest.TestCase):
         self.patched(cli, "say")
         self.patched(cli, "show_startup_mark")
         self.patched(cli, "command_lock", side_effect=nullcontext)
+        self.patched(cli, "_beta_command_ready", False)
         self.activate = self.patched(cli, "activate_beta")
         self.exit_beta = self.patched(cli, "exit_beta")
         self.guard = self.patched(self.beta, "require_device_access")
@@ -59,6 +60,41 @@ class BetaCommandLifecycleTests(unittest.TestCase):
         self.exit_beta.assert_called_once_with()
         self.activate.assert_not_called()
         self.guard.assert_not_called()
+
+    def test_nested_device_checks_do_not_restart_the_paused_helper(self):
+        def status(args):
+            self.assertTrue(cli._beta_command_ready)
+            cli.require_device_access()
+            cli.require_device_access()
+
+        with mock.patch.object(cli, "command_status", side_effect=status):
+            self.assertEqual(self.invoke("status"), 0)
+        self.activate.assert_called_once_with()
+        self.assertEqual(self.guard.call_count, 3)
+        self.assertFalse(cli._beta_command_ready)
+
+    def test_failed_command_clears_activation_state_before_the_next_command(self):
+        def failing_status(args):
+            self.assertTrue(cli._beta_command_ready)
+            cli.require_device_access()
+            cli.require_device_access()
+            raise RuntimeError("Status interrupted")
+
+        with mock.patch.object(cli, "command_status", side_effect=failing_status):
+            self.assertEqual(self.invoke("status"), 1)
+        self.activate.assert_called_once_with()
+        self.assertEqual(self.guard.call_count, 3)
+        self.assertFalse(cli._beta_command_ready)
+        with mock.patch.object(cli, "command_status"):
+            self.assertEqual(self.invoke("status"), 0)
+        self.assertEqual(self.activate.call_count, 2)
+        self.assertFalse(cli._beta_command_ready)
+
+    def test_oserror_is_reported_and_clears_activation_state(self):
+        with mock.patch.object(cli, "command_status", side_effect=OSError("Serial port unavailable")):
+            self.assertEqual(self.invoke("status"), 1)
+        cli.say.assert_called_with("Error: Serial port unavailable")
+        self.assertFalse(cli._beta_command_ready)
 
     def test_production_status_does_not_activate_beta(self):
         production = Channel("0.1.24-prod")
