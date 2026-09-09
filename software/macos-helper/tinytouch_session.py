@@ -47,10 +47,13 @@ def _loaded(label: str) -> bool:
 def _disabled(label: str) -> bool:
     output = _launchctl("print-disabled", f"gui/{os.getuid()}").stdout
     # launchctl lists only explicit overrides; an omitted label is enabled.
-    found = re.search(r'"' + re.escape(label) + r'"\s*=>\s*(true|false)', output)
+    found = re.search(r'"' + re.escape(label) + r'"[ \t]*=>[ \t]*([^\n}]*)', output)
     if found:
-        return found.group(1) == "true"
-    if "disabled services = {" not in output:
+        value = found.group(1).strip().rstrip(",;").strip()
+        if value not in {"true", "false", "enabled", "disabled"}:
+            raise SessionError("Could not read helper enablement from launchctl. No helper was changed.")
+        return value in {"true", "disabled"}
+    if f'"{label}"' in output or "disabled services = {" not in output:
         raise SessionError("Could not read helper enablement from launchctl. No helper was changed.")
     return False
 

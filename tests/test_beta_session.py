@@ -201,6 +201,24 @@ class BetaSessionTests(unittest.TestCase):
             with self.assertRaisesRegex(session.SessionError, "Could not read helper enablement"):
                 session._disabled(session.PRODUCTION_LABEL)
 
+    def test_enablement_supports_boolean_and_word_formats(self):
+        for value, expected in (("true", True), ("false", False),
+                                ("disabled", True), ("enabled", False)):
+            output = f'disabled services = {{\n"{session.PRODUCTION_LABEL}" => {value}\n}}'
+            with mock.patch.object(session, "_launchctl", return_value=subprocess.CompletedProcess(
+                [], 0, output, ""
+            )):
+                self.assertEqual(session._disabled(session.PRODUCTION_LABEL), expected)
+
+    def test_unknown_explicit_enablement_fails_safely(self):
+        for value in ("unknown", "falsehood", "disabled-but-running", "1", "", "enabled maybe"):
+            output = f'disabled services = {{\n"{session.PRODUCTION_LABEL}" => {value}\n}}'
+            with mock.patch.object(session, "_launchctl", return_value=subprocess.CompletedProcess(
+                [], 0, output, ""
+            )):
+                with self.assertRaisesRegex(session.SessionError, "Could not read helper enablement"):
+                    session._disabled(session.PRODUCTION_LABEL)
+
 
 if __name__ == "__main__":
     unittest.main()
