@@ -354,12 +354,10 @@ typedef struct {
   TickType_t state_started;
   TickType_t last_poll;
   uint32_t foreground_generation;
-  unsigned absent_samples;
   bool pending_led_reset;
 } auth_runtime_t;
 
 #define SENSOR_POLL_MS 100
-#define RELEASE_SAMPLES 3
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
   if (device_config_mode() == DEVICE_MODE_HID) {
@@ -382,7 +380,6 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
 static void auth_wait_for_lift(auth_runtime_t *runtime, TickType_t now) {
   runtime->state = AUTH_STATE_WAITING_FOR_LIFT;
   runtime->state_started = now;
-  runtime->absent_samples = 0;
 }
 
 static bool foreground_interrupted(auth_runtime_t *runtime) {
@@ -404,7 +401,6 @@ static void touch_hid_task(void *arg) {
                      pdMS_TO_TICKS(device_config_touch_cooldown_ms()),
     .last_poll = xTaskGetTickCount(),
     .foreground_generation = fingerprint_foreground_generation(),
-    .absent_samples = 0,
   };
   TickType_t next_recovery = 0;
   touch_pin_hid_log_event("task_started", 0);
@@ -463,16 +459,12 @@ static void touch_hid_task(void *arg) {
     if (foreground_interrupted(&runtime)) continue;
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
-      if (poll.presence == FINGERPRINT_POLL_ABSENT) {
-        if (runtime.absent_samples < RELEASE_SAMPLES) runtime.absent_samples++;
-        if (runtime.absent_samples >= RELEASE_SAMPLES &&
-            (TickType_t)(runtime.last_poll - runtime.state_started) >=
-                pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
-          runtime.state = AUTH_STATE_IDLE;
-        }
-      } else {
-        // Errors and contention are not evidence that the finger lifted.
-        runtime.absent_samples = 0;
+      // Match the previous single-release behavior. Only an explicit UART
+      // no-finger reply can rearm; errors and contention cannot release it.
+      if (poll.presence == FINGERPRINT_POLL_ABSENT &&
+          (TickType_t)(runtime.last_poll - runtime.state_started) >=
+              pdMS_TO_TICKS(device_config_touch_cooldown_ms())) {
+        runtime.state = AUTH_STATE_IDLE;
       }
       continue;
     }
