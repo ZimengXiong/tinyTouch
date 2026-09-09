@@ -38,10 +38,12 @@ from tinytouch_runtime import (
 )
 
 
-SERVICE = "tinyTouch"
-ACCOUNT = "tinyTouch"
-PAIRING_SERVICE = "tinyTouch-pairing"
-STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
+from tinytouch_channel import CHANNEL
+
+SERVICE = CHANNEL.password_service
+ACCOUNT = CHANNEL.name
+PAIRING_SERVICE = CHANNEL.pairing_service
+STATE_DIR = Path.home() / "Library" / "Application Support" / CHANNEL.name
 SUSPEND_PATH = STATE_DIR / "helper-suspend"
 SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
@@ -500,7 +502,15 @@ def resynchronize_event(line: str, device_id: str = "") -> str:
     return line[marker:]
 
 
+def require_device_access() -> None:
+    try:
+        CHANNEL.require_device_access()
+    except RuntimeError as exc:
+        raise serial.SerialException(str(exc)) from exc
+
+
 def open_serial(port: str) -> serial.Serial:
+    require_device_access()
     ser = serial.Serial()
     ser.port = port
     ser.baudrate = 115200
@@ -580,7 +590,11 @@ def serve_port(
                 diagnostic("worker.usb_reattach_requested", device_id=device_id, port=port)
                 raise serial.SerialException("USB reattach requested")
             diagnostic("worker.connected", device_id=device_id, port=port)
+            last_channel_check = time.monotonic()
             while True:
+                if CHANNEL.beta and time.monotonic() - last_channel_check >= 1.0:
+                    require_device_access()
+                    last_channel_check = time.monotonic()
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return

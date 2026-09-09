@@ -37,11 +37,6 @@ CLI_VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.e
 HELPER = ROOT / "software" / "macos-helper" / "tinytouch_helper.py"
 REQUIREMENTS = ROOT / "software" / "macos-helper" / "requirements.txt"
 VENV = ROOT / ".venv"
-LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.tinytouch.helper.plist"
-SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
-LOG_DIR = Path.home() / "Library" / "Logs" / "tinyTouch"
-PAIRING_SERVICE = "tinyTouch-pairing"
-PASSWORD_SERVICE = "tinyTouch"
 CURRENT_PROTOCOL = 6
 OTA_CHUNK_SIZE = 3072
 OTA_WRITE_WINDOW = 8
@@ -55,6 +50,14 @@ HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_channel import Channel  # type: ignore  # noqa: E402
+
+CHANNEL = Channel(CLI_VERSION)
+LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / f"{CHANNEL.label}.plist"
+SUPPORT_DIR = Path.home() / "Library" / "Application Support" / CHANNEL.name
+LOG_DIR = Path.home() / "Library" / "Logs" / CHANNEL.name
+PAIRING_SERVICE = CHANNEL.pairing_service
+PASSWORD_SERVICE = CHANNEL.password_service
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
@@ -70,6 +73,13 @@ class ToolError(RuntimeError):
 
 class SerialTimeout(ToolError):
     """The device did not return a terminal response."""
+
+
+def require_device_access() -> None:
+    try:
+        CHANNEL.require_device_access()
+    except RuntimeError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def say(message: str = "") -> None:
@@ -452,13 +462,13 @@ def unload_helper() -> bool:
         return False
     should_restart = LAUNCH_AGENT.exists()
     loaded = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        ["launchctl", "print", f"gui/{os.getuid()}/{CHANNEL.label}"],
         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
     if not loaded:
         return should_restart
     result = subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
+        ["launchctl", "bootout", f"gui/{os.getuid()}/{CHANNEL.label}"],
         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     if result.returncode != 0 and helper_loaded():
@@ -471,7 +481,7 @@ def unload_helper() -> bool:
 def helper_loaded() -> bool:
     try:
         return subprocess.run(
-            ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
+            ["launchctl", "print", f"gui/{os.getuid()}/{CHANNEL.label}"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode == 0
     except OSError:
@@ -524,7 +534,7 @@ def install_helper() -> None:
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
     payload = {
-        "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
+        "Label": CHANNEL.label, "ProgramArguments": arguments,
         "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
         "ThrottleInterval": 1,
         "StandardOutPath": str(LOG_DIR / "helper.log"),
@@ -601,6 +611,7 @@ def exchange_serial(
 def foreground_session(port: str):
     """Open one verified CDC session for a foreground device operation."""
     global _active_serial
+    require_device_access()
     try:
         import serial  # type: ignore
     except ImportError as exc:
@@ -952,6 +963,7 @@ def enroll(port: str, skip: bool) -> None:
 
 
 def command_setup(args: argparse.Namespace) -> None:
+    require_device_access()
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
@@ -1061,6 +1073,7 @@ def command_setup(args: argparse.Namespace) -> None:
 
 
 def command_mode(args: argparse.Namespace) -> None:
+    require_device_access()
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
@@ -1206,6 +1219,7 @@ def response_next(lines: list[str], verb: str) -> int:
 
 
 def stage_ota(port: str, image: bytes, digest: str) -> None:
+    require_device_access()
     try:
         import serial  # type: ignore
     except ImportError as exc:
@@ -1308,14 +1322,41 @@ def download(url: str) -> bytes:
 
 
 def release_root(version: str) -> str:
-    """Return the immutable asset root for a validated production version."""
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-prod", version) is None:
-        raise ToolError("The release manifest has an invalid production version.")
+    """Return an immutable asset root in this CLI's release channel."""
+    if not CHANNEL.accepts(version):
+        name = "beta" if CHANNEL.beta else "production"
+        raise ToolError(f"The release manifest has an invalid {name} version.")
     return f"{RELEASE_DOWNLOAD_URL}/v{version}"
+
+
+def latest_beta_version() -> str:
+    """Select the highest published beta version without using the stable feed."""
+    candidates = []
+    for page in range(1, 11):
+        releases = json.loads(download(
+            "https://api.github.com/repos/ZimengXiong/tinyTouch/releases"
+            f"?per_page=100&page={page}"
+        ).decode())
+        if not isinstance(releases, list):
+            raise ToolError("The beta release list is invalid.")
+        for release in releases:
+            if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not True:
+                continue
+            tag = release.get("tag_name")
+            version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+            if CHANNEL.accepts(version):
+                candidates.append(version)
+        if len(releases) < 100:
+            break
+    if not candidates:
+        raise ToolError("No published beta release is available.")
+    return max(candidates, key=lambda value: tuple(int(part) for part in re.findall(r"[0-9]+", value)))
 
 
 def update_release(version: str | None = None) -> tuple[str, dict]:
     """Resolve latest once, then verify and use its immutable release assets."""
+    if version is None and CHANNEL.beta:
+        version = latest_beta_version()
     if version is None:
         nonce = time.time_ns()
         latest = json.loads(
@@ -1336,13 +1377,28 @@ def package_test() -> None:
     """Check bundled imports and report the executable architecture."""
     import certifi  # noqa: F401
     import serial  # type: ignore  # noqa: F401
+    import tinytouch_helper as helper
+    if (helper.CHANNEL.beta != CHANNEL.beta or helper.CHANNEL.label != CHANNEL.label or
+            helper.SERVICE != PASSWORD_SERVICE or helper.PAIRING_SERVICE != PAIRING_SERVICE or
+            helper.STATE_DIR != SUPPORT_DIR):
+        raise ToolError("The CLI and helper release channels do not match.")
     say(f"package ok ({platform.machine()})")
 
 
 def network_test() -> None:
-    """Check the latest stable release and one downloadable OTA asset."""
+    """Verify network access with one stable asset, without selecting an update."""
     try:
-        root, manifest = update_release()
+        if CHANNEL.beta:
+            manifest = json.loads(download(f"{LATEST_RELEASE_URL}/release-manifest.json").decode())
+            version = manifest.get("version") if isinstance(manifest, dict) else None
+            if not Channel("0.0.0-prod").accepts(version):
+                raise ToolError("The network test manifest has an invalid stable version.")
+            root = f"{RELEASE_DOWNLOAD_URL}/v{version}"
+            manifest = json.loads(download(f"{root}/release-manifest.json").decode())
+            if not isinstance(manifest, dict) or manifest.get("version") != version:
+                raise ToolError("The network test assets do not match the stable version.")
+        else:
+            root, manifest = update_release()
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ToolError("release manifest is not valid JSON") from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
@@ -1373,6 +1429,7 @@ def network_test() -> None:
 
 
 def command_update(args: argparse.Namespace) -> None:
+    require_device_access()
     root, manifest = update_release(getattr(args, "release_version", None))
     release_version = manifest["version"]
     if not getattr(args, "firmware_only", False) and release_version != CLI_VERSION:
@@ -1383,7 +1440,7 @@ def command_update(args: argparse.Namespace) -> None:
         result = subprocess.run(["/bin/sh"], input=installer, check=False, env=environment)
         if result.returncode != 0:
             raise ToolError("The CLI update failed. Firmware was not changed.")
-        executable = shutil.which("tinytouch")
+        executable = shutil.which(CHANNEL.command)
         if executable is None:
             raise ToolError("The new CLI was installed but is not on this terminal's PATH.")
         installed = subprocess.run(
@@ -1595,7 +1652,7 @@ def command_pair(
 
 
 def parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tinytouch")
+    parser = argparse.ArgumentParser(prog=CHANNEL.command)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1687,6 +1744,7 @@ def main() -> int:
     VERBOSE = args.verbose
     show_startup_mark(args.command)
     try:
+        require_device_access()
         args.func(args)
     except KeyboardInterrupt:
         say("Cancelled.")
