@@ -21,6 +21,13 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def setUp(self):
+        # Keep the stable-channel regression suite independent of the version
+        # being built. Beta routing and isolation have their own behavior tests.
+        channel = mock.patch.object(cli, "CHANNEL", cli.Channel("0.1.24-prod"))
+        channel.start()
+        self.addCleanup(channel.stop)
+
     def test_startup_mark_shows_version_and_command_section(self):
         with (
             mock.patch.object(cli.sys.stdout, "isatty", return_value=True),
