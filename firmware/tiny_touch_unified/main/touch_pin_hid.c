@@ -355,6 +355,7 @@ typedef struct {
   TickType_t last_poll;
   uint32_t foreground_generation;
   unsigned absent_samples;
+  bool pending_led_reset;
 } auth_runtime_t;
 
 #define SENSOR_POLL_MS 100
@@ -415,6 +416,13 @@ static void touch_hid_task(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
+    if (runtime.pending_led_reset) {
+      if (!fingerprint_background_led_idle()) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
+      runtime.pending_led_reset = false;
+    }
     TickType_t now = xTaskGetTickCount();
     if (usb_sensor_probe_pending && now >= usb_sensor_probe_at) {
       // Match the helper's successful post-enumeration STATUS probe. The
@@ -449,6 +457,9 @@ static void touch_hid_task(void *arg) {
     // checks leave the LED unchanged and never request a host password.
     fingerprint_poll_t poll = fingerprint_poll(runtime.state == AUTH_STATE_IDLE);
     runtime.last_poll = xTaskGetTickCount();
+    // A foreground session can cancel this match after its green feedback.
+    // Defer cleanup until that session no longer owns the sensor or its LED.
+    if (poll.match.slot) runtime.pending_led_reset = true;
     if (foreground_interrupted(&runtime)) continue;
 
     if (runtime.state == AUTH_STATE_WAITING_FOR_LIFT) {
@@ -473,7 +484,10 @@ static void touch_hid_task(void *arg) {
       touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(350));
-      if (!foreground_interrupted(&runtime)) fingerprint_led_idle();
+      runtime.pending_led_reset = true;
+      if (!foreground_interrupted(&runtime) && fingerprint_background_led_idle()) {
+        runtime.pending_led_reset = false;
+      }
       continue;
     }
 
@@ -482,7 +496,11 @@ static void touch_hid_task(void *arg) {
     // sensor green when a helper, USB endpoint, or PIN field is unavailable.
     vTaskDelay(pdMS_TO_TICKS(350));
     if (foreground_interrupted(&runtime)) continue;
-    fingerprint_led_idle();
+    if (!fingerprint_background_led_idle()) {
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
+      continue;
+    }
+    runtime.pending_led_reset = false;
     if (foreground_interrupted(&runtime)) continue;
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());

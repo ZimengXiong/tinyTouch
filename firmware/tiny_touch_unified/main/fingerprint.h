@@ -26,6 +26,8 @@ bool fingerprint_recover(void);
 // Release checks capture an image but never match it or change the LED.
 fingerprint_poll_t fingerprint_poll(bool match_image);
 void fingerprint_led_idle(void);
+// Restore background feedback only while no foreground operation owns it.
+bool fingerprint_background_led_idle(void);
 fingerprint_match_t fingerprint_authorize_poll_match(void);
 bool fingerprint_authorize_prompted(void (*prompt)(void));
 bool fingerprint_prompted_authorization_active(void);

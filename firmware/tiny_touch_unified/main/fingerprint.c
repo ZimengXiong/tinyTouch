@@ -209,6 +209,17 @@ void fingerprint_led_idle(void) {
   fp_give();
 }
 
+bool fingerprint_background_led_idle(void) {
+  if (!fp_take(0)) return false;
+  if (fingerprint_prompted_authorization_active()) {
+    fp_give();
+    return false;
+  }
+  set_aura(FP_LED_BLUE);
+  fp_give();
+  return true;
+}
+
 static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   fingerprint_match_t no_match = {0};
   uint8_t confirm = 0xff;
