@@ -397,7 +397,10 @@ static void touch_hid_task(void *arg) {
   (void)arg;
   auth_runtime_t runtime = {
     .state = AUTH_STATE_WAITING_FOR_LIFT,
-    .state_started = xTaskGetTickCount(),
+    // Startup needs a confirmed release, but no previous attempt needs a
+    // cooldown. Keep long user-configured cooldowns out of device startup.
+    .state_started = xTaskGetTickCount() -
+                     pdMS_TO_TICKS(device_config_touch_cooldown_ms()),
     .last_poll = xTaskGetTickCount(),
     .foreground_generation = fingerprint_foreground_generation(),
     .absent_samples = 0,
