@@ -66,6 +66,7 @@ _sudo_session_ready = False
 _setup_password: bytearray | None = None
 _helper_suppressed = False
 _active_serial = None
+_beta_command_ready = False
 
 
 class ToolError(RuntimeError):
@@ -79,7 +80,7 @@ class SerialTimeout(ToolError):
 def require_device_access() -> None:
     try:
         require_user_session()
-        if CHANNEL.beta:
+        if CHANNEL.beta and not _beta_command_ready:
             activate_beta()
         CHANNEL.require_device_access()
     except RuntimeError as exc:
@@ -1750,7 +1751,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global VERBOSE
+    global VERBOSE, _beta_command_ready
     if len(sys.argv) > 1 and sys.argv[1] == "_package_test":
         package_test()
         return 0
@@ -1779,6 +1780,10 @@ def main() -> int:
         if CHANNEL.beta:
             with command_lock():
                 if args.command != "exit":
+                    activate_beta()
+                    # Nested serial operations must not restart the helper that
+                    # this command intentionally paused for foreground access.
+                    _beta_command_ready = True
                     require_device_access()
                 args.func(args)
         else:
@@ -1787,9 +1792,11 @@ def main() -> int:
     except KeyboardInterrupt:
         say("Cancelled.")
         return 130
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         say(f"Error: {exc}")
         return 1
+    finally:
+        _beta_command_ready = False
     return 0
 
 
