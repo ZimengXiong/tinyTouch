@@ -51,6 +51,7 @@ if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
 from tinytouch_channel import Channel  # type: ignore  # noqa: E402
+from tinytouch_session import activate_beta, command_lock, exit_beta  # type: ignore  # noqa: E402
 
 CHANNEL = Channel(CLI_VERSION)
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / f"{CHANNEL.label}.plist"
@@ -77,9 +78,20 @@ class SerialTimeout(ToolError):
 
 def require_device_access() -> None:
     try:
+        require_user_session()
+        if CHANNEL.beta:
+            activate_beta()
         CHANNEL.require_device_access()
     except RuntimeError as exc:
         raise ToolError(str(exc)) from exc
+
+
+def require_user_session() -> None:
+    if sys.platform == "darwin" and os.geteuid() == 0:
+        raise ToolError(
+            f"Run {CHANNEL.command} without sudo from your logged-in Mac account. "
+            "The helper and login Keychain belong to that account."
+        )
 
 
 def say(message: str = "") -> None:
@@ -489,9 +501,11 @@ def helper_loaded() -> bool:
 
 
 def load_helper() -> None:
+    require_user_session()
     if _helper_suppressed:
         return
     if not helper_loaded():
+        run(["launchctl", "enable", f"gui/{os.getuid()}/{CHANNEL.label}"])
         run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
 
 
@@ -527,6 +541,7 @@ def ensure_helper_environment() -> Path:
 
 def install_helper() -> None:
     global _helper_suppressed
+    require_user_session()
     _helper_suppressed = False
     python = ensure_helper_environment()
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -543,8 +558,6 @@ def install_helper() -> None:
     }
     unload_helper()
     atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
-    if CHANNEL.beta:
-        run(["launchctl", "enable", f"gui/{os.getuid()}/{CHANNEL.label}"])
     load_helper()
     if not helper_loaded():
         raise ToolError("The HID helper did not load.")
@@ -1653,11 +1666,22 @@ def command_pair(
     say("PIV is paired with this Mac.")
 
 
+def command_exit(args: argparse.Namespace) -> None:
+    try:
+        exit_beta()
+    except RuntimeError as exc:
+        raise ToolError(str(exc)) from exc
+    say("Beta helper stopped. The previous production helper state is restored.")
+
+
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=CHANNEL.command)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
+    if CHANNEL.beta:
+        exit_command = sub.add_parser("exit", help="stop beta and restore the production helper")
+        exit_command.set_defaults(func=command_exit)
     setup = sub.add_parser("setup")
     setup.add_argument("--mode", choices=("hid", "piv"))
     setup.add_argument("--port")
@@ -1738,6 +1762,11 @@ def main() -> int:
             return 1
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == "_helper":
+        try:
+            require_user_session()
+        except ToolError as exc:
+            say(f"Error: {exc}")
+            return 1
         from tinytouch_helper import main as helper_main  # type: ignore
         sys.argv = [str(HELPER), *sys.argv[2:]]
         helper_main()
@@ -1746,12 +1775,19 @@ def main() -> int:
     VERBOSE = args.verbose
     show_startup_mark(args.command)
     try:
-        require_device_access()
-        args.func(args)
+        require_user_session()
+        if CHANNEL.beta:
+            with command_lock():
+                if args.command != "exit":
+                    require_device_access()
+                args.func(args)
+        else:
+            require_device_access()
+            args.func(args)
     except KeyboardInterrupt:
         say("Cancelled.")
         return 130
-    except ToolError as exc:
+    except RuntimeError as exc:
         say(f"Error: {exc}")
         return 1
     return 0
