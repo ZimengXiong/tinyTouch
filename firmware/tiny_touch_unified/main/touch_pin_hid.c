@@ -496,11 +496,9 @@ static void touch_hid_task(void *arg) {
     // sensor green when a helper, USB endpoint, or PIN field is unavailable.
     vTaskDelay(pdMS_TO_TICKS(350));
     if (foreground_interrupted(&runtime)) continue;
-    if (!fingerprint_background_led_idle()) {
-      auth_wait_for_lift(&runtime, xTaskGetTickCount());
-      continue;
+    if (fingerprint_background_led_idle()) {
+      runtime.pending_led_reset = false;
     }
-    runtime.pending_led_reset = false;
     if (foreground_interrupted(&runtime)) continue;
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());
