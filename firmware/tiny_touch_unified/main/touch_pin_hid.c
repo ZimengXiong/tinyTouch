@@ -357,7 +357,8 @@ typedef struct {
   bool pending_led_reset;
 } auth_runtime_t;
 
-#define SENSOR_POLL_MS 100
+#define SENSOR_POLL_MS 50
+#define MATCH_FEEDBACK_MS 100
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
   if (device_config_mode() == DEVICE_MODE_HID) {
@@ -484,9 +485,9 @@ static void touch_hid_task(void *arg) {
     }
 
     touch_pin_hid_log_event("finger_matched", match.slot);
-    // Keep result feedback bounded. Host communication must not leave the
-    // sensor green when a helper, USB endpoint, or PIN field is unavailable.
-    vTaskDelay(pdMS_TO_TICKS(350));
+    // Show a brief match indication before delivery without adding the longer
+    // enrollment feedback delay to every unlock.
+    vTaskDelay(pdMS_TO_TICKS(MATCH_FEEDBACK_MS));
     if (foreground_interrupted(&runtime)) continue;
     if (fingerprint_background_led_idle()) {
       runtime.pending_led_reset = false;

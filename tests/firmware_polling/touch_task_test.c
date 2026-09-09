@@ -49,7 +49,7 @@ void vTaskDelay(TickType_t ticks) {
     active = false;
     generation++;
   }
-  if (!injected && ((inject_feedback && ticks == 350) ||
+  if (!injected && ((inject_feedback && ticks == 100) ||
       (inject_between && sample_index == 1 && ticks == 10))) {
     generation += hold_foreground ? 1 : 2;
     if (hold_foreground) {
@@ -127,7 +127,7 @@ int main(void) {
   RESET(A, M, P, P, P, P);
   run();
   assert(typed == 1 && touches == 1 && matches == 1 && idle_leds == 1);
-  assert(idle_time - match_time == 350 && type_time == idle_time);
+  assert(idle_time - match_time == 100 && type_time == idle_time);
 
   // A held finger and unknown sensor results must never rearm.
   RESET(P, U, P, U, A, M, P, U, P, U, P);
@@ -137,18 +137,18 @@ int main(void) {
   RESET(A, M, A, M);
   run();
   assert(typed == 2 && idle_leds == 2);
-  assert(poll_times[3] - poll_times[2] == 100);
+  assert(poll_times[3] - poll_times[2] == 50);
 
-  RESET(A, M, A, A, A, A, A, A, M);
+  RESET(A, M, A, A, A, A, A, A, A, A, A, A, A, M);
   cooldown = 500;
   run();
-  assert(typed == 2 && poll_times[1] == 200);
-  assert(poll_times[8] - poll_times[1] == 950);
+  assert(typed == 2 && poll_times[1] == 100);
+  assert(poll_times[13] - poll_times[1] == 650);
 
   RESET(A, I, I, I, I, I);
   run();
   assert(!typed && !idle_leds && !touches);
-  for (size_t i = 0; i < sample_count; i++) assert(poll_times[i] == (i + 1) * 100);
+  for (size_t i = 0; i < sample_count; i++) assert(poll_times[i] == (i + 1) * 50);
 
   RESET(A, M, P, P);
   match_success = false;
@@ -201,7 +201,7 @@ int main(void) {
   RESET(A, M);
   cooldown = 60000;
   run();
-  assert(typed == 1 && poll_times[0] == 100 && poll_times[1] == 200);
+  assert(typed == 1 && poll_times[0] == 50 && poll_times[1] == 100);
   puts("Touch task behavior checks passed");
   return 0;
 }
