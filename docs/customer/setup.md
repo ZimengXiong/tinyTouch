@@ -3,8 +3,7 @@
 On an Apple silicon or Intel Mac:
 
 ```sh
-curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh
-tinytouch setup
+curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh && tinytouch setup
 ```
 
 Follow the CLI instructions.
