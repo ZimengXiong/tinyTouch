@@ -5,6 +5,11 @@ const RELEASE_ASSETS = new Set([
   'partition-table.bin',
   'ota_data_initial.bin',
   'tiny_touch_unified.bin',
+  'recovery_bootloader.bin',
+  'recovery_partition-table.bin',
+  'recovery_ota_data_initial.bin',
+  'tiny_touch_recovery.bin',
+  'recovery-request.bin',
 ])
 
 export default async function handler(request, response) {

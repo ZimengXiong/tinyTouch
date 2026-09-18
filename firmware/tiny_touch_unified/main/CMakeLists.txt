@@ -10,7 +10,7 @@ idf_component_register(
     "usb_ccid.c"
     "usb_descriptors.c"
   INCLUDE_DIRS "."
-  REQUIRES app_update driver esp_timer esp_tinyusb mbedtls nvs_flash
+  REQUIRES app_update driver esp_partition esp_timer esp_tinyusb mbedtls nvs_flash
   PRIV_REQUIRES esp_driver_uart
 )
 
@@ -24,4 +24,8 @@ target_compile_definitions(
 if(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE
     TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH=1)
+endif()
+
+if(TINYTOUCH_RECOVERY_BUILD)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_RECOVERY_BUILD=1)
 endif()

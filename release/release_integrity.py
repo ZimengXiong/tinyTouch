@@ -21,6 +21,7 @@ APP_DESCRIPTION_MAGIC = 0xABCD5432
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 BUILD_PATTERN = re.compile(r"[0-9a-f]{12}")
 NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+RECOVERY_REQUEST = b"tinyTouch recovery request v1\0"
 EXPECTED_IMAGES = {
     "factory": {
         0x0: "bootloader.bin",
@@ -28,9 +29,17 @@ EXPECTED_IMAGES = {
         0x10000: "tiny_touch_unified.bin",
         0x210000: "ota_data_initial.bin",
     },
+    "recovery": {
+        0x0: "recovery_bootloader.bin",
+        0x8000: "recovery_partition-table.bin",
+        0x10000: "tiny_touch_recovery.bin",
+        0x210000: "recovery_ota_data_initial.bin",
+        0x212000: "recovery-request.bin",
+    },
 }
 EXPECTED_FULL_IMAGES = {
     "factory": "tiny_touch_factory_full.bin",
+    "recovery": "tiny_touch_recovery_full.bin",
 }
 
 
@@ -109,6 +118,11 @@ def validate_app(path: Path, version: str, build: str, kind: str) -> None:
             f"embedded secure version mismatch in {path.name}")
     require(build.encode("ascii") in path.read_bytes(),
             f"build ID {build} is not embedded in {path.name}")
+    marker = b"RECOVERY COMPLETE"
+    if kind == "recovery":
+        require(marker in path.read_bytes(), "recovery binary lacks its role marker")
+    else:
+        require(marker not in path.read_bytes(), "factory binary contains recovery code")
 
 
 def asset_path(root: Path, kind: str, name: str, flat: bool) -> Path:
@@ -151,6 +165,12 @@ def validate_layout(root: Path, kind: str, layout: object, version: str,
         if name in public:
             require(public[name] == checksum, f"conflicting public asset: {name}")
         public[name] = checksum
+    if kind == "recovery":
+        trigger = asset_path(root, kind, "recovery-request.bin", flat)
+        require(
+            trigger.read_bytes() == RECOVERY_REQUEST + b"\xff" * (4096 - len(RECOVERY_REQUEST)),
+            "invalid recovery request image",
+        )
     full = layout.get("fullImage")
     full_name = EXPECTED_FULL_IMAGES[kind]
     require(isinstance(full, dict) and full.get("file") == full_name,
@@ -197,10 +217,10 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
     require(manifest.get("boards") == ["esp32s3-super-mini", "seeed-xiao-esp32s3"],
             "unexpected board compatibility list")
     firmware = manifest.get("firmware")
-    require(isinstance(firmware, dict) and set(firmware) == {"factory"},
-            "release must contain one factory layout")
+    require(isinstance(firmware, dict) and set(firmware) == {"factory", "recovery"},
+            "release must contain factory and recovery layouts")
     public: dict[str, str] = {}
-    for kind in ("factory",):
+    for kind in ("factory", "recovery"):
         for name, checksum in validate_layout(
             root, kind, firmware[kind], version, protocol, build, flat
         ).items():
@@ -208,6 +228,9 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
                 require(public[name] == checksum, f"conflicting public asset: {name}")
             public[name] = checksum
     factory_app = asset_path(root, "factory", "tiny_touch_unified.bin", flat)
+    recovery_app = asset_path(root, "recovery", "tiny_touch_recovery.bin", flat)
+    require(digest(factory_app) != digest(recovery_app),
+            "factory and recovery applications must be different binaries")
     ota = checked_asset(manifest.get("ota"), root / "tiny_touch_unified.bin",
                         "OTA image")
     require(ota["sha256"] == digest(factory_app), "OTA image differs from factory application")
