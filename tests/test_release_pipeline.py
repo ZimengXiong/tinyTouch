@@ -178,6 +178,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("idf.py -C firmware/tiny_touch_unified build", workflow)
         self.assertIn("TINYTOUCH_RECOVERY_BUILD=ON", workflow)
+        self.assertIn("-B firmware/tiny_touch_unified/build-recovery", workflow)
         self.assertIn("--recovery-build", workflow)
         self.assertIn("release/build-standalone-macos.sh", workflow)
         self.assertIn("environment: release-signing", workflow)

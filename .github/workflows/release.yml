@@ -82,7 +82,8 @@ jobs:
         run: |
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified build
-          idf.py -C firmware/tiny_touch_unified -B build-recovery \
+          idf.py -C firmware/tiny_touch_unified \
+            -B firmware/tiny_touch_unified/build-recovery \
             -D TINYTOUCH_RECOVERY_BUILD=ON build
           for image in \
             firmware/tiny_touch_unified/build/tiny_touch_unified.bin \

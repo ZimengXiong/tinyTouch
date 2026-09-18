@@ -91,7 +91,8 @@ jobs:
         run: |
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified build
-          idf.py -C firmware/tiny_touch_unified -B build-recovery \
+          idf.py -C firmware/tiny_touch_unified \
+            -B firmware/tiny_touch_unified/build-recovery \
             -D TINYTOUCH_RECOVERY_BUILD=ON build
       - name: Assemble and verify firmware artifacts
         run: |
