@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 
-type ToolName = 'factory' | 'recovery' | 'beta'
+type ToolName = 'factory' | 'recovery' | 'dev'
 type FlashPhase = 'select' | 'connected' | 'writing' | 'reset' | 'done'
 type ManifestImage = { name: string; file: string; address: number; size: number; sha256: string }
 type Manifest = {
@@ -83,17 +83,17 @@ function releaseAsset(file: string, tag?: string) {
 
 async function loadManifest(mode: ToolName) {
   let tag: string | undefined
-  if (mode === 'beta') {
+  if (mode === 'dev') {
     const releasesResponse = await fetch(RELEASE_API, { cache: 'no-store' })
-    if (!releasesResponse.ok) throw new Error('Beta releases could not be downloaded.')
+    if (!releasesResponse.ok) throw new Error('Development releases could not be downloaded.')
     const releases = await releasesResponse.json() as Array<{ draft: boolean; prerelease: boolean; tag_name: string }>
-    const beta = releases.find((release) =>
-      !release.draft && release.prerelease && /^v[0-9]+\.[0-9]+\.[0-9]+-beta(?:[.-][0-9A-Za-z.-]+)?$/.test(release.tag_name)
+    const development = releases.find((release) =>
+      !release.draft && release.prerelease && /^v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$/.test(release.tag_name)
     )
-    if (!beta) throw new Error('No beta release is available.')
-    tag = beta.tag_name
+    if (!development) throw new Error('No development release is available.')
+    tag = development.tag_name
   }
-  const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Beta'
+  const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Development'
   const response = await fetch(releaseAsset('release-manifest.json', tag), { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
   const release = await response.json() as { firmware?: { factory?: Manifest } }
@@ -241,7 +241,7 @@ onMounted(async () => {
       <select id="flash-version" v-model="selected" :disabled="busy" @change="selectTool">
         <option value="factory">Factory firmware</option>
         <option value="recovery">Recovery firmware</option>
-        <option value="beta">Beta firmware</option>
+        <option value="dev">Development firmware</option>
       </select>
     </div>
     <div class="flash-tool-body">

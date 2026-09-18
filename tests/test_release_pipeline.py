@@ -183,6 +183,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("--no-build-isolation", build_script)
         self.assertIn("requirements-bootstrap.txt", build_script)
         self.assertIn("requirements-release.txt", build_script)
+        self.assertNotIn("_network_test", build_script)
         self.assertFalse((ROOT / "release" / "release-local").exists())
         self.assertFalse((ROOT / "release" / "tag-release").exists())
         self.assertFalse((ROOT / "release" / "release").exists())
@@ -193,7 +194,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("await loader.eraseFlash()", source)
         self.assertIn("function releaseAsset(file: string, tag?: string)", source)
         self.assertNotIn("/firmware/${image.file}", source)
-        self.assertIn("<option value=\"beta\">Beta firmware</option>", source)
+        self.assertIn(
+            '<option value="dev">Development firmware</option>', source
+        )
         self.assertIn("release.prerelease", source)
         proxy = (ROOT / "docs" / "api" / "github-release.js").read_text()
         self.assertIn("redirect: 'follow'", proxy)
