@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "release_integrity", ROOT / "packaging" / "release_integrity.py"
+    "release_integrity", ROOT / "release" / "release_integrity.py"
 )
 integrity = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(integrity)
@@ -116,7 +116,7 @@ class ReleasePipelineTests(unittest.TestCase):
             output = root / "publish"
             subprocess.run(
                 [
-                    "python3", str(ROOT / "packaging" / "finalize-release.py"),
+                    "python3", str(ROOT / "release" / "finalize-release.py"),
                     str(release), "--output", str(output), "--commit", self.commit,
                 ],
                 check=True,
@@ -127,29 +127,6 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertFalse((output / "ota_slot1.bin").exists())
             self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
 
-            public = root / "public"
-            public.mkdir()
-            subprocess.run(
-                [
-                    "python3", str(ROOT / "packaging" / "sync-docs-release.py"),
-                    str(output), str(public), "--commit", self.commit,
-                ],
-                check=True,
-            )
-            release_manifest = json.loads((output / "release-manifest.json").read_text())
-            self.assertEqual(
-                json.loads((public / "flash" / "factory" / "manifest.json").read_text()),
-                release_manifest["firmware"]["factory"],
-            )
-            self.assertEqual(
-                json.loads((public / "release.json").read_text()), release_manifest
-            )
-            self.assertTrue((public / "flash" / "recovery" / "manifest.json").is_file())
-            self.assertEqual(
-                json.loads((public / "flash" / "recovery" / "manifest.json").read_text()),
-                release_manifest["firmware"]["factory"],
-            )
-            self.assertTrue((public / "cli" / "tinytouch-macos-arm64.tar.gz").is_file())
             (output / "unexpected.bin").write_bytes(b"unexpected")
             with self.assertRaisesRegex(integrity.IntegrityError, "published asset set mismatch"):
                 integrity.validate_release(output, self.commit, flat=True)
@@ -185,80 +162,28 @@ class ReleasePipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(integrity.IntegrityError, "links are not allowed"):
                 integrity.safe_extract(archive_path, root / "output")
 
-    def test_tag_workflow_promotes_without_rebuilding(self):
+    def test_release_workflow_is_manual_and_tag_driven(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
-        self.assertNotIn("idf.py", workflow)
-        self.assertNotIn("build-standalone-macos", workflow)
-        self.assertNotIn("--clobber", workflow)
-        self.assertIn('workflows: ["Release candidate"]', workflow)
-        self.assertIn("AUTOMATIC_COMMIT", workflow)
-        self.assertIn("AUTOMATIC_RUN_ID", workflow)
-        self.assertIn("Create automatic release tag", workflow)
-        self.assertIn("Version $release_tag is already published and active", workflow)
-        self.assertGreaterEqual(workflow.count("git/ref/heads/$RELEASE_BRANCH"), 1)
-        self.assertIn('test "$tag_type" = tag', workflow)
-        self.assertIn('if [[ "$tag_sha" = "$release_commit" ]]', workflow)
-        self.assertIn("already published and active", workflow)
-        self.assertIn("Confirm automatic candidate is still current", workflow)
-        self.assertIn("--signer-workflow", workflow)
-        self.assertIn("--source-digest", workflow)
-        self.assertNotIn("Activate verified CLI update channel", workflow)
-        self.assertIn("group: release-promotion", workflow)
-        self.assertIn("Verify published GitHub release", workflow)
-        self.assertNotIn("Commit verified docs release assets", workflow)
-        self.assertNotIn("alpacaengineer/dispatches", workflow)
-        self.assertNotIn("PUBLIC_SITE_ORIGIN", workflow)
-        self.assertNotIn("base=https://alpacaengineer.ing/tinytouch", workflow)
-        self.assertIn("releases/latest/download", workflow)
-        self.assertNotIn("packaging/sync-docs-release.py", workflow)
-        self.assertIn("sha256sum --check --strict", workflow)
-        self.assertIn("--json tagName,isDraft", workflow)
-        self.assertNotIn("releases/tags/$GITHUB_REF_NAME", workflow)
-        self.assertIn("release immutability is a configured server-side prerequisite", workflow)
-        self.assertNotIn("TINYTOUCH_RELEASE_ADMIN_TOKEN", workflow)
-        self.assertIn("CANDIDATE_WAIT_SECONDS", workflow)
-        self.assertIn("release_state=published", workflow)
-        self.assertIn('git rev-parse "$release_tag^{commit}"', workflow)
-        self.assertNotIn("release_target", workflow)
-        candidate = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
-        self.assertIn("paths-ignore:", candidate)
-        self.assertIn("channels/**", candidate)
-        self.assertIn("docs/**", candidate)
-        self.assertNotIn("docs/public/release.json", candidate)
-        self.assertNotIn("docs/public/flash/factory/**", candidate)
-        self.assertNotIn("workflow_dispatch:", candidate)
-        self.assertIn('branches: [main, "beta/**"]', candidate)
-        self.assertIn("group: release-candidate-${{ github.ref }}", candidate)
-        self.assertIn("cancel-in-progress: true", candidate)
-        self.assertIn('refs/heads/beta/*', candidate)
-        self.assertNotIn("tinytouch-web-flashers.tar.gz", workflow)
-        self.assertNotIn("web/flash", workflow)
-        docs_workflow = (ROOT / ".github" / "workflows" / "docs.yml").read_text()
-        self.assertIn("group: production-documentation", docs_workflow)
-        self.assertIn("environment: release-publishing", docs_workflow)
-        self.assertIn("api/github-release?file=tiny_touch_unified.bin", docs_workflow)
-        candidate_workflow = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
-        self.assertNotIn("build-recovery", candidate_workflow)
-        self.assertNotIn("--recovery-build", candidate_workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("workflow_run:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("Existing annotated release tag", workflow)
+        self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
+        self.assertIn("idf.py -C firmware/tiny_touch_unified build", workflow)
+        self.assertIn("release/build-standalone-macos.sh", workflow)
+        self.assertIn("release-publishing", workflow)
+        self.assertIn("attest-build-provenance", workflow)
+        self.assertIn('gh release create "$RELEASE_TAG"', workflow)
+        self.assertFalse((ROOT / ".github" / "workflows" / "release-candidate.yml").exists())
 
-        build_script = (ROOT / "packaging" / "build-standalone-macos.sh").read_text()
+        build_script = (ROOT / "release" / "build-standalone-macos.sh").read_text()
         self.assertIn("--require-hashes", build_script)
         self.assertIn("--no-build-isolation", build_script)
         self.assertIn("requirements-bootstrap.txt", build_script)
         self.assertIn("requirements-release.txt", build_script)
-        tag_script = (ROOT / "packaging" / "tag-release").read_text()
-        self.assertIn("git diff --cached --quiet", tag_script)
-        self.assertNotIn("git status --porcelain", tag_script)
-        self.assertIn("Timed out after 600s", tag_script)
-        self.assertLess(tag_script.index("release-candidate.yml"), tag_script.index("git tag -a"))
-        self.assertIn("release.yml/runs", tag_script)
-        self.assertIn("Release promotion ended with", tag_script)
-        self.assertNotIn("\n  status=", tag_script)
-        release_script = (ROOT / "packaging" / "release").read_text()
-        self.assertIn('git push origin "$release_branch"', release_script)
-        self.assertIn('beta/*', release_script)
-        self.assertIn("GitHub Actions is handling the release", release_script)
-        self.assertNotIn("tag-release", release_script)
+        self.assertFalse((ROOT / "release" / "release-local").exists())
+        self.assertFalse((ROOT / "release" / "tag-release").exists())
+        self.assertFalse((ROOT / "release" / "release").exists())
 
     def test_browser_requires_protocol_six_and_prefetches_before_usb(self):
         source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()

@@ -30,12 +30,13 @@ from urllib.parse import urljoin, urlparse
 import certifi
 
 FROZEN = bool(getattr(sys, "frozen", False))
-ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(sys.executable).resolve().parent if FROZEN else PROJECT_ROOT
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", ROOT))
-VERSION_FILE = BUNDLE_ROOT / "VERSION"
+VERSION_FILE = BUNDLE_ROOT / "VERSION" if FROZEN else PROJECT_ROOT / "VERSION"
 CLI_VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.exists() else "development"
-HELPER = ROOT / "software" / "macos-helper" / "tinytouch_helper.py"
-REQUIREMENTS = ROOT / "software" / "macos-helper" / "requirements.txt"
+HELPER = PROJECT_ROOT / "macos" / "tinytouch_helper.py"
+REQUIREMENTS = PROJECT_ROOT / "macos" / "requirements.txt"
 VENV = ROOT / ".venv"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.tinytouch.helper.plist"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
@@ -51,7 +52,7 @@ FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
 
-HELPER_MODULE_DIR = BUNDLE_ROOT / "software" / "macos-helper"
+HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402

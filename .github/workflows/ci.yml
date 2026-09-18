@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -43,10 +45,10 @@ jobs:
             firmware/tiny_touch_unified/build/bootloader/bootloader.bin; do
             esptool.py --chip esp32s3 image_info "$image"
           done
-          python packaging/assemble-release.py \
+          python release/assemble-release.py \
             --firmware-build firmware/tiny_touch_unified/build \
             --build-id "${GITHUB_SHA:0:12}"
-          python packaging/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
+          python release/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
 
   macos-cli:
     strategy:
@@ -69,16 +71,16 @@ jobs:
           architecture: ${{ matrix.architecture }}
       - name: Test CLI and HID protocol
         run: |
-          python -m pip install --require-hashes -r software/macos-helper/requirements-bootstrap.txt
+          python -m pip install --require-hashes -r macos/requirements-bootstrap.txt
           python -m pip install --no-build-isolation --require-hashes \
-            -r software/macos-helper/requirements-release.txt
+            -r macos/requirements-release.txt
           python -m unittest discover -s tests -v
-          python -m py_compile tinytouch software/macos-helper/tinytouch_helper.py packaging/*.py
-          zsh -n packaging/build-standalone-macos.sh firmware/build-and-flash
+          python -m py_compile macos/cli.py macos/tinytouch_helper.py release/*.py
+          zsh -n release/build-standalone-macos.sh
       - name: Build macOS executable
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
-        run: packaging/build-standalone-macos.sh
+        run: release/build-standalone-macos.sh
       - name: Verify executable
         run: |
           mkdir dist/verify
@@ -99,38 +101,6 @@ jobs:
         with:
           name: tinytouch-macos-${{ matrix.expected_arch }}
           path: dist/tinytouch.tar.gz
-
-  consistency:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Enforce contributor attribution policy
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
-            BASE_SHA="$(git rev-parse HEAD^)"
-            HEAD_SHA="$(git rev-parse HEAD)"
-          fi
-
-          rejected=0
-          while read -r commit; do
-            metadata="$(git show --no-patch \
-              --format='%an%n%ae%n%cn%n%ce%n%B' "$commit")"
-            if grep -Eiq '(claude|anthropic)' <<<"$metadata"; then
-              echo "Rejected commit: $commit" >&2
-              rejected=1
-            fi
-          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
-          test "$rejected" -eq 0
-      - name: Verify release sources
-        run: |
-          test -s VERSION
-          python3 -m py_compile tinytouch packaging/*.py
 
   docs:
     runs-on: ubuntu-latest

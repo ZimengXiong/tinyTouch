@@ -1,287 +1,181 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: ["Release candidate"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to resume
+        description: Existing annotated release tag
         required: true
         type: string
 
 concurrency:
-  group: release-promotion
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
-  actions: read
-  contents: write
-  attestations: read
+  contents: read
 
 jobs:
-  promote:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # Repository release immutability is a configured server-side prerequisite.
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
     steps:
-      - name: Start promotion timer
-        run: echo "PROMOTION_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.tag || github.sha }}
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Resolve release and exact candidate
-        id: candidate
+      - id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(prod|beta([.-][0-9A-Za-z.-]+)?)$ ]]
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "${RELEASE_TAG#v}" = "$(tr -d '[:space:]' < VERSION)"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  firmware:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ contains(inputs.tag, '-beta') && 'beta-signing' || 'release-signing' }}
+    container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Load firmware signing key
+        env:
+          SIGNING_KEY_B64: ${{ secrets.TINYTOUCH_FIRMWARE_SIGNING_KEY_B64 }}
+        run: |
+          test -n "$SIGNING_KEY_B64"
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > \
+            firmware/tiny_touch_unified/secure_boot_signing_key.pem
+      - name: Build and verify firmware
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          source /opt/esp/idf/export.sh
+          idf.py -C firmware/tiny_touch_unified build
+          espsecure.py verify_signature --version 2 \
+            --keyfile firmware/tiny_touch_unified/secure_boot_signing_key.pem \
+            firmware/tiny_touch_unified/build/tiny_touch_unified.bin
+          esptool.py --chip esp32s3 image_info \
+            firmware/tiny_touch_unified/build/bootloader/bootloader.bin
+          python release/assemble-release.py \
+            --firmware-build firmware/tiny_touch_unified/build \
+            --build-id "${RELEASE_COMMIT:0:12}"
+          python release/release_integrity.py firmware dist/release \
+            --commit "$RELEASE_COMMIT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-firmware
+          path: dist/release
+          if-no-files-found: error
+
+  cli:
+    needs: validate
+    strategy:
+      matrix:
+        include:
+          - architecture: arm64
+            expected_arch: arm64
+            runner: macos-15
+          - architecture: x64
+            expected_arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.architecture }}
+      - name: Test and build CLI
+        env:
+          TINYTOUCH_SIGNING_IDENTITY: "-"
+        run: |
+          python -m pip install --require-hashes -r macos/requirements-bootstrap.txt
+          python -m pip install --no-build-isolation --require-hashes \
+            -r macos/requirements-release.txt
+          python -m unittest discover -s tests -v
+          release/build-standalone-macos.sh
+          mkdir dist/verify
+          tar -C dist/verify -xzf dist/tinytouch.tar.gz
+          cli=dist/verify/tinytouch/tinytouch
+          test "$("$cli" --version | tail -n 1)" = \
+            "tinyTouch CLI $(tr -d '[:space:]' < VERSION)"
+          "$cli" _package_test | grep -q "package ok (${{ matrix.expected_arch }})"
+          codesign --verify --strict --verbose=2 "$cli"
+          file "$cli" | grep -q "${{ matrix.expected_arch }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-cli-${{ matrix.expected_arch }}
+          path: dist/tinytouch.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, firmware, cli]
+    runs-on: ubuntu-latest
+    environment: release-publishing
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-firmware
+          path: dist/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-cli-arm64
+          path: dist/cli-arm64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-cli-x86_64
+          path: dist/cli-x86_64
+      - name: Assemble release
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          python release/attach-cli.py dist/release \
+            --arm64 dist/cli-arm64/tinytouch.tar.gz \
+            --x86-64 dist/cli-x86_64/tinytouch.tar.gz
+          python release/release_integrity.py assembled dist/release \
+            --commit "$RELEASE_COMMIT"
+          python release/finalize-release.py dist/release \
+            --output dist/publish --commit "$RELEASE_COMMIT"
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4
+        with:
+          subject-path: dist/publish/*
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          AUTOMATIC_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          AUTOMATIC_RUN_ID: ${{ github.event.workflow_run.id }}
-          AUTOMATIC_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          AUTOMATIC_EVENT: ${{ github.event.workflow_run.event }}
-          REQUESTED_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          wait_started=$SECONDS
-          if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
-            [[ "$AUTOMATIC_BRANCH" = main || "$AUTOMATIC_BRANCH" = beta/* ]]
-            test "$AUTOMATIC_EVENT" = push
-            if [[ "$AUTOMATIC_BRANCH" = beta/* ]]; then
-              grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-beta([.-][0-9A-Za-z.-]+)?$' VERSION
-            fi
-            release_commit="$AUTOMATIC_COMMIT"
-            release_branch="$AUTOMATIC_BRANCH"
-            release_tag="v$(tr -d '[:space:]' < VERSION)"
-            run_id="$AUTOMATIC_RUN_ID"
-            current_branch="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$release_branch" --jq .object.sha)"
-            if [[ "$current_branch" != "$release_commit" ]]; then
-              echo "Candidate $release_commit was superseded by $release_branch $current_branch."
-              echo "promote=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$release_tag" 2>/dev/null)"; then
-              tag_type="$(jq -r .object.type <<<"$tag_ref")"
-              tag_sha="$(jq -r .object.sha <<<"$tag_ref")"
-              test "$tag_type" = tag || {
-                echo "Existing $release_tag is not an annotated release tag." >&2
-                exit 1
-              }
-              for _ in 1 2 3 4; do
-                [[ "$tag_type" != tag ]] && break
-                tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
-                tag_type="$(jq -r .object.type <<<"$tag_object")"
-                tag_sha="$(jq -r .object.sha <<<"$tag_object")"
-              done
-              test "$tag_type" = commit
-              if [[ "$tag_sha" = "$release_commit" ]]; then
-                echo "Resuming $release_tag for its exact candidate."
-                echo "create_tag=false" >> "$GITHUB_OUTPUT"
-              else
-                release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release_tag")"
-                test "$(jq -r .draft <<<"$release_json")" = false
-                test "$(jq '([.assets[].name] | index("release-manifest.json") != null) and ([.assets[].name] | index("install.sh") != null) and ([.assets[].name] | index("tinytouch-firmware.tar.gz") != null)' <<<"$release_json")" = true
-                echo "Version $release_tag is already published and active; no promotion is needed."
-                echo "promote=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            else
-              echo "create_tag=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            release_tag="${REQUESTED_TAG:-$GITHUB_REF_NAME}"
-            test "${release_tag#v}" = "$(tr -d '[:space:]' < VERSION)"
-            release_commit="$(git rev-parse "$release_tag^{commit}")"
-            release_branch=main
-            event_commit="$(git rev-parse HEAD^{commit})"
-            test "$release_commit" = "$event_commit" || {
-              echo "Tag $release_tag does not peel to the checked-out commit." >&2
-              exit 1
-            }
-            api="repos/$GITHUB_REPOSITORY/actions/workflows/release-candidate.yml/runs"
-            deadline=$((SECONDS + 600))
-            run_id=""
-            while (( SECONDS < deadline )); do
-              runs="$(gh api "$api?branch=main&event=push&per_page=100")"
-              run_id="$(jq -r --arg sha "$release_commit" \
-                '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | first | .id // empty' \
-                <<<"$runs")"
-              [[ -n "$run_id" ]] && break
-              terminal="$(jq -r --arg sha "$release_commit" \
-                '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed") | .conclusion] | first // empty' \
-                <<<"$runs")"
-              [[ -z "$terminal" || "$terminal" = success ]] || {
-                echo "Exact-SHA release candidate ended with: $terminal" >&2
-                exit 1
-              }
-              sleep 10
-            done
-            [[ -n "$run_id" ]] || {
-              echo "Timed out after 600s waiting for the exact-SHA main-branch candidate." >&2
-              exit 1
-            }
-          fi
-          candidate_wait=$((SECONDS - wait_started))
-          echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
-          echo "RELEASE_BRANCH=$release_branch" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
-          echo "CANDIDATE_WAIT_SECONDS=$candidate_wait" >> "$GITHUB_ENV"
-          artifact_name="release-candidate-${release_commit}"
-          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts")"
-          artifact_count="$(jq --arg name "$artifact_name" \
-            '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$artifacts")"
-          test "$artifact_count" = 1
-          echo "promote=true" >> "$GITHUB_OUTPUT"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
-      - name: Download and verify candidate provenance
-        if: steps.candidate.outputs.promote == 'true'
+          flags=(--verify-tag --generate-notes)
+          [[ "$RELEASE_TAG" == *-prod ]] || flags+=(--prerelease)
+          gh release create "$RELEASE_TAG" dist/publish/* "${flags[@]}"
+      - name: Verify published manifest
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          mkdir -p dist/download
-          gh run download "${{ steps.candidate.outputs.run_id }}" \
-            --name "${{ steps.candidate.outputs.artifact_name }}" \
-            --dir dist/download --repo "$GITHUB_REPOSITORY"
-          candidate="dist/download/release-candidate-${RELEASE_COMMIT}.tar.gz"
-          gh attestation verify "$candidate" \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-candidate.yml" \
-            --source-digest "$RELEASE_COMMIT" \
-            --source-ref "refs/heads/$RELEASE_BRANCH" \
-            --deny-self-hosted-runners
-          python packaging/release_integrity.py extract "$candidate" dist/candidate
-          python packaging/release_integrity.py publish dist/candidate/publish --commit "$RELEASE_COMMIT"
-      - name: Confirm automatic candidate is still current
-        id: freshness
-        if: steps.candidate.outputs.promote == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" = workflow_run ]]; then
-            current_branch="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RELEASE_BRANCH" --jq .object.sha)"
-            if [[ "$current_branch" != "$RELEASE_COMMIT" ]]; then
-              echo "Candidate $RELEASE_COMMIT was superseded by $RELEASE_BRANCH $current_branch after verification."
-              echo "promote=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "promote=true" >> "$GITHUB_OUTPUT"
-      - name: Create automatic release tag
-        if: steps.freshness.outputs.promote == 'true' && github.event_name == 'workflow_run' && steps.candidate.outputs.create_tag == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" --method POST \
-            -f tag="$RELEASE_TAG" \
-            -f message="tinyTouch ${RELEASE_TAG#v}" \
-            -f object="$RELEASE_COMMIT" \
-            -f type=commit --jq .sha)"
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" --method POST \
-            -f ref="refs/tags/$RELEASE_TAG" -f sha="$tag_object" >/dev/null
-      - name: Create or resume verified release
-        if: steps.freshness.outputs.promote == 'true'
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          release_flags=(--verify-tag --generate-notes --draft)
-          if [[ "$RELEASE_TAG" == *-* && "$RELEASE_TAG" != *-prod ]]; then
-            release_flags+=(--prerelease)
-          fi
-          if release_json="$(gh release view "$RELEASE_TAG" \
-            --json tagName,isDraft 2>/dev/null)"; then
-            test "$(jq -r .tagName <<<"$release_json")" = "$RELEASE_TAG"
-          else
-            gh release create "$RELEASE_TAG" \
-              --target "$RELEASE_COMMIT" "${release_flags[@]}"
-            release_json="$(gh release view "$RELEASE_TAG" --json tagName,isDraft)"
-          fi
-          release_state="$(jq -r 'if .isDraft then "draft" else "published" end' <<<"$release_json")"
-          gh release view "$RELEASE_TAG" --json assets > dist/release-assets.json
-          python - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          root = Path("dist/candidate/publish")
-          remote = {
-              asset["name"]: asset.get("digest")
-              for asset in json.loads(Path("dist/release-assets.json").read_text())["assets"]
-          }
-          expected = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-                      for path in root.iterdir() if path.is_file()}
-          unexpected = sorted(remote.keys() - expected.keys())
-          mismatched = sorted(name for name in remote.keys() & expected.keys()
-                              if remote[name] != expected[name])
-          if unexpected or mismatched:
-              raise SystemExit(
-                  f"existing release assets cannot be resumed: unexpected={unexpected}, "
-                  f"digest_mismatches={mismatched}"
-              )
-          Path("dist/missing-assets.txt").write_text(
-              "".join(f"{name}\n" for name in sorted(expected.keys() - remote.keys()))
-          )
-          PY
-          if [[ "$release_state" = published && -s dist/missing-assets.txt ]]; then
-            echo "Published release is missing assets; immutable release cannot be repaired in place." >&2
-            exit 1
-          fi
-          if [[ "$release_state" = draft ]]; then
-            while IFS= read -r name; do
-              [[ -z "$name" ]] || gh release upload "$RELEASE_TAG" "dist/candidate/publish/$name"
-            done < dist/missing-assets.txt
-            gh release view "$RELEASE_TAG" --json assets > dist/release-assets.json
-            python - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          root = Path("dist/candidate/publish")
-          remote = {asset["name"]: asset.get("digest") for asset in
-                    json.loads(Path("dist/release-assets.json").read_text())["assets"]}
-          expected = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-                      for path in root.iterdir() if path.is_file()}
-          if remote != expected:
-              raise SystemExit(f"draft asset verification failed: expected={expected}, remote={remote}")
-          PY
-            gh release edit "$RELEASE_TAG" --draft=false
-            release_state=published
-          fi
-          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-      - name: Verify published GitHub release
-        if: steps.freshness.outputs.promote == 'true'
-        run: |
-          if [[ "$RELEASE_TAG" == *-* && "$RELEASE_TAG" != *-prod ]]; then
-            base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
-          else
-            base="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
-          fi
-          deadline=$((SECONDS + 120))
-          while (( SECONDS < deadline )); do
-            if curl -fsSL --max-time 30 \
-              "$base/release-manifest.json?release=$GITHUB_RUN_ID-$SECONDS" \
-              -o dist/live-release.json && \
-              test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}" && \
-              test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"; then
-              break
-            fi
-            sleep 5
-          done
-          test -s dist/live-release.json
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
+          curl -fsSL --retry 6 --retry-delay 5 --max-time 60 \
+            "$base/release-manifest.json" -o dist/live-release.json
           test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"
-          for platform in macos-arm64 macos-x86_64; do
-            file="$(jq -r --arg platform "$platform" '.cli[$platform].file' dist/live-release.json)"
-            size="$(jq -r --arg platform "$platform" '.cli[$platform].size' dist/live-release.json)"
-            sha256="$(jq -r --arg platform "$platform" '.cli[$platform].sha256' dist/live-release.json)"
-            curl -fsSL --max-time 60 "$base/$file" -o "dist/$file"
-            test "$(stat -c %s "dist/$file")" = "$size"
-            echo "$sha256  dist/$file" | sha256sum --check --strict
-          done
-      - name: Record promotion benchmark
-        if: always()
-        run: |
-          elapsed="$(($(date +%s) - PROMOTION_STARTED))"
-          {
-            echo "### Release promotion timing"
-            echo
-            echo "Promotion runner time: ${elapsed}s"
-            echo "Candidate wait time: ${CANDIDATE_WAIT_SECONDS:-not reached}s"
-            echo "Baseline: seven rebuild releases had a 233s median; their publish-only jobs had an 11s median."
-          } >> "$GITHUB_STEP_SUMMARY"

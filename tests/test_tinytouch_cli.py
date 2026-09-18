@@ -14,7 +14,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader("tinytouch_cli", str(ROOT / "tinytouch"))
+loader = importlib.machinery.SourceFileLoader("tinytouch_cli", str(ROOT / "macos" / "cli.py"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 cli = importlib.util.module_from_spec(spec)
 loader.exec_module(cli)
@@ -752,12 +752,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("physical reconnect", " ".join(call.args[0] for call in say.call_args_list))
 
     def test_helper_has_no_legacy_default_device_identity(self):
-        source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        source = (ROOT / "macos" / "tinytouch_helper.py").read_text()
         self.assertNotIn("PREFERRED_SERIAL", source)
         self.assertNotIn("protocol-v5-compatible", source)
 
     def test_helper_retries_login_keychain_without_a_long_delay(self):
-        source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        source = (ROOT / "macos" / "tinytouch_helper.py").read_text()
         self.assertIn("KEYCHAIN_RETRY_SECONDS = 0.5", source)
         self.assertIn("maximum=MAX_WORKER_RETRY_SECONDS", source)
 

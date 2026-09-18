@@ -15,16 +15,16 @@ if [[ ! -x "$venv_python" ]]; then
   "$bootstrap_python" -m venv "$venv_dir"
 fi
 
-"$venv_python" "$project_dir/packaging/check-python-runtime.py"
+"$venv_python" "$project_dir/release/check-python-runtime.py"
 
 # PEP 517 backends installed in the build environment are executables. Add the
 # environment's bin directory so source distributions can invoke them.
 export PATH="$venv_dir/bin:$PATH"
 
 "$venv_python" -m pip install -q --require-hashes \
-  -r "$project_dir/software/macos-helper/requirements-bootstrap.txt"
+  -r "$project_dir/macos/requirements-bootstrap.txt"
 "$venv_python" -m pip install -q --no-build-isolation --require-hashes \
-  -r "$project_dir/software/macos-helper/requirements-release.txt"
+  -r "$project_dir/macos/requirements-release.txt"
 
 rm -rf "$build_dir"
 mkdir -p "$build_dir" "$dist_dir"
@@ -39,14 +39,14 @@ mkdir -p "$build_dir" "$dist_dir"
   --distpath "$build_dir/bin" \
   --workpath "$build_dir/work-cli" \
   --specpath "$build_dir/spec-cli" \
-  --paths "$project_dir/software/macos-helper" \
+  --paths "$project_dir/macos" \
   --hidden-import tinytouch_helper \
   --hidden-import tinytouch_keychain \
   --hidden-import tinytouch_runtime \
   --hidden-import serial.tools.list_ports \
   --collect-all esptool \
   --add-data "$project_dir/VERSION:." \
-  "$project_dir/tinytouch"
+  "$project_dir/macos/cli.py"
 
 if [[ -z "$signing_identity" ]]; then
   signing_identity="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)"
@@ -60,7 +60,7 @@ fi
 
 bundle="$build_dir/bin/tinytouch"
 executable="$bundle/tinytouch"
-"$venv_python" "$project_dir/packaging/check-python-runtime.py" "$bundle"
+"$venv_python" "$project_dir/release/check-python-runtime.py" "$bundle"
 "$executable" _package_test
 network_ok=0
 for attempt in 1 2 3; do
