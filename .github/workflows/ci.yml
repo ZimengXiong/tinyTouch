@@ -20,6 +20,8 @@ jobs:
     outputs:
       firmware: ${{ steps.areas.outputs.firmware }}
       cli: ${{ steps.areas.outputs.cli }}
+      product: ${{ steps.areas.outputs.product }}
+      version: ${{ steps.areas.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -31,13 +33,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            printf 'firmware=true\ncli=true\n' >> "$GITHUB_OUTPUT"
+            printf 'firmware=true\ncli=true\nproduct=false\nversion=true\n' \
+              >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base="$BEFORE_SHA"
           [[ "$GITHUB_EVENT_NAME" == pull_request ]] && base="$BASE_SHA"
           if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            printf 'firmware=true\ncli=true\n' >> "$GITHUB_OUTPUT"
+            printf 'firmware=true\ncli=true\nproduct=false\nversion=true\n' \
+              >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if git diff --quiet "$base" "$GITHUB_SHA" -- \
@@ -54,6 +58,16 @@ jobs:
             echo "cli=false" >> "$GITHUB_OUTPUT"
           else
             echo "cli=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- firmware macos release; then
+            echo "product=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "product=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- VERSION; then
+            echo "version=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=true" >> "$GITHUB_OUTPUT"
           fi
 
   firmware:
@@ -176,8 +190,14 @@ jobs:
           FIRMWARE_RESULT: ${{ needs.firmware.result }}
           MACOS_RESULT: ${{ needs.macos-cli.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
+          PRODUCT_CHANGED: ${{ needs.changes.outputs.product }}
+          VERSION_CHANGED: ${{ needs.changes.outputs.version }}
         run: |
           test "$CHANGES_RESULT" = success
           [[ "$FIRMWARE_RESULT" == success || "$FIRMWARE_RESULT" == skipped ]]
           [[ "$MACOS_RESULT" == success || "$MACOS_RESULT" == skipped ]]
           test "$DOCS_RESULT" = success
+          if [[ "$PRODUCT_CHANGED" == true && "$VERSION_CHANGED" != true ]]; then
+            echo "Firmware, CLI, and release changes must update VERSION." >&2
+            exit 1
+          fi
