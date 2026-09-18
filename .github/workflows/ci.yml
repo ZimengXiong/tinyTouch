@@ -18,31 +18,42 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      firmware: ${{ steps.firmware.outputs.changed }}
+      firmware: ${{ steps.areas.outputs.firmware }}
+      cli: ${{ steps.areas.outputs.cli }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - id: firmware
+      - id: areas
         env:
           BEFORE_SHA: ${{ github.event.before }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            printf 'firmware=true\ncli=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base="$BEFORE_SHA"
           [[ "$GITHUB_EVENT_NAME" == pull_request ]] && base="$BASE_SHA"
           if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$base" "$GITHUB_SHA" -- \
+            printf 'firmware=true\ncli=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- \
             firmware VERSION release/assemble-release.py \
             release/release_integrity.py .github/workflows/ci.yml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "firmware=false" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- \
+            macos tests VERSION release/build-standalone-macos.sh \
+            release/check-python-runtime.py release/install.sh \
+            .github/workflows/ci.yml; then
+            echo "cli=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cli=true" >> "$GITHUB_OUTPUT"
           fi
 
   firmware:
@@ -84,6 +95,8 @@ jobs:
           python release/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
 
   macos-cli:
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     strategy:
       matrix:
         include:
@@ -166,5 +179,5 @@ jobs:
         run: |
           test "$CHANGES_RESULT" = success
           [[ "$FIRMWARE_RESULT" == success || "$FIRMWARE_RESULT" == skipped ]]
-          test "$MACOS_RESULT" = success
+          [[ "$MACOS_RESULT" == success || "$MACOS_RESULT" == skipped ]]
           test "$DOCS_RESULT" = success
