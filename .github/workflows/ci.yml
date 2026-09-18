@@ -14,7 +14,40 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      firmware: ${{ steps.firmware.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: firmware
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$BEFORE_SHA"
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]] && base="$BASE_SHA"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$base" "$GITHUB_SHA" -- \
+            firmware VERSION release/assemble-release.py \
+            release/release_integrity.py .github/workflows/ci.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   firmware:
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
     defaults:
@@ -118,3 +151,20 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  complete:
+    name: CI
+    if: always()
+    needs: [changes, firmware, macos-cli, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FIRMWARE_RESULT: ${{ needs.firmware.result }}
+          MACOS_RESULT: ${{ needs.macos-cli.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          [[ "$FIRMWARE_RESULT" == success || "$FIRMWARE_RESULT" == skipped ]]
+          test "$MACOS_RESULT" = success
+          test "$DOCS_RESULT" = success

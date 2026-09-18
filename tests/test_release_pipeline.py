@@ -171,6 +171,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("idf.py -C firmware/tiny_touch_unified build", workflow)
         self.assertIn("release/build-standalone-macos.sh", workflow)
+        self.assertIn("environment: release-signing", workflow)
+        self.assertNotIn("beta-signing", workflow)
         self.assertIn("release-publishing", workflow)
         self.assertIn("attest-build-provenance", workflow)
         self.assertIn('gh release create "$RELEASE_TAG"', workflow)

@@ -38,7 +38,7 @@ jobs:
   firmware:
     needs: validate
     runs-on: ubuntu-latest
-    environment: ${{ contains(inputs.tag, '-beta') && 'beta-signing' || 'release-signing' }}
+    environment: release-signing
     container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
     defaults:
       run:
