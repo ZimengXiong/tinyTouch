@@ -29,7 +29,7 @@ def metadata(path: Path) -> dict:
 class ReleasePipelineTests(unittest.TestCase):
     commit = "1234567890ab" + "c" * 28
 
-    def make_app(self, path: Path) -> None:
+    def make_app(self, path: Path, kind: str) -> None:
         payload = bytearray(512)
         offset = 32
         struct.pack_into("<I", payload, offset, integrity.APP_DESCRIPTION_MAGIC)
@@ -41,6 +41,8 @@ class ReleasePipelineTests(unittest.TestCase):
         idf = b"v5.3.2"
         payload[offset + 112:offset + 112 + len(idf)] = idf
         payload[256:268] = self.commit[:12].encode()
+        if kind == "recovery":
+            payload[300:317] = b"RECOVERY COMPLETE"
         path.write_bytes(payload)
 
     def make_cli(self, path: Path) -> None:
@@ -64,7 +66,10 @@ class ReleasePipelineTests(unittest.TestCase):
             for address, name in images.items():
                 path = directory / name
                 if address == 0x10000:
-                    self.make_app(path)
+                    self.make_app(path, kind)
+                elif name == "recovery-request.bin":
+                    request = integrity.RECOVERY_REQUEST
+                    path.write_bytes(request + b"\xff" * (4096 - len(request)))
                 elif name == "ota_data_initial.bin":
                     path.write_bytes(b"ota" * 32)
                 elif name == "partition-table.bin":
@@ -124,6 +129,8 @@ class ReleasePipelineTests(unittest.TestCase):
             integrity.validate_release(output, self.commit, flat=True)
             integrity.validate_checksums(output)
             self.assertTrue((output / "ota_data_initial.bin").is_file())
+            self.assertTrue((output / "tiny_touch_recovery.bin").is_file())
+            self.assertTrue((output / "tiny_touch_recovery_full.bin").is_file())
             self.assertFalse((output / "ota_slot1.bin").exists())
             self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
 
@@ -170,6 +177,8 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("Existing annotated release tag", workflow)
         self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn("idf.py -C firmware/tiny_touch_unified build", workflow)
+        self.assertIn("TINYTOUCH_RECOVERY_BUILD=ON", workflow)
+        self.assertIn("--recovery-build", workflow)
         self.assertIn("release/build-standalone-macos.sh", workflow)
         self.assertIn("environment: release-signing", workflow)
         self.assertNotIn("beta-signing", workflow)
@@ -188,10 +197,20 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertFalse((ROOT / "release" / "tag-release").exists())
         self.assertFalse((ROOT / "release" / "release").exists())
 
+    def test_recovery_clears_sensor_before_device_state(self):
+        source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "main.c").read_text()
+        recovery = source.split("static void recover_device(void)", 1)[1].split("#endif", 1)[0]
+        self.assertLess(recovery.index("fingerprint_delete_all()"), recovery.index("nvs_flash_erase()"))
+        self.assertLess(recovery.index("fingerprint_count() == 0"), recovery.index("nvs_flash_erase()"))
+        self.assertIn("esp_partition_erase_range(partition", recovery)
+        partitions = (ROOT / "firmware" / "tiny_touch_unified" / "partitions.csv").read_text()
+        self.assertIn("recovery,   data, 0x40", partitions)
+
     def test_browser_requires_protocol_six_and_prefetches_before_usb(self):
         source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
         self.assertIn("const UPDATE_PROTOCOL = 6", source)
-        self.assertIn("await loader.eraseFlash()", source)
+        self.assertNotIn("await loader.eraseFlash()", source)
+        self.assertIn("release.firmware?.recovery", source)
         self.assertIn("function releaseAsset(file: string, tag?: string)", source)
         self.assertNotIn("/firmware/${image.file}", source)
         self.assertIn(
@@ -201,6 +220,7 @@ class ReleasePipelineTests(unittest.TestCase):
         proxy = (ROOT / "docs" / "api" / "github-release.js").read_text()
         self.assertIn("redirect: 'follow'", proxy)
         self.assertIn("RELEASE_ASSETS.has(file)", proxy)
+        self.assertIn("'tiny_touch_recovery.bin'", proxy)
         self.assertNotIn('"rewrites"', (ROOT / "docs" / "vercel.json").read_text())
         self.assertNotIn("/flash/recovery", source)
         self.assertIn("nextManifest.eraseAll !== false", source)

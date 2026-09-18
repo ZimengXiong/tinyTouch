@@ -17,7 +17,8 @@ type FirmwareFile = { data: Uint8Array; address: number }
 
 const FLASH_BYTES = 4 * 1024 * 1024
 const UPDATE_PROTOCOL = 6
-const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
+const FACTORY_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
+const RECOVERY_ADDRESSES = [...FACTORY_ADDRESSES, 0x212000]
 const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
 const RELEASE_API = 'https://api.github.com/repos/ZimengXiong/tinyTouch/releases?per_page=20'
 
@@ -96,27 +97,32 @@ async function loadManifest(mode: ToolName) {
   const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Development'
   const response = await fetch(releaseAsset('release-manifest.json', tag), { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
-  const release = await response.json() as { firmware?: { factory?: Manifest } }
-  const nextManifest = release.firmware?.factory
+  const release = await response.json() as {
+    firmware?: { factory?: Manifest; recovery?: Manifest }
+  }
+  const nextManifest = mode === 'recovery'
+    ? release.firmware?.recovery
+    : release.firmware?.factory
+  const requiredAddresses = mode === 'recovery' ? RECOVERY_ADDRESSES : FACTORY_ADDRESSES
   if (!nextManifest || typeof nextManifest !== 'object' || typeof nextManifest.version !== 'string' ||
       nextManifest.protocol !== UPDATE_PROTOCOL || nextManifest.secureVersion !== 0 ||
       nextManifest.flashSize !== '4MB' || nextManifest.eraseAll !== false ||
       nextManifest.compress !== false || !Array.isArray(nextManifest.images) ||
-      nextManifest.images.length !== REQUIRED_ADDRESSES.length) {
+      nextManifest.images.length !== requiredAddresses.length) {
     throw new Error(`${label} manifest is incomplete.`)
   }
   const ranges: [number, number][] = []
   for (const image of nextManifest.images) {
     if (!image || typeof image.name !== 'string' || typeof image.file !== 'string' ||
         !/^[A-Za-z0-9._-]+$/.test(image.file) || !Number.isInteger(image.address) ||
-        !REQUIRED_ADDRESSES.includes(image.address) || !Number.isInteger(image.size) ||
+        !requiredAddresses.includes(image.address) || !Number.isInteger(image.size) ||
         image.size <= 0 || image.size > FLASH_BYTES || typeof image.sha256 !== 'string' ||
         !/^[0-9a-f]{64}$/.test(image.sha256) || image.address + image.size > FLASH_BYTES) {
       throw new Error(`${label} manifest contains an invalid flash image.`)
     }
     ranges.push([image.address, image.address + image.size])
   }
-  if (new Set(nextManifest.images.map((image) => image.address)).size !== REQUIRED_ADDRESSES.length) {
+  if (new Set(nextManifest.images.map((image) => image.address)).size !== requiredAddresses.length) {
     throw new Error(`${label} manifest contains duplicate flash regions.`)
   }
   ranges.sort((a, b) => a[0] - b[0])
@@ -171,11 +177,7 @@ async function flash() {
 
     const totalBytes = currentManifest.images.reduce((sum, image) => sum + image.size, 0)
     const written = fileArray.map(() => 0)
-    if (mode === 'recovery') {
-      stage.value = 'Erasing flash'
-      await loader.eraseFlash()
-    }
-    stage.value = mode === 'recovery' ? 'Writing factory firmware' : 'Writing firmware'
+    stage.value = mode === 'recovery' ? 'Writing recovery firmware' : 'Writing firmware'
     phase = 'writing'
     await loader.writeFlash({
       fileArray,
@@ -196,7 +198,7 @@ async function flash() {
     transport = undefined
     phase = 'done'
     show(mode === 'recovery'
-      ? 'Flash complete. The device was erased and the factory firmware was installed. Unplug and reconnect it once, then run tinytouch setup.'
+      ? 'Recovery firmware installed. Leave the device connected for 20 seconds while it clears fingerprints, keys, and settings. Then unplug and reconnect it once and run tinytouch setup.'
       : 'Flash complete. Unplug the board and reconnect it once.', 'success')
   } catch (error) {
     show(friendlyError(error, phase, mode), 'error')
@@ -246,7 +248,7 @@ onMounted(async () => {
     </div>
     <div class="flash-tool-body">
       <p class="flash-description">
-        {{ selected === 'recovery' ? 'Erase the device and reinstall tinyTouch.' : 'Install tinyTouch on a new ESP32-S3 board.' }}
+        {{ selected === 'recovery' ? 'Erase fingerprint templates, keys, and settings.' : 'Install tinyTouch on a new ESP32-S3 board.' }}
       </p>
       <p class="flash-version">Version {{ manifest?.version ?? '…' }}</p>
       <div v-if="busy || progress > 0" class="flash-progress">

@@ -16,6 +16,7 @@ VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 PROTOCOL = 6
 SECURE_VERSION = 0
 FLASH_SIZE = 4 * 1024 * 1024
+RECOVERY_REQUEST = b"tinyTouch recovery request v1\0"
 
 
 def digest(path: Path) -> str:
@@ -71,6 +72,7 @@ def require_consistent_asset_names(value: object, seen: dict[str, str] | None = 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware-build", type=Path, required=True)
+    parser.add_argument("--recovery-build", type=Path, required=True)
     parser.add_argument("--cli", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "release")
     parser.add_argument("--build-id")
@@ -92,6 +94,15 @@ def main() -> None:
                 ("OTA state", "ota_data_initial.bin", "ota_data_initial.bin", 0x210000),
             ],
         ),
+        "recovery": (
+            args.recovery_build,
+            [
+                ("Recovery bootloader", "bootloader/bootloader.bin", "recovery_bootloader.bin", 0x0),
+                ("Recovery partition table", "partition_table/partition-table.bin", "recovery_partition-table.bin", 0x8000),
+                ("Recovery firmware", "tiny_touch_unified.bin", "tiny_touch_recovery.bin", 0x10000),
+                ("Recovery OTA state", "ota_data_initial.bin", "recovery_ota_data_initial.bin", 0x210000),
+            ],
+        ),
     }
     for kind, (build, files) in specifications.items():
         directory = output / kind
@@ -99,7 +110,21 @@ def main() -> None:
             copy_image(build / source, directory / destination, name, address)
             for name, source, destination, address in files
         ]
-        full_name = "tiny_touch_factory_full.bin"
+        if kind == "recovery":
+            trigger = directory / "recovery-request.bin"
+            trigger.write_bytes(RECOVERY_REQUEST + b"\xff" * (4096 - len(RECOVERY_REQUEST)))
+            images.append({
+                "name": "Recovery request",
+                "file": trigger.name,
+                "address": 0x212000,
+                "size": trigger.stat().st_size,
+                "sha256": digest(trigger),
+            })
+        full_name = (
+            "tiny_touch_factory_full.bin"
+            if kind == "factory"
+            else "tiny_touch_recovery_full.bin"
+        )
         merge(images, directory, directory / full_name)
         layouts[kind] = {
             "version": VERSION,
