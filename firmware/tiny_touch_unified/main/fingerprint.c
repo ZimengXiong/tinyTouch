@@ -4,6 +4,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "device_config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -202,12 +203,12 @@ static void set_aura(uint8_t color) {
 static void show_result(bool ok) {
   set_aura(ok ? FP_LED_GREEN : FP_LED_RED);
   vTaskDelay(pdMS_TO_TICKS(350));
-  set_aura(FP_LED_BLUE);
+  set_aura(device_config_idle_led() ? FP_LED_BLUE : 0);
 }
 
 void fingerprint_led_idle(void) {
   if (!fp_take(1000)) return;
-  set_aura(FP_LED_BLUE);
+  set_aura(device_config_idle_led() ? FP_LED_BLUE : 0);
   fp_give();
 }
 
@@ -453,7 +454,7 @@ static bool wait_finger_removed(uint32_t timeout_ms) {
 bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
   if (slot < START_SLOT || slot > END_SLOT || !fp_take(1000)) return false;
   bool ok = false;
-  set_aura(FP_LED_BLUE);
+  set_aura(device_config_idle_led() ? FP_LED_BLUE : 0);
   if (prompt) prompt("TOUCH");
   if (!wait_capture_template(1, 15000)) goto done;
   if (prompt) prompt("LIFT");

@@ -11,6 +11,7 @@ firmware/tiny_touch_unified/build-recovery/
 firmware/tiny_touch_unified/.cache/
 firmware/tiny_touch_unified/managed_components/
 firmware/tiny_touch_unified/sdkconfig.old
+firmware/tiny_touch_unified/main/web/*.gz
 build/
 dist/
 

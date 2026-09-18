@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyTouch</title>
+<style>
+:root { --bg:#11161c; --card:#1b232c; --ink:#f4f1ea; --muted:#9aa7b4; --line:#2c3845; --ok:#3dd68c; --bad:#ff6b6b; --acc:#7cb7ff; }
+* { box-sizing:border-box; }
+body { margin:0; font:15px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); }
+main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+h1 { font-size:28px; margin:0 0 8px; }
+h2 { font-size:18px; margin:28px 0 12px; }
+.banner, .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.banner { margin:16px 0; color:var(--muted); }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+.stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+.stat b { display:block; font-size:20px; }
+.stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+.slot { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+input[type=text], input[type=number] { background:#0d1217; color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+button { background:var(--acc); color:#081018; border:0; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer; }
+button.danger { background:var(--bad); color:#fff; }
+button.secondary { background:#2c3845; color:var(--ink); }
+.ok { color:var(--ok); } .bad { color:var(--bad); }
+#log { white-space:pre-wrap; min-height:120px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; color:var(--muted); }
+label.chk { display:flex; gap:8px; align-items:center; margin:8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TinyTouch</h1>
+  <p class="banner">Password typing uses the TinyTouch helper on this computer. It is not stored on the dongle. A new Mac still needs <code>tinytouch setup --mode hid</code> or <code>tinytouch add-computer</code>.</p>
+  <div class="grid" id="stats"></div>
+  <p id="unlock-state"></p>
+  <button id="unlock">Unlock with fingerprint</button>
+  <h2>Fingerprints</h2>
+  <div id="slots"></div>
+  <h2>Typing &amp; ring</h2>
+  <div class="card">
+    <label class="chk"><input id="submit-enter" type="checkbox"> Submit Enter after the password</label>
+    <label class="chk"><input id="idle-led" type="checkbox"> Idle ring light (blue when waiting)</label>
+    <label>Delay ms <input id="delay" type="number" min="0" max="100" value="7"></label>
+    <button class="secondary" id="save-settings">Save settings</button>
+  </div>
+  <h2>Event log</h2>
+  <div class="card" id="log"></div>
+</main>
+<script>
+const api = (path, opts={}) => fetch(path, Object.assign({
+  credentials: 'same-origin',
+  headers: {'Content-Type': 'application/json'}
+}, opts));
+const logEl = document.getElementById('log');
+let busy = false;
+const errMsg = {
+  CONFIG_LOCKED: 'Unlock with fingerprint first (session lasts ~2 minutes).',
+  CONFIG_UNLOCK: 'Fingerprint unlock failed. Try again.',
+  label: 'Label rejected. Use letters, numbers, spaces, _ - . only.',
+  nvs: 'Could not save label to device storage.',
+  ENROLL: 'Enroll failed. Touch → lift → touch again with the same finger.',
+  slot: 'Invalid fingerprint slot.',
+};
+function pause(on) { api('/api/pause', {method:'POST', body: JSON.stringify({paused:on})}); }
+async function json(path, opts) {
+  const res = await api(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(errMsg[data.error] || data.error || res.statusText);
+  return data;
+}
+function editingLabel() {
+  const el = document.activeElement;
+  return el && el.matches && el.matches('#slots input[data-slot]');
+}
+function setBusy(on, message) {
+  busy = !!on;
+  document.querySelectorAll('button').forEach(b => { b.disabled = busy; });
+  if (message) logEl.textContent = message;
+}
+function renderSlots(slots) {
+  const root = document.getElementById('slots');
+  if (editingLabel() || busy) return;
+  root.innerHTML = (slots || []).map(slot => `
+    <div class="slot">
+      <strong>${slot.slot}</strong>
+      <input type="text" data-slot="${slot.slot}" value="${slot.label || ''}" placeholder="Label" maxlength="31">
+      <button data-enroll="${slot.slot}">Enroll</button>
+      <button class="danger" data-delete="${slot.slot}">Delete</button>
+      <button class="secondary" data-label="${slot.slot}">Save label</button>
+    </div>`).join('');
+}
+function renderStatus(s) {
+  document.getElementById('stats').innerHTML = [
+    ['Sensor', s.sensor],
+    ['Mode', s.mode],
+    ['Fingerprints', s.fingerprints],
+    ['HID hosts', s.hid_hosts],
+    ['Firmware', s.firmware_version]
+  ].map(([k,v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join('');
+  document.getElementById('unlock-state').innerHTML = s.authorized
+    ? '<span class="ok">Configuration unlocked</span>'
+    : '<span class="bad">Touch an enrolled finger to enroll, delete, or change settings.</span>';
+  if (!document.activeElement || document.activeElement.id !== 'submit-enter') {
+    document.getElementById('submit-enter').checked = !!s.submit_enter;
+  }
+  if (!document.activeElement || document.activeElement.id !== 'idle-led') {
+    document.getElementById('idle-led').checked = s.idle_led !== false;
+  }
+  if (!document.activeElement || document.activeElement.id !== 'delay') {
+    document.getElementById('delay').value = s.typing_delay_ms;
+  }
+  renderSlots(s.slots);
+}
+async function refresh() {
+  if (busy) return;
+  try {
+    renderStatus(await json('/api/status'));
+    if (!editingLabel()) {
+      const log = await json('/api/log');
+      logEl.textContent = (log.events || []).join('\n') || 'No events yet.';
+    }
+  } catch (err) {
+    if (!editingLabel()) logEl.textContent = String(err.message || err);
+  }
+}
+document.getElementById('unlock').onclick = async () => {
+  setBusy(true, 'PROMPT TOUCH — hold an enrolled finger on the sensor');
+  pause(true);
+  try {
+    await json('/api/unlock', {method:'POST', body:'{}'});
+    logEl.textContent = 'Unlocked.';
+  } catch (err) {
+    logEl.textContent = err.message;
+  } finally {
+    pause(false);
+    setBusy(false);
+  }
+  refresh();
+};
+document.getElementById('save-settings').onclick = async () => {
+  setBusy(true, 'Saving settings…');
+  try {
+    await json('/api/settings', {method:'POST', body: JSON.stringify({
+      submit_enter: document.getElementById('submit-enter').checked,
+      typing_delay_ms: Number(document.getElementById('delay').value),
+      idle_led: document.getElementById('idle-led').checked
+    })});
+    logEl.textContent = 'Settings saved.';
+  } catch (err) { logEl.textContent = err.message; }
+  finally { setBusy(false); }
+  refresh();
+};
+document.getElementById('slots').addEventListener('focusin', e => { if (e.target.matches('input')) pause(true); });
+document.getElementById('slots').addEventListener('focusout', e => { if (e.target.matches('input')) pause(false); });
+document.getElementById('slots').addEventListener('click', async e => {
+  const enroll = e.target.getAttribute('data-enroll');
+  const del = e.target.getAttribute('data-delete');
+  const label = e.target.getAttribute('data-label');
+  if (!enroll && !del && !label) return;
+  try {
+    if (enroll) {
+      setBusy(true, 'Enrolling slot ' + enroll + ' — touch, lift, then touch again. Keep this tab open (~30s).');
+      pause(true);
+      await json('/api/enroll', {method:'POST', body: JSON.stringify({slot: Number(enroll)})});
+      logEl.textContent = 'Enrolled slot ' + enroll + '.';
+    }
+    if (del && confirm('Delete slot ' + del + '?')) {
+      setBusy(true, 'Deleting slot ' + del + '…');
+      await json('/api/delete', {method:'POST', body: JSON.stringify({slot: Number(del)})});
+      logEl.textContent = 'Deleted slot ' + del + '.';
+    }
+    if (label) {
+      setBusy(true, 'Saving label…');
+      const input = document.querySelector('input[data-slot="'+label+'"]');
+      await json('/api/label', {method:'POST', body: JSON.stringify({slot: Number(label), label: input ? input.value : ''})});
+      logEl.textContent = 'Label saved for slot ' + label + '.';
+    }
+  } catch (err) { logEl.textContent = err.message; }
+  finally {
+    if (enroll) pause(false);
+    setBusy(false);
+  }
+  refresh();
+});
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

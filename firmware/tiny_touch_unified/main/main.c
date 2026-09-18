@@ -8,6 +8,8 @@
 #include "piv.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
+#include "usb_ncm.h"
+#include "web_dashboard.h"
 
 void app_main(void) {
   ESP_ERROR_CHECK(nvs_flash_init());
@@ -19,6 +21,8 @@ void app_main(void) {
   (void)fingerprint_count();
   piv_init();
   usb_ccid_start(piv_handle_apdu);
+  usb_ncm_start();
+  web_dashboard_start();
   config_console_start();
   touch_pin_hid_start();
   // All persistent state and runtime services initialized successfully. Keep

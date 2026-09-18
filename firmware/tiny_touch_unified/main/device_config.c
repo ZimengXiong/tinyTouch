@@ -11,6 +11,7 @@
 #define CONFIG_NAMESPACE "tt6"
 #define CONFIG_KEY "config"
 #define CONFIG_VERSION 6
+#define IDLE_LED_KEY "idle_led"
 
 typedef struct {
   uint8_t version;
@@ -25,6 +26,7 @@ typedef struct {
 
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
+static bool idle_led = true;
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -85,6 +87,10 @@ void device_config_init(void) {
   bool opened = nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) == ESP_OK;
   bool loaded_ok = opened && nvs_get_blob(handle, CONFIG_KEY, &loaded, &length) == ESP_OK &&
                    length == sizeof(loaded) && valid(&loaded);
+  uint8_t stored_idle_led = 1;
+  if (opened && nvs_get_u8(handle, IDLE_LED_KEY, &stored_idle_led) == ESP_OK) {
+    idle_led = stored_idle_led != 0;
+  }
   if (opened) nvs_close(handle);
   lock();
   if (loaded_ok) config = loaded;
@@ -152,13 +158,43 @@ bool device_config_set_fingerprint_profile_views(uint8_t views) {
   bool ok = replace_locked(&candidate); unlock(); return ok;
 }
 
+bool device_config_hid_key_configured(void) {
+  return device_config_hid_host_count() > 0;
+}
+
 uint16_t device_config_typing_delay_ms(void) { lock(); uint16_t value = config.typing_delay_ms; unlock(); return value; }
 bool device_config_set_typing_delay_ms(uint16_t value) { lock(); stored_config_t c = config; c.typing_delay_ms = value; bool ok = replace_locked(&c); unlock(); return ok; }
 bool device_config_submit_enter(void) { lock(); bool value = config.submit_enter; unlock(); return value; }
 bool device_config_set_submit_enter(bool value) { lock(); stored_config_t c = config; c.submit_enter = value; bool ok = replace_locked(&c); unlock(); return ok; }
+
+bool device_config_idle_led(void) {
+  lock(); bool value = idle_led; unlock(); return value;
+}
+
+bool device_config_set_idle_led(bool value) {
+  nvs_handle_t handle;
+  if (nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+  esp_err_t result = nvs_set_u8(handle, IDLE_LED_KEY, value ? 1 : 0);
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  if (result != ESP_OK) return false;
+  lock(); idle_led = value; unlock();
+  return true;
+}
+
 uint16_t device_config_touch_cooldown_ms(void) { lock(); uint16_t value = config.touch_cooldown_ms; unlock(); return value; }
 bool device_config_set_touch_cooldown_ms(uint16_t value) { lock(); stored_config_t c = config; c.touch_cooldown_ms = value; bool ok = replace_locked(&c); unlock(); return ok; }
 
 bool device_config_factory_reset(void) {
-  lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
+  lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate);
+  idle_led = true; unlock();
+  if (ok) {
+    nvs_handle_t handle;
+    if (nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+      nvs_set_u8(handle, IDLE_LED_KEY, 1);
+      nvs_commit(handle);
+      nvs_close(handle);
+    }
+  }
+  return ok;
 }

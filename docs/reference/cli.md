@@ -29,6 +29,17 @@ tinytouch logs --lines 100
 tinytouch diagnostics --output ~/Desktop/tinytouch-diagnostics.json
 ```
 
+In HID mode, `tinytouch status` also prints the on-device dashboard URL.
+
+## Dashboard
+
+```sh
+tinytouch dashboard
+tinytouch dashboard --no-open
+```
+
+Opens [http://192.168.7.1/](http://192.168.7.1/) for fingerprint and typing settings on the dongle. See [On-device dashboard](/on-device-dashboard).
+
 ## Fingerprints
 
 ```sh

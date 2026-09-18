@@ -19,6 +19,7 @@
 #include "piv.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
+#include "usb_descriptors.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
 #define TINYTOUCH_FIRMWARE_VERSION "development"
@@ -134,6 +135,22 @@ static void authorize(void) {
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
 }
 
+bool config_console_authorized(void) { return authorized(); }
+
+bool config_console_unlock(void) {
+#ifdef TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
+  authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
+  return true;
+#endif
+  int count = fingerprint_count();
+  if (count < 0) return false;
+  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
+  if (!ok) return false;
+  authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
+  piv_note_configuration_presence();
+  return true;
+}
+
 static bool token_matches(const char *token) {
   return ota_token[0] && strlen(token) == 32 && strcmp(token, ota_token) == 0;
 }
@@ -165,6 +182,10 @@ static void set_mode(const char *mode) {
   if (!require_authorized()) return;
   bool ok = strcmp(mode, "PIV") == 0 ? device_config_set_mode(DEVICE_MODE_PIV) :
             strcmp(mode, "HID") == 0 ? device_config_set_mode(DEVICE_MODE_HID) : false;
+  if (ok) {
+    usb_descriptors_apply_mode(device_config_mode());
+    usb_ccid_rescan();
+  }
   reply(ok ? "OK SET MODE" : "ERR SET MODE");
 }
 
