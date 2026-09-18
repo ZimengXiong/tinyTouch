@@ -193,7 +193,9 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("await loader.eraseFlash()", source)
         self.assertIn("function releaseAsset(file: string, tag?: string)", source)
         self.assertNotIn("/firmware/${image.file}", source)
-        self.assertIn("<option value=\"beta\">Beta firmware</option>", source)
+        self.assertIn(
+            '<option value="dev">Development firmware</option>', source
+        )
         self.assertIn("release.prerelease", source)
         proxy = (ROOT / "docs" / "api" / "github-release.js").read_text()
         self.assertIn("redirect: 'follow'", proxy)

@@ -1310,7 +1310,7 @@ def download(url: str) -> bytes:
 
 def release_root(version: str) -> str:
     """Return the immutable asset root for a validated production version."""
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-prod", version) is None:
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
         raise ToolError("The release manifest has an invalid production version.")
     return f"{RELEASE_DOWNLOAD_URL}/v{version}"
 
