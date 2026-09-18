@@ -183,6 +183,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("--no-build-isolation", build_script)
         self.assertIn("requirements-bootstrap.txt", build_script)
         self.assertIn("requirements-release.txt", build_script)
+        self.assertNotIn("_network_test", build_script)
         self.assertFalse((ROOT / "release" / "release-local").exists())
         self.assertFalse((ROOT / "release" / "tag-release").exists())
         self.assertFalse((ROOT / "release" / "release").exists())

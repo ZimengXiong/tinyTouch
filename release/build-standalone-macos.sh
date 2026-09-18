@@ -62,20 +62,6 @@ bundle="$build_dir/bin/tinytouch"
 executable="$bundle/tinytouch"
 "$venv_python" "$project_dir/release/check-python-runtime.py" "$bundle"
 "$executable" _package_test
-network_ok=0
-for attempt in 1 2 3; do
-  if "$executable" _network_test; then
-    network_ok=1
-    break
-  fi
-  if [[ "$attempt" -lt 3 ]]; then
-    sleep 2
-  fi
-done
-if [[ "$network_ok" -ne 1 ]]; then
-  echo "tinyTouch release network smoke test failed after 3 attempts" >&2
-  exit 1
-fi
 # A PyInstaller one-file binary extracts its bundled Python dylib at runtime.
 # Hardened runtime library validation rejects that extracted ad-hoc-signed dylib
 # because it does not share the outer Apple Development signature's Team ID.

@@ -157,6 +157,16 @@ class ProtocolSixTests(unittest.TestCase):
             download.call_args_list[1].args[0], f"{root}/release-manifest.json"
         )
 
+    def test_release_root_accepts_standard_production_version(self):
+        self.assertEqual(
+            cli.release_root("0.1.27"),
+            "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.27",
+        )
+
+    def test_release_root_rejects_legacy_production_suffix(self):
+        with self.assertRaises(cli.ToolError):
+            cli.release_root("0.1.26-prod")
+
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
         target_version = "9.9.9"
         root = f"https://github.com/ZimengXiong/tinyTouch/releases/download/v{target_version}"
