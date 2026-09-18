@@ -1,6 +1,10 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -9,7 +13,7 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 permissions:
@@ -17,26 +21,43 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      release: ${{ steps.release.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - id: release
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            RELEASE_TAG="$INPUT_TAG"
+            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+            publish=true
+          else
+            RELEASE_TAG="v$(tr -d '[:space:]' < VERSION)"
+            if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+              publish=false
+            else
+              publish=true
+            fi
+          fi
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(prod|beta([.-][0-9A-Za-z.-]+)?)$ ]]
-          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           test "${RELEASE_TAG#v}" = "$(tr -d '[:space:]' < VERSION)"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release=$publish" >> "$GITHUB_OUTPUT"
 
   firmware:
     needs: validate
+    if: needs.validate.outputs.release == 'true'
     runs-on: ubuntu-latest
     environment: release-signing
     container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
@@ -46,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - name: Load firmware signing key
         env:
@@ -79,6 +100,7 @@ jobs:
 
   cli:
     needs: validate
+    if: needs.validate.outputs.release == 'true'
     strategy:
       matrix:
         include:
@@ -92,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -123,6 +145,7 @@ jobs:
 
   publish:
     needs: [validate, firmware, cli]
+    if: needs.validate.outputs.release == 'true'
     runs-on: ubuntu-latest
     environment: release-publishing
     permissions:
@@ -132,7 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -161,10 +184,25 @@ jobs:
         uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4
         with:
           subject-path: dist/publish/*
+      - name: Create release tag
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          tag_sha="$(gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$RELEASE_TAG" \
+            -f message="Release $RELEASE_TAG" \
+            -f object="$RELEASE_COMMIT" \
+            -f type=commit --jq .sha)"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" -f sha="$tag_sha"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           flags=(--verify-tag --generate-notes)
           [[ "$RELEASE_TAG" == *-prod ]] || flags+=(--prerelease)
@@ -172,7 +210,7 @@ jobs:
       - name: Verify published manifest
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
           curl -fsSL --retry 6 --retry-delay 5 --max-time 60 \

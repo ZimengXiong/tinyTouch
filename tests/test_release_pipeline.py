@@ -162,10 +162,10 @@ class ReleasePipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(integrity.IntegrityError, "links are not allowed"):
                 integrity.safe_extract(archive_path, root / "output")
 
-    def test_release_workflow_is_manual_and_tag_driven(self):
+    def test_release_workflow_is_ci_and_tag_driven(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("workflow_run:", workflow)
+        self.assertIn("workflow_run:", workflow)
         self.assertNotIn("push:", workflow)
         self.assertIn("Existing annotated release tag", workflow)
         self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
