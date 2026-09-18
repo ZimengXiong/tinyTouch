@@ -16,7 +16,9 @@ Customer installation and setup are documented at
 Build and test with the native tools:
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -m venv .venv
+.venv/bin/pip install -r macos/requirements.txt
+.venv/bin/python -m unittest discover -s tests
 idf.py -C firmware/tiny_touch_unified build
 cd docs && npm ci && npm run build
 ```
