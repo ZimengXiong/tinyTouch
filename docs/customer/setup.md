@@ -2,13 +2,15 @@
 
 On an Apple silicon or Intel Mac:
 
-## 1. Install
+## 1. Open the Terminal app
+
+## 2. Install
 
 ```sh
 curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh
 ```
 
-## 2. Set up
+## 3. Set up
 
 ```sh
 tinytouch setup
