@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "software" / "macos-helper"))
+sys.path.insert(0, str(ROOT / "macos"))
 
 from tinytouch_runtime import (  # noqa: E402
     BackoffPolicy,

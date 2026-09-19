@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
-    "tinytouch_helper", ROOT / "software" / "macos-helper" / "tinytouch_helper.py"
+    "tinytouch_helper", ROOT / "macos" / "tinytouch_helper.py"
 )
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)

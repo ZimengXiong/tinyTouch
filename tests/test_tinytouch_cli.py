@@ -14,7 +14,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader("tinytouch_cli", str(ROOT / "tinytouch"))
+loader = importlib.machinery.SourceFileLoader("tinytouch_cli", str(ROOT / "macos" / "cli.py"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 cli = importlib.util.module_from_spec(spec)
 loader.exec_module(cli)
@@ -143,22 +143,32 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertNotIn("×2", cli.fingerprint_oval("left"))
 
     def test_update_release_refetches_latest_from_immutable_version(self):
-        latest = json.dumps({"version": "0.1.10-prod"}).encode()
-        exact = json.dumps({"version": "0.1.10-prod", "ota": {}}).encode()
+        latest = json.dumps({"version": "0.1.10"}).encode()
+        exact = json.dumps({"version": "0.1.10", "ota": {}}).encode()
         with mock.patch.object(cli, "download", side_effect=[latest, exact]) as download:
             root, manifest = cli.update_release()
         self.assertEqual(
             root,
-            "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.10-prod",
+            "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.10",
         )
-        self.assertEqual(manifest["version"], "0.1.10-prod")
+        self.assertEqual(manifest["version"], "0.1.10")
         self.assertIn("?nocache=", download.call_args_list[0].args[0])
         self.assertEqual(
             download.call_args_list[1].args[0], f"{root}/release-manifest.json"
         )
 
+    def test_release_root_accepts_standard_production_version(self):
+        self.assertEqual(
+            cli.release_root("0.1.27"),
+            "https://github.com/ZimengXiong/tinyTouch/releases/download/v0.1.27",
+        )
+
+    def test_release_root_rejects_legacy_production_suffix(self):
+        with self.assertRaises(cli.ToolError):
+            cli.release_root("0.1.26-prod")
+
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
-        target_version = "9.9.9-prod"
+        target_version = "9.9.9"
         root = f"https://github.com/ZimengXiong/tinyTouch/releases/download/v{target_version}"
         manifest = {"version": target_version, "ota": {}}
         args = SimpleNamespace(port=None, firmware_only=False, release_version=None)
@@ -401,7 +411,7 @@ class ProtocolSixTests(unittest.TestCase):
             mode="piv", port="/dev/cu.TT-1234", skip_enroll=False, no_pair=False
         )
         device = {
-                "firmware": "0.1.15-prod",
+                "firmware": "0.1.15",
                 "protocol": "6",
                 "mode": "piv",
                 "piv": "unconfigured",
@@ -752,12 +762,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("physical reconnect", " ".join(call.args[0] for call in say.call_args_list))
 
     def test_helper_has_no_legacy_default_device_identity(self):
-        source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        source = (ROOT / "macos" / "tinytouch_helper.py").read_text()
         self.assertNotIn("PREFERRED_SERIAL", source)
         self.assertNotIn("protocol-v5-compatible", source)
 
     def test_helper_retries_login_keychain_without_a_long_delay(self):
-        source = (ROOT / "software" / "macos-helper" / "tinytouch_helper.py").read_text()
+        source = (ROOT / "macos" / "tinytouch_helper.py").read_text()
         self.assertIn("KEYCHAIN_RETRY_SECONDS = 0.5", source)
         self.assertIn("maximum=MAX_WORKER_RETRY_SECONDS", source)
 

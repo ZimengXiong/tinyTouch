@@ -7,7 +7,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "tinytouch_keychain_runtime_test",
-    ROOT / "software" / "macos-helper" / "tinytouch_keychain.py",
+    ROOT / "macos" / "tinytouch_keychain.py",
 )
 keychain = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(keychain)

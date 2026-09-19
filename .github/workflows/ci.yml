@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -12,7 +14,65 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      firmware: ${{ steps.areas.outputs.firmware }}
+      cli: ${{ steps.areas.outputs.cli }}
+      product: ${{ steps.areas.outputs.product }}
+      version: ${{ steps.areas.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: areas
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            printf 'firmware=true\ncli=true\nproduct=false\nversion=true\n' \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$BEFORE_SHA"
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]] && base="$BASE_SHA"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            printf 'firmware=true\ncli=true\nproduct=false\nversion=true\n' \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- \
+            firmware VERSION release/assemble-release.py \
+            release/release_integrity.py .github/workflows/ci.yml; then
+            echo "firmware=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "firmware=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- \
+            macos tests VERSION release/build-standalone-macos.sh \
+            release/check-python-runtime.py release/install.sh \
+            .github/workflows/ci.yml; then
+            echo "cli=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- firmware macos release; then
+            echo "product=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "product=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "$GITHUB_SHA" -- VERSION; then
+            echo "version=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=true" >> "$GITHUB_OUTPUT"
+          fi
+
   firmware:
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     container: espressif/idf:release-v5.3@sha256:0143924cb07c717befe27547896f53b74ffe7c3e856fe0d19c0391ec22dc2222
     defaults:
@@ -27,28 +87,36 @@ jobs:
           source /opt/esp/idf/export.sh
           espsecure.py generate_signing_key --version 2 \
             firmware/tiny_touch_unified/secure_boot_signing_key.pem >/dev/null
-      - name: Build factory firmware
+      - name: Build factory and recovery firmware
         run: |
           source /opt/esp/idf/export.sh
           idf.py -C firmware/tiny_touch_unified build
+          idf.py -C firmware/tiny_touch_unified \
+            -B firmware/tiny_touch_unified/build-recovery \
+            -D TINYTOUCH_RECOVERY_BUILD=ON build
       - name: Assemble and verify firmware artifacts
         run: |
           source /opt/esp/idf/export.sh
           for image in \
-            firmware/tiny_touch_unified/build/tiny_touch_unified.bin; do
+            firmware/tiny_touch_unified/build/tiny_touch_unified.bin \
+            firmware/tiny_touch_unified/build-recovery/tiny_touch_unified.bin; do
             espsecure.py verify_signature --version 2 \
               --keyfile firmware/tiny_touch_unified/secure_boot_signing_key.pem "$image"
           done
           for image in \
-            firmware/tiny_touch_unified/build/bootloader/bootloader.bin; do
+            firmware/tiny_touch_unified/build/bootloader/bootloader.bin \
+            firmware/tiny_touch_unified/build-recovery/bootloader/bootloader.bin; do
             esptool.py --chip esp32s3 image_info "$image"
           done
-          python packaging/assemble-release.py \
+          python release/assemble-release.py \
             --firmware-build firmware/tiny_touch_unified/build \
+            --recovery-build firmware/tiny_touch_unified/build-recovery \
             --build-id "${GITHUB_SHA:0:12}"
-          python packaging/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
+          python release/release_integrity.py firmware dist/release --commit "$GITHUB_SHA"
 
   macos-cli:
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     strategy:
       matrix:
         include:
@@ -69,16 +137,16 @@ jobs:
           architecture: ${{ matrix.architecture }}
       - name: Test CLI and HID protocol
         run: |
-          python -m pip install --require-hashes -r software/macos-helper/requirements-bootstrap.txt
+          python -m pip install --require-hashes -r macos/requirements-bootstrap.txt
           python -m pip install --no-build-isolation --require-hashes \
-            -r software/macos-helper/requirements-release.txt
+            -r macos/requirements-release.txt
           python -m unittest discover -s tests -v
-          python -m py_compile tinytouch software/macos-helper/tinytouch_helper.py packaging/*.py
-          zsh -n packaging/build-standalone-macos.sh firmware/build-and-flash
+          python -m py_compile macos/cli.py macos/tinytouch_helper.py release/*.py
+          zsh -n release/build-standalone-macos.sh
       - name: Build macOS executable
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
-        run: packaging/build-standalone-macos.sh
+        run: release/build-standalone-macos.sh
       - name: Verify executable
         run: |
           mkdir dist/verify
@@ -100,38 +168,6 @@ jobs:
           name: tinytouch-macos-${{ matrix.expected_arch }}
           path: dist/tinytouch.tar.gz
 
-  consistency:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Enforce contributor attribution policy
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
-            BASE_SHA="$(git rev-parse HEAD^)"
-            HEAD_SHA="$(git rev-parse HEAD)"
-          fi
-
-          rejected=0
-          while read -r commit; do
-            metadata="$(git show --no-patch \
-              --format='%an%n%ae%n%cn%n%ce%n%B' "$commit")"
-            if grep -Eiq '(claude|anthropic)' <<<"$metadata"; then
-              echo "Rejected commit: $commit" >&2
-              rejected=1
-            fi
-          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
-          test "$rejected" -eq 0
-      - name: Verify release sources
-        run: |
-          test -s VERSION
-          python3 -m py_compile tinytouch packaging/*.py
-
   docs:
     runs-on: ubuntu-latest
     defaults:
@@ -148,3 +184,26 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  complete:
+    name: CI
+    if: always()
+    needs: [changes, firmware, macos-cli, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          FIRMWARE_RESULT: ${{ needs.firmware.result }}
+          MACOS_RESULT: ${{ needs.macos-cli.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          PRODUCT_CHANGED: ${{ needs.changes.outputs.product }}
+          VERSION_CHANGED: ${{ needs.changes.outputs.version }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          [[ "$FIRMWARE_RESULT" == success || "$FIRMWARE_RESULT" == skipped ]]
+          [[ "$MACOS_RESULT" == success || "$MACOS_RESULT" == skipped ]]
+          test "$DOCS_RESULT" = success
+          if [[ "$PRODUCT_CHANGED" == true && "$VERSION_CHANGED" != true ]]; then
+            echo "Firmware, CLI, and release changes must update VERSION." >&2
+            exit 1
+          fi

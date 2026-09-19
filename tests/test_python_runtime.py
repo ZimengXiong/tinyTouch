@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "check_python_runtime",
-    Path(__file__).resolve().parents[1] / "packaging" / "check-python-runtime.py",
+    Path(__file__).resolve().parents[1] / "release" / "check-python-runtime.py",
 )
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)

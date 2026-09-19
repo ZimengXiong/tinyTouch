@@ -1,29 +1,34 @@
-# Setup
+---
+title: Set up tinyTouch
+description: Install the CLI and enroll your fingerprint on macOS.
+prev:
+  text: Install firmware
+  link: /flash
+next: false
+---
 
-On an Apple silicon or Intel Mac:
+# Set up tinyTouch
 
-## 1. Install
+Connect tinyTouch to your Mac.
+
+## 1. Install the CLI
+
+Open **Terminal** and run:
 
 ```sh
 curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh
 ```
 
-## 2. Set up
+## 2. Enroll your fingerprint
 
 ```sh
 tinytouch setup
 ```
 
-Follow the CLI instructions. Run `tinytouch setup` again any time to edit your configuration.
+Follow the prompts. Choose PIV for smart-card login or HID for password entry. Lift your finger between scans.
 
-## Modes
+For PIV, enter `111111` if macOS asks for a smart-card PIN. For HID, enter your Mac login password when prompted.
 
-### PIV
+## 3. Try it
 
-PIV presents a USB smart card for macOS login and `sudo`.
-
-### HID
-
-HID presents a USB keyboard and types a Keychain password after a fingerprint match.
-
-If setup reports an existing fingerprint, use [Recovery](./recovery) to erase and reinstall the factory image.
+Lock your Mac, then touch the sensor to sign in. In HID mode, select the password field first.

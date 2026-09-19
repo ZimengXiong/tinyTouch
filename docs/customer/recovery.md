@@ -1,20 +1,33 @@
-# Recovery
+---
+title: Recover tinyTouch
+description: Choose between normal diagnostics, factory reset, factory flashing, and full recovery.
+---
 
-Recovery erases fingerprints, keys, pairings, settings, and firmware state.
+# Recover tinyTouch
 
-Try this first:
+Recovery erases fingerprints, keys, pairings, and settings.
+
+## Reset from the CLI
+
+If the device responds, run:
 
 ```sh
-tinytouch status --verbose
 tinytouch factory-reset
 ```
 
-If the device still cannot be set up, open the [Flash center](/flash), choose **Recovery**, and follow the steps. Recovery erases flash and writes the signed factory image. You need Chrome or Edge, a USB data cable, and access to **BOOT** and **RESET**.
+Approve with your fingerprint. This also removes local credentials and PIV pairing.
 
-After recovery, unplug and reconnect the device, wait 20 seconds, then run:
+## Recover with the browser
+
+1. Disconnect tinyTouch.
+2. Hold **BOOT** while plugging in USB, then release **BOOT**.
+3. Open the [Flash center](/flash?firmware=recovery) in Chrome or Edge.
+4. Select **Recovery firmware** and choose **Erase and recover**.
+5. Select the ESP32-S3 download-mode port.
+6. After flashing, leave the device connected for 20 seconds.
+7. Unplug and reconnect it once.
+8. Run setup:
 
 ```sh
 tinytouch setup
 ```
-
-See the [Recovery reference](/reference/recovery) for details.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 
-type ToolName = 'factory' | 'recovery' | 'beta'
+type ToolName = 'factory' | 'recovery' | 'dev'
 type FlashPhase = 'select' | 'connected' | 'writing' | 'reset' | 'done'
 type ManifestImage = { name: string; file: string; address: number; size: number; sha256: string }
 type Manifest = {
@@ -17,7 +17,8 @@ type FirmwareFile = { data: Uint8Array; address: number }
 
 const FLASH_BYTES = 4 * 1024 * 1024
 const UPDATE_PROTOCOL = 6
-const REQUIRED_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
+const FACTORY_ADDRESSES = [0x0, 0x8000, 0x10000, 0x210000]
+const RECOVERY_ADDRESSES = [...FACTORY_ADDRESSES, 0x212000]
 const ESPTOOL_MODULE = '/flash/vendor/esptool-js.js'
 const RELEASE_API = 'https://api.github.com/repos/ZimengXiong/tinyTouch/releases?per_page=20'
 
@@ -51,23 +52,21 @@ function friendlyError(error: unknown, phase: FlashPhase = 'select', mode = sele
   const text = error instanceof Error ? error.message : String(error)
   const recovery = mode === 'recovery'
   if (/notfound|no port selected|chooser/i.test(text) && phase === 'select') {
-    return recovery ? 'No board was selected. Nothing was erased.' : 'No board was selected. Nothing was flashed.'
+    return 'No board selected.'
   }
   if (phase === 'writing' || phase === 'reset') {
     return recovery
-      ? `Recovery stopped after write operations began. ${text || 'Keep the board connected and retry recovery.'}`
-      : `Flashing stopped after write operations began. ${text || 'Reconnect the board and use recovery before retrying.'}`
+      ? `Recovery stopped. ${text || 'Retry recovery.'}`
+      : `Flashing stopped. ${text || 'Reconnect the board and retry.'}`
   }
-  if (/securityerror|permission denied|access denied/i.test(text)) return 'Chrome does not have permission to use this serial port. Reload the page, select the board again, and approve access.'
+  if (/securityerror|permission denied|access denied/i.test(text)) return 'Serial access denied. Select the board and approve access.'
   if (/already open|busy|networkerror/i.test(text)) return recovery
     ? 'The serial port is busy. Close tinyTouch helpers, serial monitors, and other flashing tabs, then try again.'
     : 'The serial port is busy or was disconnected. Close serial monitors and other flashing tabs, reconnect the board, then try again.'
-  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return recovery
-    ? 'The board is not in download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
-    : 'The ESP32-S3 did not enter download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
+  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return 'Disconnect USB. Hold BOOT while plugging it in, release BOOT, then retry.'
   if (/could not be downloaded/i.test(text)) return `${text} Check your internet connection, reload the page, and try again.`
-  if (/integrity check/i.test(text)) return `${text} Reload the page before trying again; do not flash a file that failed verification.`
-  return text || (recovery ? 'Recovery stopped before completion.' : 'Flashing stopped. Nothing else was changed.')
+  if (/integrity check/i.test(text)) return `${text} Reload and retry.`
+  return text || (recovery ? 'Recovery stopped.' : 'Flashing stopped.')
 }
 
 async function sha256(data: ArrayBuffer) {
@@ -83,40 +82,45 @@ function releaseAsset(file: string, tag?: string) {
 
 async function loadManifest(mode: ToolName) {
   let tag: string | undefined
-  if (mode === 'beta') {
+  if (mode === 'dev') {
     const releasesResponse = await fetch(RELEASE_API, { cache: 'no-store' })
-    if (!releasesResponse.ok) throw new Error('Beta releases could not be downloaded.')
+    if (!releasesResponse.ok) throw new Error('Development releases could not be downloaded.')
     const releases = await releasesResponse.json() as Array<{ draft: boolean; prerelease: boolean; tag_name: string }>
-    const beta = releases.find((release) =>
-      !release.draft && release.prerelease && /^v[0-9]+\.[0-9]+\.[0-9]+-beta(?:[.-][0-9A-Za-z.-]+)?$/.test(release.tag_name)
+    const development = releases.find((release) =>
+      !release.draft && release.prerelease && /^v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$/.test(release.tag_name)
     )
-    if (!beta) throw new Error('No beta release is available.')
-    tag = beta.tag_name
+    if (!development) throw new Error('No development release is available.')
+    tag = development.tag_name
   }
-  const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Beta'
+  const label = mode === 'factory' ? 'Firmware' : mode === 'recovery' ? 'Recovery' : 'Development'
   const response = await fetch(releaseAsset('release-manifest.json', tag), { cache: 'no-store' })
   if (!response.ok) throw new Error(`${label} manifest could not be downloaded.`)
-  const release = await response.json() as { firmware?: { factory?: Manifest } }
-  const nextManifest = release.firmware?.factory
+  const release = await response.json() as {
+    firmware?: { factory?: Manifest; recovery?: Manifest }
+  }
+  const nextManifest = mode === 'recovery'
+    ? release.firmware?.recovery
+    : release.firmware?.factory
+  const requiredAddresses = mode === 'recovery' ? RECOVERY_ADDRESSES : FACTORY_ADDRESSES
   if (!nextManifest || typeof nextManifest !== 'object' || typeof nextManifest.version !== 'string' ||
       nextManifest.protocol !== UPDATE_PROTOCOL || nextManifest.secureVersion !== 0 ||
       nextManifest.flashSize !== '4MB' || nextManifest.eraseAll !== false ||
       nextManifest.compress !== false || !Array.isArray(nextManifest.images) ||
-      nextManifest.images.length !== REQUIRED_ADDRESSES.length) {
+      nextManifest.images.length !== requiredAddresses.length) {
     throw new Error(`${label} manifest is incomplete.`)
   }
   const ranges: [number, number][] = []
   for (const image of nextManifest.images) {
     if (!image || typeof image.name !== 'string' || typeof image.file !== 'string' ||
         !/^[A-Za-z0-9._-]+$/.test(image.file) || !Number.isInteger(image.address) ||
-        !REQUIRED_ADDRESSES.includes(image.address) || !Number.isInteger(image.size) ||
+        !requiredAddresses.includes(image.address) || !Number.isInteger(image.size) ||
         image.size <= 0 || image.size > FLASH_BYTES || typeof image.sha256 !== 'string' ||
         !/^[0-9a-f]{64}$/.test(image.sha256) || image.address + image.size > FLASH_BYTES) {
       throw new Error(`${label} manifest contains an invalid flash image.`)
     }
     ranges.push([image.address, image.address + image.size])
   }
-  if (new Set(nextManifest.images.map((image) => image.address)).size !== REQUIRED_ADDRESSES.length) {
+  if (new Set(nextManifest.images.map((image) => image.address)).size !== requiredAddresses.length) {
     throw new Error(`${label} manifest contains duplicate flash regions.`)
   }
   ranges.sort((a, b) => a[0] - b[0])
@@ -171,11 +175,7 @@ async function flash() {
 
     const totalBytes = currentManifest.images.reduce((sum, image) => sum + image.size, 0)
     const written = fileArray.map(() => 0)
-    if (mode === 'recovery') {
-      stage.value = 'Erasing flash'
-      await loader.eraseFlash()
-    }
-    stage.value = mode === 'recovery' ? 'Writing factory firmware' : 'Writing firmware'
+    stage.value = mode === 'recovery' ? 'Writing recovery firmware' : 'Writing firmware'
     phase = 'writing'
     await loader.writeFlash({
       fileArray,
@@ -196,7 +196,7 @@ async function flash() {
     transport = undefined
     phase = 'done'
     show(mode === 'recovery'
-      ? 'Flash complete. The device was erased and the factory firmware was installed. Unplug and reconnect it once, then run tinytouch setup.'
+      ? 'Recovery firmware installed. Leave the device connected for 20 seconds while it clears fingerprints, keys, and settings. Then unplug and reconnect it once and run tinytouch setup.'
       : 'Flash complete. Unplug the board and reconnect it once.', 'success')
   } catch (error) {
     show(friendlyError(error, phase, mode), 'error')
@@ -241,12 +241,12 @@ onMounted(async () => {
       <select id="flash-version" v-model="selected" :disabled="busy" @change="selectTool">
         <option value="factory">Factory firmware</option>
         <option value="recovery">Recovery firmware</option>
-        <option value="beta">Beta firmware</option>
+        <option value="dev">Development firmware</option>
       </select>
     </div>
     <div class="flash-tool-body">
-      <p class="flash-description">
-        {{ selected === 'recovery' ? 'Erase the device and reinstall tinyTouch.' : 'Install tinyTouch on a new ESP32-S3 board.' }}
+      <p v-if="selected === 'recovery'" class="flash-description">
+        Erases fingerprints, keys, and settings.
       </p>
       <p class="flash-version">Version {{ manifest?.version ?? '…' }}</p>
       <div v-if="busy || progress > 0" class="flash-progress">

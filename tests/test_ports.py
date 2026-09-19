@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "software/macos-helper"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "macos"))
 from tinytouch_ports import MacSerialPorts, SerialPort, _location_string  # noqa: E402
 import tinytouch_helper as helper  # noqa: E402
 
@@ -123,7 +123,7 @@ assert growth < 4 * 1024 * 1024, f"Serial discovery grew by {growth} bytes"
 """
         result = subprocess.run(
             [sys.executable, "-c", script],
-            cwd=Path(__file__).resolve().parents[1] / "software/macos-helper",
+            cwd=Path(__file__).resolve().parents[1] / "macos",
             capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
