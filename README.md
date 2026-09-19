@@ -31,6 +31,7 @@ if you would like to support this project, please consider [donating](https://gi
 - [hardware](#hardware)
 - [wiring](#wiring)
 - [notes](#notes)
+- [on-device dashboard](docs/on-device-dashboard.md)
 
 ## red pill or blue pill?
 
@@ -117,6 +118,10 @@ step is still your real password being typed into whatever has focus.
 to make it less bad, the esp never stores the password. requests use a nonce and
 mac so old requests cannot just be replayed, and the helper only sends back an
 encrypted one-time response. the password only exists on the esp briefly in ram.
+
+in HID mode you can also open the on-device dashboard (`tinytouch dashboard` or
+http://192.168.7.1/) to manage fingerprints and typing settings on the dongle.
+see [docs/on-device-dashboard.md](docs/on-device-dashboard.md).
 
 ### piv mode
 
@@ -242,6 +247,11 @@ the interrupt pin can be connected anywhere. in firmware, it is connected to pin
 1.
 
 ## notes
+
+HID mode presents a USB Ethernet adapter for the on-device dashboard. After
+plugging in, allow the USB Ethernet accessory if macOS asks, then open
+`http://192.168.7.1/` or run `tinytouch dashboard`. Details, architecture, and
+limitations: [docs/on-device-dashboard.md](docs/on-device-dashboard.md).
 
 do not commit:
 

@@ -5,6 +5,7 @@
 
 #include "class/hid/hid_device.h"
 #include "config_console.h"
+#include "dashboard_api.h"
 #include "device_config.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -393,6 +394,11 @@ static void touch_hid_task(void *arg) {
   touch_pin_hid_log_event("task_started", 0);
 
   while (true) {
+    // Dashboard enroll/unlock owns the sensor; pause background typing.
+    if (dashboard_is_paused()) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
     // Console commands such as PIV setup own the fingerprint session. Do not
     // let background HID/PIV handling capture the same finger or type into
     // macOS while that command is awaiting its explicit authorization.

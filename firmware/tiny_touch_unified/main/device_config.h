@@ -28,10 +28,13 @@ bool device_config_add_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE],
                                 const uint8_t key[32]);
 bool device_config_remove_hid_host(const uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE]);
 bool device_config_set_fingerprint_profile_views(uint8_t views);
+bool device_config_hid_key_configured(void);
 uint16_t device_config_typing_delay_ms(void);
 bool device_config_set_typing_delay_ms(uint16_t value);
 bool device_config_submit_enter(void);
 bool device_config_set_submit_enter(bool value);
+bool device_config_idle_led(void);
+bool device_config_set_idle_led(bool value);
 uint16_t device_config_touch_cooldown_ms(void);
 bool device_config_set_touch_cooldown_ms(uint16_t value);
 bool device_config_factory_reset(void);

@@ -38,6 +38,8 @@ from tinytouch_runtime import (
 )
 from tinytouch_ports import comports
 
+DASHBOARD_URL = "http://192.168.7.1/"
+
 
 SERVICE = "tinyTouch"
 ACCOUNT = "tinyTouch"
@@ -591,6 +593,7 @@ def serve_port(
                 diagnostic("worker.usb_reattach_requested", device_id=device_id, port=port)
                 raise serial.SerialException("USB reattach requested")
             diagnostic("worker.connected", device_id=device_id, port=port)
+            print(f"dashboard at {DASHBOARD_URL} (HID mode USB Ethernet)", flush=True)
             while True:
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)

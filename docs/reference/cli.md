@@ -100,6 +100,19 @@ tinytouch enroll 3 --port /dev/cu.usbmodem101
 
 Setup uses slots 1–4.
 
+In HID mode, `tinytouch status` also prints the on-device dashboard URL.
+
+## Dashboard
+
+```sh
+tinytouch dashboard
+tinytouch dashboard --no-open
+```
+
+Opens [http://192.168.7.1/](http://192.168.7.1/) for fingerprint and typing settings on the dongle. See [On-device dashboard](/on-device-dashboard).
+
+## Fingerprints
+
 ## `delete`
 
 ```text
