@@ -52,23 +52,21 @@ function friendlyError(error: unknown, phase: FlashPhase = 'select', mode = sele
   const text = error instanceof Error ? error.message : String(error)
   const recovery = mode === 'recovery'
   if (/notfound|no port selected|chooser/i.test(text) && phase === 'select') {
-    return recovery ? 'No board was selected. Nothing was erased.' : 'No board was selected. Nothing was flashed.'
+    return 'No board selected.'
   }
   if (phase === 'writing' || phase === 'reset') {
     return recovery
-      ? `Recovery stopped after write operations began. ${text || 'Keep the board connected and retry recovery.'}`
-      : `Flashing stopped after write operations began. ${text || 'Reconnect the board and use recovery before retrying.'}`
+      ? `Recovery stopped. ${text || 'Retry recovery.'}`
+      : `Flashing stopped. ${text || 'Reconnect the board and retry.'}`
   }
-  if (/securityerror|permission denied|access denied/i.test(text)) return 'Chrome does not have permission to use this serial port. Reload the page, select the board again, and approve access.'
+  if (/securityerror|permission denied|access denied/i.test(text)) return 'Serial access denied. Select the board and approve access.'
   if (/already open|busy|networkerror/i.test(text)) return recovery
     ? 'The serial port is busy. Close tinyTouch helpers, serial monitors, and other flashing tabs, then try again.'
     : 'The serial port is busy or was disconnected. Close serial monitors and other flashing tabs, reconnect the board, then try again.'
-  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return recovery
-    ? 'The board is not in download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
-    : 'The ESP32-S3 did not enter download mode. Hold BOOT, tap RESET, release BOOT, then try again.'
+  if (/connect|serial data|timeout|sync|bootloader/i.test(text)) return 'Disconnect USB. Hold BOOT while plugging it in, release BOOT, then retry.'
   if (/could not be downloaded/i.test(text)) return `${text} Check your internet connection, reload the page, and try again.`
-  if (/integrity check/i.test(text)) return `${text} Reload the page before trying again; do not flash a file that failed verification.`
-  return text || (recovery ? 'Recovery stopped before completion.' : 'Flashing stopped. Nothing else was changed.')
+  if (/integrity check/i.test(text)) return `${text} Reload and retry.`
+  return text || (recovery ? 'Recovery stopped.' : 'Flashing stopped.')
 }
 
 async function sha256(data: ArrayBuffer) {
@@ -247,8 +245,8 @@ onMounted(async () => {
       </select>
     </div>
     <div class="flash-tool-body">
-      <p class="flash-description">
-        {{ selected === 'recovery' ? 'Erase fingerprint templates, keys, and settings.' : 'Install tinyTouch on a new ESP32-S3 board.' }}
+      <p v-if="selected === 'recovery'" class="flash-description">
+        Erases fingerprints, keys, and settings.
       </p>
       <p class="flash-version">Version {{ manifest?.version ?? '…' }}</p>
       <div v-if="busy || progress > 0" class="flash-progress">

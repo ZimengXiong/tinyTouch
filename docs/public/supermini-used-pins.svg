@@ -1,0 +1,504 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:cc="http://creativecommons.org/ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" viewBox="-175 -5 545 305" role="img" aria-labelledby="supermini-title supermini-desc"><title id="supermini-title">ESP32-S3 Super Mini pins used by tinyTouch</title><desc id="supermini-desc">Original top-view board artwork showing only TX, RX, GPIO2, GND, and 3V3.</desc><metadata><rdf:RDF><cc:Work rdf:about=""><dc:title>ESP32-S3 Super Mini pinout diagram - high resolution</dc:title><dc:description>Pinout for the ESP32-S3 Super Mini, front and back. Drawn by ESPboards from the ESP32-S3 Series Datasheet v2.2. Licensed CC BY-NC 4.0.</dc:description><dc:creator><cc:Agent><dc:title>ESPboards</dc:title></cc:Agent></dc:creator><dc:rights><cc:Agent><dc:title>(c) 2026 espboards.dev</dc:title></cc:Agent></dc:rights><dc:source>https://www.espboards.dev/esp32/esp32-s3-super-mini/</dc:source><dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage" /><cc:license rdf:resource="https://creativecommons.org/licenses/by-nc/4.0/" /></cc:Work><cc:License rdf:about="https://creativecommons.org/licenses/by-nc/4.0/"><cc:permits rdf:resource="http://creativecommons.org/ns#Reproduction" /><cc:permits rdf:resource="http://creativecommons.org/ns#Distribution" /><cc:permits rdf:resource="http://creativecommons.org/ns#DerivativeWorks" /><cc:requires rdf:resource="http://creativecommons.org/ns#Notice" /><cc:requires rdf:resource="http://creativecommons.org/ns#Attribution" /><cc:prohibits rdf:resource="http://creativecommons.org/ns#CommercialUse" /></cc:License></rdf:RDF></metadata><defs>
+    <linearGradient id="nodemcu-32s-linearGradient69393">
+      <stop style="stop-color:#605543;stop-opacity:1;" offset="0" id="nodemcu-32s-stop69389" />
+      <stop style="stop-color:#959692;stop-opacity:1" offset="1" id="nodemcu-32s-stop69391" />
+    </linearGradient>
+    <linearGradient id="nodemcu-32s-linearGradient69137">
+      <stop style="stop-color:#999890;stop-opacity:1;" offset="0" id="nodemcu-32s-stop69133" />
+      <stop style="stop-color:#999890;stop-opacity:0;" offset="1" id="nodemcu-32s-stop69135" />
+    </linearGradient>
+    <linearGradient id="nodemcu-32s-linearGradient69065">
+      <stop style="stop-color:#605543;stop-opacity:1;" offset="0" id="nodemcu-32s-stop69061" />
+      <stop style="stop-color:#605543;stop-opacity:0;" offset="1" id="nodemcu-32s-stop69063" />
+    </linearGradient>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter49800" x="-0.15475245" y="-0.057237213" width="1.2956877" height="1.1298058">
+      <feOffset dy="3" dx="3" id="nodemcu-32s-feOffset49790" />
+      <feGaussianBlur stdDeviation="3" result="blur" id="nodemcu-32s-feGaussianBlur49792" />
+      <feFlood flood-color="rgb(0,0,0)" flood-opacity="0.40037243947858475" result="flood" id="nodemcu-32s-feFlood49794" />
+      <feComposite in="flood" in2="SourceGraphic" operator="in" result="composite" id="nodemcu-32s-feComposite49796" />
+      <feBlend in="blur" in2="composite" mode="normal" id="nodemcu-32s-feBlend49798" />
+    </filter>
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient69067" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" gradientUnits="userSpaceOnUse" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient69139" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" gradientUnits="userSpaceOnUse" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient69323" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" gradientUnits="userSpaceOnUse" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78643" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78645" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78647" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78649" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78651" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78653" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78655" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78657" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78659" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78661" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78663" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78665" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78667" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78669" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78671" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78673" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78675" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78677" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78679" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78681" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78683" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78685" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78687" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78689" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78691" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78693" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78695" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78697" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78699" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78701" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78703" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78705" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78707" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78709" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78711" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78713" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78715" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78717" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78719" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78721" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78723" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78725" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78727" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78729" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78731" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78733" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78735" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78737" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78739" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78741" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78743" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient78745" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient78747" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient78749" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79040" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79042" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79044" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79046" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79048" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79050" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79052" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79054" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79056" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79058" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79060" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79062" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79064" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79066" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79068" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79070" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79072" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79074" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79076" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79078" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79080" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79082" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79084" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79086" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79088" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79090" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79092" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79094" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79096" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79098" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79100" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79102" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79104" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79106" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79108" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79110" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79112" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79114" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79116" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79118" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79120" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79122" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79124" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79126" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79128" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79130" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79132" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79134" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79136" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79138" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79140" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79142" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79144" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79146" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <radialGradient href="#nodemcu-32s-linearGradient69393" id="nodemcu-32s-radialGradient79148" gradientUnits="userSpaceOnUse" gradientTransform="matrix(1,0,0,1.0076922,0,0.52478915)" cx="-150.30165" cy="-68.223351" fx="-150.30165" fy="-68.223351" r="10.168141" />
+    <linearGradient href="#nodemcu-32s-linearGradient69065" id="nodemcu-32s-linearGradient79150" gradientUnits="userSpaceOnUse" x1="-230.43541" y1="107.79695" x2="-230.71252" y2="103.79919" />
+    <linearGradient href="#nodemcu-32s-linearGradient69137" id="nodemcu-32s-linearGradient79152" gradientUnits="userSpaceOnUse" x1="191.84773" y1="-190.07961" x2="197.23093" y2="-191.39253" />
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79154" x="-0.52092297" y="-0.34550991" width="2.0418459" height="1.6910198">
+      <feGaussianBlur stdDeviation="1.7827308" id="nodemcu-32s-feGaussianBlur79156" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79158" x="-0.54883601" y="-0.36402365" width="2.097672" height="1.7280473">
+      <feGaussianBlur stdDeviation="1.8782563" id="nodemcu-32s-feGaussianBlur79160" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79162" x="-0.67630642" y="-0.44857029" width="2.3526128" height="1.8971406">
+      <feGaussianBlur stdDeviation="2.3144925" id="nodemcu-32s-feGaussianBlur79164" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79166" x="-0.53860153" y="-0.35723548" width="2.0772031" height="1.714471">
+      <feGaussianBlur stdDeviation="1.8432313" id="nodemcu-32s-feGaussianBlur79168" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79170" x="-0.33983288" y="-0.22539922" width="1.6796658" height="1.4507984">
+      <feGaussianBlur stdDeviation="1.1629945" id="nodemcu-32s-feGaussianBlur79172" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79174" x="-0.32780433" y="-0.2174211" width="1.6556087" height="1.4348422">
+      <feGaussianBlur stdDeviation="1.1218298" id="nodemcu-32s-feGaussianBlur79176" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79178" x="-0.33178978" y="-0.22006451" width="1.6635796" height="1.440129">
+      <feGaussianBlur stdDeviation="1.135469" id="nodemcu-32s-feGaussianBlur79180" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79182" x="-0.33983288" y="-0.22539922" width="1.6796658" height="1.4507984">
+      <feGaussianBlur stdDeviation="1.1629945" id="nodemcu-32s-feGaussianBlur79184" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79186" x="-0.29868125" y="-0.19810478" width="1.5973625" height="1.3962096">
+      <feGaussianBlur stdDeviation="1.0221631" id="nodemcu-32s-feGaussianBlur79188" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79190" x="-0.35002222" y="-0.23215745" width="1.7000444" height="1.4643149">
+      <feGaussianBlur stdDeviation="1.197865" id="nodemcu-32s-feGaussianBlur79192" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79194" x="-0.38363946" y="-0.25445458" width="1.7672789" height="1.5089092">
+      <feGaussianBlur stdDeviation="1.3129117" id="nodemcu-32s-feGaussianBlur79196" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79198" x="-0.33983288" y="-0.22539922" width="1.6796658" height="1.4507984">
+      <feGaussianBlur stdDeviation="1.1629945" id="nodemcu-32s-feGaussianBlur79200" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79202" x="-0.35002222" y="-0.23215745" width="1.7000444" height="1.4643149">
+      <feGaussianBlur stdDeviation="1.197865" id="nodemcu-32s-feGaussianBlur79204" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79206" x="-0.34389058" y="-0.22809054" width="1.6877812" height="1.4561811">
+      <feGaussianBlur stdDeviation="1.1768809" id="nodemcu-32s-feGaussianBlur79208" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79312" x="-0.47442533" y="-0.31466966" width="1.9488507" height="1.6293393">
+      <feGaussianBlur stdDeviation="1.623604" id="nodemcu-32s-feGaussianBlur79314" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79324" x="-0.47442533" y="-0.31466966" width="1.9488507" height="1.6293393">
+      <feGaussianBlur stdDeviation="1.623604" id="nodemcu-32s-feGaussianBlur79326" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79332" x="-0.38579172" y="-0.2558821" width="1.7715834" height="1.5117642">
+      <feGaussianBlur stdDeviation="1.3202773" id="nodemcu-32s-feGaussianBlur79334" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter79336" x="-0.46728226" y="-0.30993191" width="1.9345645" height="1.6198638">
+      <feGaussianBlur stdDeviation="1.5991586" id="nodemcu-32s-feGaussianBlur79338" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80659" x="-74.299193" y="-0.24911109" width="149.59839" height="1.4982222">
+      <feGaussianBlur stdDeviation="0.9671606" id="nodemcu-32s-feGaussianBlur80661" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80663" x="-78.498471" y="-0.26921454" width="157.99694" height="1.5384291">
+      <feGaussianBlur stdDeviation="1.0453721" id="nodemcu-32s-feGaussianBlur80665" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80724" x="-1.8194364" y="-0.22374897" width="4.6960103" height="1.4354023">
+      <feGaussianBlur stdDeviation="0.6496973" id="nodemcu-32s-feGaussianBlur80726" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80766" x="-1.8649946" y="-0.22997006" width="4.7871267" height="1.4478445">
+      <feGaussianBlur stdDeviation="0.67054188" id="nodemcu-32s-feGaussianBlur80768" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80808" x="-1.8194364" y="-0.22374897" width="4.6960103" height="1.4354023">
+      <feGaussianBlur stdDeviation="0.6496973" id="nodemcu-32s-feGaussianBlur80810" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80812" x="-1.6303299" y="-0.19792597" width="4.3177973" height="1.3837563">
+      <feGaussianBlur stdDeviation="0.56317399" id="nodemcu-32s-feGaussianBlur80814" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80816" x="-74.299193" y="-0.24911109" width="149.59839" height="1.4982222">
+      <feGaussianBlur stdDeviation="0.9671606" id="nodemcu-32s-feGaussianBlur80818" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80820" x="-72.935714" y="-0.24258363" width="146.87143" height="1.4851673">
+      <feGaussianBlur stdDeviation="0.9417658" id="nodemcu-32s-feGaussianBlur80822" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80824" x="-80.175606" y="-0.27724359" width="161.35121" height="1.5544872">
+      <feGaussianBlur stdDeviation="1.0766088" id="nodemcu-32s-feGaussianBlur80826" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80828" x="-79.214219" y="-0.27264109" width="159.42844" height="1.5452822">
+      <feGaussianBlur stdDeviation="1.0587029" id="nodemcu-32s-feGaussianBlur80830" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80870" x="-1.5543895" y="-0.1875561" width="4.1659165" height="1.3630165">
+      <feGaussianBlur stdDeviation="0.52842845" id="nodemcu-32s-feGaussianBlur80872" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80874" x="-1.8194364" y="-0.22374897" width="4.6960103" height="1.4354023">
+      <feGaussianBlur stdDeviation="0.6496973" id="nodemcu-32s-feGaussianBlur80876" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80916" x="-77.787254" y="-0.26580969" width="156.57451" height="1.5316194">
+      <feGaussianBlur stdDeviation="1.0321257" id="nodemcu-32s-feGaussianBlur80918" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80920" x="-65.760822" y="-0.20823485" width="132.52164" height="1.4164697">
+      <feGaussianBlur stdDeviation="0.80813345" id="nodemcu-32s-feGaussianBlur80922" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80924" x="-68.091487" y="-0.21939258" width="137.18297" height="1.4387852">
+      <feGaussianBlur stdDeviation="0.85154203" id="nodemcu-32s-feGaussianBlur80926" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80928" x="-78.73655" y="-0.27035431" width="158.4731" height="1.5407086">
+      <feGaussianBlur stdDeviation="1.0498063" id="nodemcu-32s-feGaussianBlur80930" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80932" x="-74.987737" y="-0.2524074" width="150.97547" height="1.5048148">
+      <feGaussianBlur stdDeviation="0.97998469" id="nodemcu-32s-feGaussianBlur80934" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80936" x="-76.145385" y="-0.25794948" width="153.29077" height="1.515899">
+      <feGaussianBlur stdDeviation="1.0015459" id="nodemcu-32s-feGaussianBlur80938" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80978" x="-2.1367453" y="-0.26707835" width="5.3306282" height="1.522061">
+      <feGaussianBlur stdDeviation="0.79487799" id="nodemcu-32s-feGaussianBlur80980" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80982" x="-2.3690022" y="-0.29879365" width="5.7951419" height="1.5854916">
+      <feGaussianBlur stdDeviation="0.90114422" id="nodemcu-32s-feGaussianBlur80984" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80986" x="-1.9582689" y="-0.24270693" width="4.9736754" height="1.4733182">
+      <feGaussianBlur stdDeviation="0.71321842" id="nodemcu-32s-feGaussianBlur80988" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80990" x="-1.9979826" y="-0.24812993" width="5.0531027" height="1.4841642">
+      <feGaussianBlur stdDeviation="0.73138886" id="nodemcu-32s-feGaussianBlur80992" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80994" x="-2.1367453" y="-0.26707835" width="5.3306282" height="1.522061">
+      <feGaussianBlur stdDeviation="0.79487799" id="nodemcu-32s-feGaussianBlur80996" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter80998" x="-2.3336745" y="-0.29396957" width="5.7244866" height="1.5758435">
+      <feGaussianBlur stdDeviation="0.88498052" id="nodemcu-32s-feGaussianBlur81000" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82153" x="-88.672915" y="-0.31792326" width="178.34583" height="1.6358465">
+      <feGaussianBlur stdDeviation="1.2348711" id="nodemcu-32s-feGaussianBlur82155" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82157" x="-85.355159" y="-0.30203997" width="171.71032" height="1.6040799">
+      <feGaussianBlur stdDeviation="1.173078" id="nodemcu-32s-feGaussianBlur82159" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82199" x="-1.9346806" y="-0.23948587" width="4.9264987" height="1.4668761">
+      <feGaussianBlur stdDeviation="0.70242586" id="nodemcu-32s-feGaussianBlur82201" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82203" x="-2.2553564" y="-0.28327502" width="5.5678504" height="1.5544544">
+      <feGaussianBlur stdDeviation="0.84914704" id="nodemcu-32s-feGaussianBlur82205" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82207" x="-79.453809" y="-0.27378809" width="159.90762" height="1.5475762">
+      <feGaussianBlur stdDeviation="1.0631653" id="nodemcu-32s-feGaussianBlur82209" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82211" x="-77.080568" y="-0.26242653" width="155.16114" height="1.5248531">
+      <feGaussianBlur stdDeviation="1.0189637" id="nodemcu-32s-feGaussianBlur82213" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82253" x="-2.1284228" y="-0.2659419" width="5.3139832" height="1.5197881">
+      <feGaussianBlur stdDeviation="0.79107019" id="nodemcu-32s-feGaussianBlur82255" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82257" x="-2.0789082" y="-0.25918055" width="5.2149541" height="1.5062654">
+      <feGaussianBlur stdDeviation="0.76841542" id="nodemcu-32s-feGaussianBlur82259" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82261" x="-79.214219" y="-0.27264109" width="159.42844" height="1.5452822">
+      <feGaussianBlur stdDeviation="1.0587029" id="nodemcu-32s-feGaussianBlur82263" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82265" x="-79.9345" y="-0.27608933" width="160.869" height="1.5521787">
+      <feGaussianBlur stdDeviation="1.0721182" id="nodemcu-32s-feGaussianBlur82267" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82269" x="-89.450633" y="-0.32164647" width="179.90127" height="1.6432929">
+      <feGaussianBlur stdDeviation="1.2493562" id="nodemcu-32s-feGaussianBlur82271" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82311" x="-79.453809" y="-0.27378809" width="159.90762" height="1.5475762">
+      <feGaussianBlur stdDeviation="1.0631653" id="nodemcu-32s-feGaussianBlur82313" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82315" x="-80.175606" y="-0.27724359" width="161.35121" height="1.5544872">
+      <feGaussianBlur stdDeviation="1.0766088" id="nodemcu-32s-feGaussianBlur82317" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82319" x="-74.299193" y="-0.24911109" width="149.59839" height="1.4982222">
+      <feGaussianBlur stdDeviation="0.9671606" id="nodemcu-32s-feGaussianBlur82321" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82323" x="-72.710231" y="-0.24150416" width="146.42046" height="1.4830083">
+      <feGaussianBlur stdDeviation="0.93756618" id="nodemcu-32s-feGaussianBlur82325" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82327" x="-69.388452" y="-0.22560161" width="139.7769" height="1.4512032">
+      <feGaussianBlur stdDeviation="0.87569805" id="nodemcu-32s-feGaussianBlur82329" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82331" x="-69.824806" y="-0.2276906" width="140.64961" height="1.4553812">
+      <feGaussianBlur stdDeviation="0.88382513" id="nodemcu-32s-feGaussianBlur82333" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82335" x="-69.388452" y="-0.22560161" width="139.7769" height="1.4512032">
+      <feGaussianBlur stdDeviation="0.87569805" id="nodemcu-32s-feGaussianBlur82337" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82339" x="-73.388194" y="-0.24474981" width="147.77639" height="1.4894996">
+      <feGaussianBlur stdDeviation="0.9501932" id="nodemcu-32s-feGaussianBlur82341" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82343" x="-67.024537" y="-0.2142847" width="135.04907" height="1.4285694">
+      <feGaussianBlur stdDeviation="0.83167009" id="nodemcu-32s-feGaussianBlur82345" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82347" x="-1.7159313" y="-0.20961507" width="4.4890002" height="1.4071345">
+      <feGaussianBlur stdDeviation="0.60233987" id="nodemcu-32s-feGaussianBlur82349" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82351" x="-1.8497286" y="-0.22788545" width="4.7565947" height="1.4436752">
+      <feGaussianBlur stdDeviation="0.66355712" id="nodemcu-32s-feGaussianBlur82353" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82355" x="-1.8649946" y="-0.22997006" width="4.7871267" height="1.4478445">
+      <feGaussianBlur stdDeviation="0.67054188" id="nodemcu-32s-feGaussianBlur82357" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82359" x="-1.7524478" y="-0.2146015" width="4.5620331" height="1.4171073">
+      <feGaussianBlur stdDeviation="0.61904753" id="nodemcu-32s-feGaussianBlur82361" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82363" x="-1.7524478" y="-0.2146015" width="4.5620331" height="1.4171073">
+      <feGaussianBlur stdDeviation="0.61904753" id="nodemcu-32s-feGaussianBlur82365" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82367" x="-1.8119133" y="-0.22272167" width="4.6809641" height="1.4333477">
+      <feGaussianBlur stdDeviation="0.6462552" id="nodemcu-32s-feGaussianBlur82369" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82371" x="-1.8119133" y="-0.22272167" width="4.6809641" height="1.4333477">
+      <feGaussianBlur stdDeviation="0.6462552" id="nodemcu-32s-feGaussianBlur82373" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82375" x="-1.5955118" y="-0.19317146" width="4.2481611" height="1.3742473">
+      <feGaussianBlur stdDeviation="0.54724343" id="nodemcu-32s-feGaussianBlur82377" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82379" x="-1.6514605" y="-0.20081141" width="4.3600586" height="1.3895272">
+      <feGaussianBlur stdDeviation="0.57284204" id="nodemcu-32s-feGaussianBlur82381" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82383" x="-1.7598111" y="-0.21560697" width="4.5767597" height="1.4191183">
+      <feGaussianBlur stdDeviation="0.62241649" id="nodemcu-32s-feGaussianBlur82385" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82387" x="-1.8194364" y="-0.22374897" width="4.6960103" height="1.4354023">
+      <feGaussianBlur stdDeviation="0.6496973" id="nodemcu-32s-feGaussianBlur82389" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82391" x="-1.919055" y="-0.23735216" width="4.8952476" height="1.4626087">
+      <feGaussianBlur stdDeviation="0.69527654" id="nodemcu-32s-feGaussianBlur82393" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82395" x="-75.912845" y="-0.25683623" width="152.82569" height="1.5136725">
+      <feGaussianBlur stdDeviation="0.99721486" id="nodemcu-32s-feGaussianBlur82397" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82399" x="-70.924508" y="-0.23295526" width="142.84902" height="1.4659105">
+      <feGaussianBlur stdDeviation="0.90430708" id="nodemcu-32s-feGaussianBlur82401" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82403" x="-79.9345" y="-0.27608933" width="160.869" height="1.5521787">
+      <feGaussianBlur stdDeviation="1.0721182" id="nodemcu-32s-feGaussianBlur82405" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82407" x="-76.145385" y="-0.25794948" width="153.29077" height="1.515899">
+      <feGaussianBlur stdDeviation="1.0015459" id="nodemcu-32s-feGaussianBlur82409" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82411" x="-1.8803404" y="-0.23206558" width="4.8178184" height="1.4520355">
+      <feGaussianBlur stdDeviation="0.67756321" id="nodemcu-32s-feGaussianBlur82413" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter82415" x="-1.8345425" y="-0.22581175" width="4.7262226" height="1.4395278">
+      <feGaussianBlur stdDeviation="0.65660892" id="nodemcu-32s-feGaussianBlur82417" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83646" x="-64.928428" y="-0.20424988" width="130.85686" height="1.4084998">
+      <feGaussianBlur stdDeviation="0.79263005" id="nodemcu-32s-feGaussianBlur83648" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83650" x="-61.282406" y="-0.18679506" width="123.56481" height="1.3735901">
+      <feGaussianBlur stdDeviation="0.72472291" id="nodemcu-32s-feGaussianBlur83652" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83654" x="-87.386773" y="-0.31176603" width="175.77355" height="1.6235321">
+      <feGaussianBlur stdDeviation="1.2109168" id="nodemcu-32s-feGaussianBlur83656" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83658" x="-70.924508" y="-0.23295526" width="142.84902" height="1.4659105">
+      <feGaussianBlur stdDeviation="0.90430708" id="nodemcu-32s-feGaussianBlur83660" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83662" x="-71.813339" y="-0.23721042" width="144.62668" height="1.4744208">
+      <feGaussianBlur stdDeviation="0.92086155" id="nodemcu-32s-feGaussianBlur83664" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter83666" x="-71.590377" y="-0.23614302" width="144.18075" height="1.472286">
+      <feGaussianBlur stdDeviation="0.91670886" id="nodemcu-32s-feGaussianBlur83668" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter84871" x="-99.808131" y="-0.37123153" width="200.61626" height="1.7424631">
+      <feGaussianBlur stdDeviation="1.4422645" id="nodemcu-32s-feGaussianBlur84873" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter84875" x="-85.784088" y="-0.30409341" width="172.56818" height="1.6081868">
+      <feGaussianBlur stdDeviation="1.1810668" id="nodemcu-32s-feGaussianBlur84877" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter84879" x="-83.098964" y="-0.29123875" width="167.19793" height="1.5824775">
+      <feGaussianBlur stdDeviation="1.1310563" id="nodemcu-32s-feGaussianBlur84881" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter84883" x="-77.902956" y="-0.2663636" width="156.80591" height="1.5327272">
+      <feGaussianBlur stdDeviation="1.0342806" id="nodemcu-32s-feGaussianBlur84885" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86096" x="-0.5060047" y="-0.33561515" width="2.0120094" height="1.6712303">
+      <feGaussianBlur stdDeviation="1.7316767" id="nodemcu-32s-feGaussianBlur86098" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86100" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86102" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86104" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86106" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86108" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86110" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86112" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86114" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86116" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86118" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86120" x="-0.36246905" y="-0.24041299" width="1.7249381" height="1.480826">
+      <feGaussianBlur stdDeviation="1.2404612" id="nodemcu-32s-feGaussianBlur86122" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86124" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86126" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86128" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86130" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86132" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86134" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86136" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86138" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86140" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86142" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86144" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86146" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86148" x="-0.35897999" y="-0.23809882" width="1.71796" height="1.4761976">
+      <feGaussianBlur stdDeviation="1.2285208" id="nodemcu-32s-feGaussianBlur86150" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86152" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86154" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86156" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86158" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86160" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86162" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86164" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86166" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86168" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86170" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86172" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86174" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86176" x="-0.52639738" y="-0.34914089" width="2.0527948" height="1.6982818">
+      <feGaussianBlur stdDeviation="1.8014656" id="nodemcu-32s-feGaussianBlur86178" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86180" x="-84.571053" y="-0.29828617" width="170.14211" height="1.5965723">
+      <feGaussianBlur stdDeviation="1.158474" id="nodemcu-32s-feGaussianBlur86182" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86184" x="-84.571053" y="-0.29828617" width="170.14211" height="1.5965723">
+      <feGaussianBlur stdDeviation="1.158474" id="nodemcu-32s-feGaussianBlur86186" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86188" x="-86.585219" y="-0.30792871" width="174.17044" height="1.6158574">
+      <feGaussianBlur stdDeviation="1.1959878" id="nodemcu-32s-feGaussianBlur86190" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86192" x="-86.585219" y="-0.30792871" width="174.17044" height="1.6158574">
+      <feGaussianBlur stdDeviation="1.1959878" id="nodemcu-32s-feGaussianBlur86194" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86196" x="-94.043305" y="-0.34363324" width="189.08661" height="1.6872665">
+      <feGaussianBlur stdDeviation="1.3348946" id="nodemcu-32s-feGaussianBlur86198" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86200" x="-94.043305" y="-0.34363324" width="189.08661" height="1.6872665">
+      <feGaussianBlur stdDeviation="1.3348946" id="nodemcu-32s-feGaussianBlur86202" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86204" x="-96.364196" y="-0.35474418" width="193.72839" height="1.7094884">
+      <feGaussianBlur stdDeviation="1.3781213" id="nodemcu-32s-feGaussianBlur86206" />
+    </filter>
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter86208" x="-96.364196" y="-0.35474418" width="193.72839" height="1.7094884">
+      <feGaussianBlur stdDeviation="1.3781213" id="nodemcu-32s-feGaussianBlur86210" />
+    </filter>
+    <rect id="nodemcu-32s-p" width="8" height="8" x="0" y="0" />
+    <filter style="color-interpolation-filters:sRGB" id="nodemcu-32s-filter4483" x="-0.62541216" y="-0.62541216" width="2.2508243" height="2.2508243">
+      <feGaussianBlur stdDeviation="1.9759984" id="nodemcu-32s-feGaussianBlur4485" />
+    </filter>
+  
+<radialGradient id="authored-a-pad-face" gradientUnits="objectBoundingBox" cx="0.42" cy="0.38" r="0.72">
+<stop offset="0" stop-color="#f0e6c2" /><stop offset="1" stop-color="#a18a52" />
+</radialGradient>
+<linearGradient id="authored-a-sd-lid" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#d5d7da" /><stop offset="0.55" stop-color="#b4b7bb" /><stop offset="1" stop-color="#85888d" />
+</linearGradient>
+<g id="part-antenna-ceramic-block"><g id="authored-a-antenna-ceramic-block" transform="translate(5714.044 56.296)"><rect x="0.704" y="0.704" width="90.777" height="30.259" fill="#4d4d4d" /><rect x="0" y="0" width="91.481" height="30.963" rx="1.689" fill="#e8d5cf" /><rect x="0" y="0" width="8.726" height="30.963" fill="#999999" /><rect x="82.755" y="0" width="8.726" height="30.963" fill="#999999" /><rect x="13.37" y="13.23" width="64.74" height="4.504" fill="#d8bdb5" /><rect x="8.726" y="0.844" width="74.029" height="1.267" fill="#ffffff" opacity="0.2" /></g></g><g id="part-button-tactile-3225"><g id="authored-a-button-tactile-3225" transform="translate(37633.876 56.296)"><rect x="-7.037" y="9.324" width="11.259" height="16.537" fill="#e2e3e5" /><rect x="40.815" y="9.324" width="11.259" height="16.537" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="45.037" height="35.185" fill="#4d4d4d" /><rect x="0" y="0" width="45.037" height="35.185" rx="3.518" fill="#8f9296" /><circle cx="22.518" cy="17.593" r="13.018" fill="#1a1a1a" /><circle cx="22.518" cy="17.593" r="10.907" fill="#4a4d55" /><rect x="5.63" y="1.689" width="33.778" height="0.985" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-01005-diode"><g id="authored-a-chip-01005-diode" transform="translate(15565.844 56.296)"><rect x="-2.111" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="4.081" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="5.63" height="2.815" fill="#4d4d4d" /><rect x="0" y="0" width="5.63" height="2.815" rx="0.281" fill="#202024" /><rect x="0" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="4.278" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="1.914" y="0.704" width="1.801" height="0.394" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-01005-mlcc"><g id="authored-a-chip-01005-mlcc" transform="translate(14777.7 56.296)"><rect x="-2.111" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="4.081" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="5.63" height="2.815" fill="#4d4d4d" /><rect x="0" y="0" width="5.63" height="2.815" rx="0.281" fill="#cfcabf" /><rect x="0" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="4.278" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="1.914" y="0.704" width="1.801" height="0.394" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-01005-mlcc-brown"><g id="authored-a-chip-01005-mlcc-brown" transform="translate(14974.736 56.296)"><rect x="-2.111" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="4.081" y="-1.056" width="3.659" height="4.926" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="5.63" height="2.815" fill="#4d4d4d" /><rect x="0" y="0" width="5.63" height="2.815" rx="0.281" fill="#c4a06a" /><rect x="0" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="4.278" y="0" width="1.351" height="2.815" rx="0.281" fill="#b3b3b3" /><rect x="1.914" y="0.704" width="1.801" height="0.394" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0201-diode"><g id="authored-a-chip-0201-diode" transform="translate(17142.132 56.296)"><rect x="-2.815" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="6.122" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="8.444" height="4.222" fill="#4d4d4d" /><rect x="0" y="0" width="8.444" height="4.222" rx="0.422" fill="#202024" /><rect x="0" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="6.418" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="2.59" y="0.704" width="3.265" height="0.591" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0201-mlcc"><g id="authored-a-chip-0201-mlcc" transform="translate(16353.988 56.296)"><rect x="-2.815" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="6.122" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="8.444" height="4.222" fill="#4d4d4d" /><rect x="0" y="0" width="8.444" height="4.222" rx="0.422" fill="#cfcabf" /><rect x="0" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="6.418" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="2.59" y="0.704" width="3.265" height="0.591" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0201-res-black"><g id="authored-a-chip-0201-res-black" transform="translate(16748.06 56.296)"><rect x="-2.815" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="6.122" y="-1.056" width="5.137" height="6.333" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="8.444" height="4.222" fill="#4d4d4d" /><rect x="0" y="0" width="8.444" height="4.222" rx="0.422" fill="#35353a" /><rect x="0" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="6.418" y="0" width="2.027" height="4.222" rx="0.422" fill="#b3b3b3" /><rect x="2.59" y="0.704" width="3.265" height="0.591" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0402-empty"><g id="authored-a-chip-0402-empty" transform="translate(19112.492 56.296)"><rect x="-3.518" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="10.204" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /></g></g><g id="part-chip-0402-mlcc"><g id="authored-a-chip-0402-mlcc" transform="translate(17930.276 56.296)"><rect x="-3.518" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="10.204" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="14.074" height="7.037" fill="#4d4d4d" /><rect x="0" y="0" width="14.074" height="7.037" rx="0.704" fill="#cfcabf" /><rect x="0" y="0" width="3.378" height="7.037" rx="0.704" fill="#b3b3b3" /><rect x="10.696" y="0" width="3.378" height="7.037" rx="0.704" fill="#b3b3b3" /><rect x="3.941" y="0.704" width="6.193" height="0.985" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0402-mlcc-brown"><g id="authored-a-chip-0402-mlcc-brown" transform="translate(18127.312 56.296)"><rect x="-3.518" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="10.204" y="-1.056" width="7.389" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="14.074" height="7.037" fill="#4d4d4d" /><rect x="0" y="0" width="14.074" height="7.037" rx="0.704" fill="#c4a06a" /><rect x="0" y="0" width="3.378" height="7.037" rx="0.704" fill="#b3b3b3" /><rect x="10.696" y="0" width="3.378" height="7.037" rx="0.704" fill="#b3b3b3" /><rect x="3.941" y="0.704" width="6.193" height="0.985" fill="#ffffff" opacity="0.2" /></g></g><g id="part-chip-0603-res-black"><g id="authored-a-chip-0603-res-black" transform="translate(19900.636 56.296)"><rect x="-4.222" y="-1.056" width="10.415" height="13.37" rx="0.704" fill="#e2e3e5" /><rect x="16.326" y="-1.056" width="10.415" height="13.37" rx="0.704" fill="#e2e3e5" /><rect x="0.704" y="0.704" width="22.518" height="11.259" fill="#4d4d4d" /><rect x="0" y="0" width="22.518" height="11.259" rx="1.126" fill="#35353a" /><rect x="0" y="0" width="5.404" height="11.259" rx="1.126" fill="#b3b3b3" /><rect x="17.114" y="0" width="5.404" height="11.259" rx="1.126" fill="#b3b3b3" /><rect x="5.967" y="0.704" width="10.584" height="1.576" fill="#ffffff" opacity="0.2" /></g></g><g id="part-connector-usb-c"><g id="authored-a-connector-usb-c" transform="translate(1970.36 56.296)"><rect x="0.844" y="57.844" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="57.14" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="65.163" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="64.459" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="50.526" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="49.822" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="72.481" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="71.777" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="43.207" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="42.503" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="79.8" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="79.096" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="36.029" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="35.326" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="86.977" width="12.667" height="4.222" fill="#4d4d4d" /><rect x="0" y="86.274" width="12.667" height="4.222" fill="#b3b3b3" /><rect x="0.844" y="24.207" width="12.667" height="8.163" fill="#4d4d4d" /><rect x="0" y="23.504" width="12.667" height="8.163" fill="#b3b3b3" /><rect x="0.844" y="94.859" width="12.667" height="8.163" fill="#4d4d4d" /><rect x="0" y="94.155" width="12.667" height="8.163" fill="#b3b3b3" /><rect x="0.844" y="12.667" width="12.667" height="8.163" fill="#4d4d4d" /><rect x="0" y="11.963" width="12.667" height="8.163" fill="#b3b3b3" /><rect x="0.844" y="106.399" width="12.667" height="8.163" fill="#4d4d4d" /><rect x="0" y="105.696" width="12.667" height="8.163" fill="#b3b3b3" /><rect x="8.726" y="0.985" width="94.014" height="124.836" rx="7.741" fill="#4d4d4d" /><rect x="7.741" y="0" width="94.999" height="125.822" rx="7.741" fill="#b3b3b3" /><rect x="8.304" y="5.418" width="5.911" height="114.985" fill="#999999" /><rect x="17.17" y="24.911" width="12.667" height="14.778" rx="2.252" fill="#767a7e" /><rect x="17.17" y="85.429" width="12.667" height="14.778" rx="2.252" fill="#767a7e" /><ellipse cx="41.8" cy="62.911" rx="3.659" ry="6.333" fill="#999999" /><rect x="98.518" y="5.418" width="4.222" height="114.985" fill="#999999" /><rect x="9.148" y="1.689" width="18.296" height="4.222" fill="#999999" /><rect x="9.148" y="119.91" width="18.296" height="4.222" fill="#999999" /></g></g><g id="part-crystal-2016"><g id="authored-a-crystal-2016" transform="translate(30737.616 56.296)"><rect x="0.704" y="0.704" width="27.444" height="21.815" fill="#4d4d4d" /><rect x="0" y="0" width="28.148" height="22.518" rx="3.828" fill="#b3b3b3" /><rect x="2.252" y="2.252" width="23.644" height="18.015" rx="2.702" fill="#999999" /><rect x="0" y="0" width="6.193" height="5.63" fill="#666666" /><rect x="0" y="16.889" width="6.193" height="5.63" fill="#666666" /><rect x="21.955" y="0" width="6.193" height="5.63" fill="#666666" /><rect x="21.955" y="16.889" width="6.193" height="5.63" fill="#666666" /><rect x="3.716" y="2.956" width="20.717" height="1.126" fill="#ffffff" opacity="0.2" /></g></g><g id="part-diode-sod323"><g id="authored-a-diode-sod323" transform="translate(32510.94 56.296)"><rect x="-7.037" y="3.87" width="11.963" height="9.852" rx="0.704" fill="#e2e3e5" /><rect x="19" y="3.87" width="11.963" height="9.852" rx="0.704" fill="#e2e3e5" /><rect x="-4.926" y="6.333" width="7.741" height="4.926" fill="#b3b3b3" /><rect x="21.111" y="6.333" width="7.741" height="4.926" fill="#b3b3b3" /><rect x="0.704" y="0.704" width="23.926" height="17.593" fill="#4d4d4d" /><rect x="0" y="0" width="23.926" height="17.593" rx="1.407" fill="#333333" /><rect x="1.675" y="1.126" width="2.632" height="15.341" fill="#c9c9c9" /><rect x="5.264" y="1.407" width="13.159" height="1.056" fill="#ffffff" opacity="0.2" /></g></g><g id="part-header-pad-keyhole-13"><g id="authored-a-header-pad-keyhole-13" transform="translate(4728.864 56.296)"><rect x="-10.837" y="9.148" width="21.674" height="8.585" fill="#000000" opacity="0" /><path d="M -10.837 -17.733 L -6.474 -17.733 A 6.474 6.474 0 0 0 6.474 -17.733 L 10.837 -17.733 L 10.837 -1.689 A 10.837 10.837 0 0 1 -10.837 -1.689 Z" fill="url(#authored-a-pad-face)" /><circle cx="0" cy="0" r="6.474" fill="#1a1a1a" /><path d="M -6.474 0 A 6.474 6.474 0 0 0 6.474 0" fill="none" stroke="#a4a39b" stroke-width="1.267" /><rect x="-10.837" y="-16.044" width="1.267" height="14.355" fill="#ffffff" opacity="0.16" /></g></g><g id="part-ic-qfn56-7mm"><g id="authored-a-ic-qfn56-7mm" transform="translate(1576.288 56.296)"><rect x="-3.941" y="11.118" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="11.118" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="11.118" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="11.118" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="16.748" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="16.748" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="16.748" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="16.748" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="22.378" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="22.378" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="22.378" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="22.378" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="28.007" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="28.007" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="28.007" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="28.007" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="33.637" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="33.637" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="33.637" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="33.637" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="39.266" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="39.266" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="39.266" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="39.266" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="44.896" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="44.896" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="44.896" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="44.896" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="50.526" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="50.526" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="50.526" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="50.526" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="56.155" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="56.155" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="56.155" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="56.155" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="61.785" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="61.785" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="61.785" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="61.785" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="67.414" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="67.414" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="67.414" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="67.414" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="73.044" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="73.044" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="73.044" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="73.044" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="78.674" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="78.674" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="78.674" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="78.674" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="-3.941" y="84.303" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="95.703" y="84.303" width="6.756" height="3.096" fill="#b3b3b3" /><rect x="84.303" y="-3.941" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="84.303" y="95.703" width="3.096" height="6.756" fill="#b3b3b3" /><rect x="0.704" y="0.704" width="98.518" height="98.518" fill="#4d4d4d" /><rect x="0" y="0" width="98.518" height="98.518" rx="1.689" fill="#333333" /><rect x="3.096" y="3.096" width="92.325" height="92.325" rx="1.126" fill="#1a1a1a" /><rect x="3.096" y="3.096" width="92.325" height="0.985" fill="#ffffff" opacity="0.2" /><circle cx="12.315" cy="12.315" r="2.674" fill="#666666" /></g></g><g id="part-led-0402"><g id="authored-a-led-0402" transform="translate(36648.696 56.296)"><rect x="-4.222" y="-1.056" width="8.093" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="10.204" y="-1.056" width="8.093" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="0.844" y="0.844" width="14.074" height="7.037" fill="#4d4d4d" /><rect x="0" y="0" width="14.074" height="7.037" rx="0.844" fill="#e8332a" /><rect x="0" y="0" width="2.815" height="7.037" rx="0.844" fill="#b3b3b3" /><rect x="0.957" y="1.126" width="0.45" height="4.785" fill="#ffffff" opacity="0.5" /><rect x="11.259" y="0" width="2.815" height="7.037" rx="0.844" fill="#b3b3b3" /><rect x="12.216" y="1.126" width="0.45" height="4.785" fill="#ffffff" opacity="0.5" /><rect x="9.993" y="0" width="0.844" height="7.037" fill="#1a1a1a" opacity="0.55" /><rect x="3.378" y="0.563" width="7.318" height="1.126" fill="#ffffff" opacity="0.2" /></g></g><g id="part-led-rgb-2020"><g id="authored-a-led-rgb-2020" transform="translate(23250.248 56.296)"><rect x="0" y="2.815" width="12.667" height="7.881" fill="#b3b3b3" /><rect x="15.481" y="2.815" width="12.667" height="7.881" fill="#b3b3b3" /><rect x="0" y="17.452" width="12.667" height="7.881" fill="#b3b3b3" /><rect x="15.481" y="17.452" width="12.667" height="7.881" fill="#b3b3b3" /><rect x="0.844" y="0.844" width="28.148" height="28.148" fill="#4d4d4d" /><rect x="0" y="0" width="28.148" height="28.148" rx="2.815" fill="#f2f2f2" /><path d="M 0 5.067 L 5.067 0 L 0 0 Z" fill="#999999" /><circle cx="14.074" cy="14.074" r="9.289" fill="#e0e4e6" /><rect x="8.838" y="14.243" width="3.49" height="3.49" fill="#c0392b" /><rect x="15.819" y="14.243" width="3.49" height="3.49" fill="#1f9d63" /><rect x="12.329" y="8.613" width="3.49" height="3.49" fill="#2f6fd0" /></g></g><g id="part-sot23-5"><g id="authored-a-ic-sot23-5" transform="translate(10048.836 56.296)"><rect x="4.222" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="17.593" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="30.963" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="4.222" y="19.704" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="30.963" y="19.704" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="0.704" y="0.704" width="40.815" height="22.518" fill="#4d4d4d" /><rect x="0" y="0" width="40.815" height="22.518" rx="1.689" fill="#333333" /><rect x="2.111" y="1.407" width="36.592" height="1.126" fill="#ffffff" opacity="0.2" /></g></g><g id="part-sot23-6"><g id="authored-a-ic-sot23-6" transform="translate(10245.872 56.296)"><rect x="4.222" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="17.593" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="30.963" y="-8.444" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="4.222" y="19.704" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="17.593" y="19.704" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="30.963" y="19.704" width="5.63" height="11.259" fill="#b3b3b3" /><rect x="0.704" y="0.704" width="40.815" height="22.518" fill="#4d4d4d" /><rect x="0" y="0" width="40.815" height="22.518" rx="1.689" fill="#333333" /><rect x="2.111" y="1.407" width="36.592" height="1.126" fill="#ffffff" opacity="0.2" /></g></g></defs><pattern id="ps-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#fff" stroke-opacity="0.35" stroke-width="1.5" /></pattern><pattern id="ps-hatch-ink" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#17181C" stroke-opacity="0.22" stroke-width="1.5" /></pattern><g transform="scale(0.839)"><g transform="translate(0 330.739) rotate(-90)"><path d="M 11.259 0 L 15.341 0 A 7.037 7.037 0 0 0 29.415 0 L 51.089 0 A 7.037 7.037 0 0 0 65.163 0 L 86.837 0 A 7.037 7.037 0 0 0 100.911 0 L 122.585 0 A 7.037 7.037 0 0 0 136.659 0 L 158.333 0 A 7.037 7.037 0 0 0 172.406 0 L 194.08 0 A 7.037 7.037 0 0 0 208.154 0 L 229.828 0 A 7.037 7.037 0 0 0 243.902 0 L 265.576 0 A 7.037 7.037 0 0 0 279.65 0 L 301.324 0 A 7.037 7.037 0 0 0 315.398 0 L 319.48 0 A 11.259 11.259 0 0 1 330.739 11.259 L 330.739 242.073 A 11.259 11.259 0 0 1 319.48 253.332 L 315.398 253.332 A 7.037 7.037 0 0 0 301.324 253.332 L 279.65 253.332 A 7.037 7.037 0 0 0 265.576 253.332 L 243.902 253.332 A 7.037 7.037 0 0 0 229.828 253.332 L 208.154 253.332 A 7.037 7.037 0 0 0 194.08 253.332 L 172.406 253.332 A 7.037 7.037 0 0 0 158.333 253.332 L 136.659 253.332 A 7.037 7.037 0 0 0 122.585 253.332 L 100.911 253.332 A 7.037 7.037 0 0 0 86.837 253.332 L 65.163 253.332 A 7.037 7.037 0 0 0 51.089 253.332 L 29.415 253.332 A 7.037 7.037 0 0 0 15.341 253.332 L 11.259 253.332 A 11.259 11.259 0 0 1 0 242.073 L 0 11.259 A 11.259 11.259 0 0 1 11.259 0 Z" fill="#1a1a1a" stroke="#000000" stroke-width="1" /><g class="bpad sys" data-slot="L1" data-gpio="43" data-caps="uart" data-labels="TX IO43" data-note="TX" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4420.5026 -38.5628)" /><circle class="ring" cx="308.361" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad pwr" data-slot="R1" data-gpio="" data-caps="" data-labels="5V" data-note="5V power input for the board" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4420.5026 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="308.361" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad sys" data-slot="L2" data-gpio="44" data-caps="uart" data-labels="RX IO44" data-note="RX" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4456.2505 -38.5628)" /><circle class="ring" cx="272.613" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad pwr" data-slot="R2" data-gpio="" data-caps="" data-labels="GND" data-note="Ground connection" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4456.2505 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="272.613" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L3" data-gpio="1" data-caps="adc" data-labels="IO1 GP1" data-note="GPIO, ADC Pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4491.9985 -38.5628)" /><circle class="ring" cx="236.865" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad pwr" data-slot="R3" data-gpio="" data-caps="" data-labels="3V3 3.3V" data-note="3.3V power output for peripherals" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4491.9985 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="236.865" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L4" data-gpio="2" data-caps="adc" data-labels="IO2 GP2" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4527.7464 -38.5628)" /><circle class="ring" cx="201.117" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="R4" data-gpio="13" data-caps="adc" data-labels="IO13 GP13" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4527.7464 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="201.117" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="L5" data-gpio="3" data-caps="adc" data-labels="IO3 GP3" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4563.4944 -38.5628)" /><circle class="ring" cx="165.369" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="R5" data-gpio="12" data-caps="adc" data-labels="IO12 GP12" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4563.4944 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="165.369" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L6" data-gpio="4" data-caps="adc" data-labels="IO4 GP4" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4599.2424 -38.5628)" /><circle class="ring" cx="129.622" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="R6" data-gpio="11" data-caps="adc" data-labels="IO11 GP11" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4599.2424 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="129.622" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L7" data-gpio="5" data-caps="adc" data-labels="IO5 GP5" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4634.9903 -38.5628)" /><circle class="ring" cx="93.874" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="R7" data-gpio="10" data-caps="adc" data-labels="IO10 GP10" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4634.9903 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="93.874" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L8" data-gpio="6" data-caps="adc" data-labels="IO6 GP6" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4670.7383 -38.5628)" /><circle class="ring" cx="58.126" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad warn" data-slot="R8" data-gpio="9" data-caps="adc" data-labels="IO9 GP9" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4670.7383 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="58.126" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="L9" data-gpio="7" data-caps="adc" data-labels="IO7 GP7" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4706.4862 -38.5628)" /><circle class="ring" cx="22.378" cy="17.733" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><g class="bpad safe" data-slot="R9" data-gpio="8" data-caps="adc" data-labels="IO8 GP8" data-note="GPIO, ADC pin" tabindex="0"><use href="#part-header-pad-keyhole-13" transform="translate(-4706.4862 179.3028) rotate(180 4728.8639 56.296)" /><circle class="ring" cx="22.378" cy="235.599" r="22.166" fill="none" stroke="none" style="stroke-width:3.901" /></g><use href="#part-connector-usb-c" transform="translate(-1718.4353 7.459)" /><use href="#part-button-tactile-3225" transform="translate(-37448.8038 -11.8927) rotate(90 37656.3953 74.2405)" /><use href="#part-button-tactile-3225" transform="translate(-37448.8038 116.7437) rotate(90 37656.3953 74.2405)" /><use href="#part-crystal-2016" transform="translate(-30542.2681 45.0365) rotate(90 30751.6892 67.5555)" /><use href="#part-ic-qfn56-7mm" transform="translate(-1515.7697 18.7184) rotate(45 1625.5469 105.555)" /><use href="#part-led-rgb-2020" transform="translate(-23187.337 139.755)" /><use href="#part-antenna-ceramic-block" transform="translate(-5742.1919 23.222) rotate(90 5759.7844 71.7775)" /><use href="#part-led-0402" transform="translate(-36346.1042 -23.0809)" /><g transform="translate(-36345.9635 155.3775)"><g transform="translate(36648.696 56.296)"><rect x="-4.222" y="-1.056" width="8.093" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="10.204" y="-1.056" width="8.093" height="9.148" rx="0.704" fill="#e2e3e5" /><rect x="0.844" y="0.844" width="14.074" height="7.037" fill="#4d4d4d" /><rect x="0" y="0" width="14.074" height="7.037" rx="0.844" fill="#3a7bd5" /><rect x="0" y="0" width="2.815" height="7.037" rx="0.844" fill="#b3b3b3" /><rect x="0.957" y="1.126" width="0.45" height="4.785" fill="#ffffff" opacity="0.5" /><rect x="11.259" y="0" width="2.815" height="7.037" rx="0.844" fill="#b3b3b3" /><rect x="12.216" y="1.126" width="0.45" height="4.785" fill="#ffffff" opacity="0.5" /><rect x="9.993" y="0" width="0.844" height="7.037" fill="#1a1a1a" opacity="0.55" /><rect x="3.378" y="0.563" width="7.318" height="1.126" fill="#ffffff" opacity="0.2" /></g></g><use href="#part-chip-0201-diode" transform="translate(-16859.2458 -19.5623) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16874.305 -19.5623) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16889.2234 -19.5623) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16904.4233 -19.5623) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16856.0088 152.1405) rotate(90 17146.3554 58.4065)" /><use href="#part-diode-sod323" transform="translate(-32262.1111 145.1025)" /><use href="#part-sot23-5" transform="translate(-9906.6185 -15.341) rotate(90 10069.5954 67.5555)" /><use href="#part-sot23-6" transform="translate(-10103.6547 134.4064)" /><use href="#part-chip-0201-diode" transform="translate(-16961.2823 25.3338) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16971.8378 25.3338) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-mlcc" transform="translate(-16173.1368 54.1855) rotate(90 16358.2099 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16966.4897 40.393)" /><use href="#part-chip-0201-diode" transform="translate(-16985.7711 21.8153)" /><use href="#part-chip-0603-res-black" transform="translate(-19792.2666 -23.0808)" /><use href="#part-chip-0201-diode" transform="translate(-17018.282 -6.192)" /><use href="#part-chip-01005-mlcc" transform="translate(-14571.0933 77.8296)" /><use href="#part-chip-0201-diode" transform="translate(-16936.9343 85.0076)" /><use href="#part-chip-0201-diode" transform="translate(-16936.9343 95.5631)" /><use href="#part-chip-0201-diode" transform="translate(-16961.2823 82.3335) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-diode" transform="translate(-16966.7712 105.1334)" /><use href="#part-chip-0201-diode" transform="translate(-16966.7712 116.8148)" /><use href="#part-chip-0201-diode" transform="translate(-16983.3785 116.8148)" /><use href="#part-chip-0402-mlcc-brown" transform="translate(-18001.0696 150.733) rotate(90 18134.3504 59.814)" /><use href="#part-chip-0201-diode" transform="translate(-17026.7264 152.1405) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0402-mlcc" transform="translate(-17869.7581 -7.5995)" /><use href="#part-chip-01005-mlcc-brown" transform="translate(-14912.3879 10.8374)" /><use href="#part-chip-0201-diode" transform="translate(-17099.489 10.1339)" /><use href="#part-chip-0402-mlcc-brown" transform="translate(-18064.9656 123.5702)" /><use href="#part-chip-01005-diode" transform="translate(-15511.3767 105.8369)" /><use href="#part-chip-0201-diode" transform="translate(-17042.2078 152.1405) rotate(90 17146.3554 58.4065)" /><use href="#part-chip-0201-res-black" transform="translate(-16687.1205 21.6746) rotate(135 16752.2831 58.4065)" /><use href="#part-chip-0402-empty" transform="translate(-19072.6637 -14.355) rotate(90 19119.5301 59.814)" /><use href="#part-chip-0402-empty" transform="translate(-19031.2861 -14.355) rotate(90 19119.5301 59.814)" /><text x="290.0651" y="232.0803" transform="rotate(90 290.0651 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">5V</text><text x="254.3172" y="232.0803" transform="rotate(90 254.3172 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">GND</text><text x="218.5692" y="232.0803" transform="rotate(90 218.5692 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">3V3</text><text x="290.0651" y="21.2517" transform="rotate(90 290.0651 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">TX</text><text x="254.3172" y="21.2517" transform="rotate(90 254.3172 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">RX</text><text x="218.5692" y="21.2517" transform="rotate(90 218.5692 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">1</text><text x="182.8213" y="21.2517" transform="rotate(90 182.8213 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">2</text><text x="147.0733" y="21.2517" transform="rotate(90 147.0733 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">3</text><text x="111.3253" y="21.2517" transform="rotate(90 111.3253 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">4</text><text x="75.5774" y="21.2517" transform="rotate(90 75.5774 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">5</text><text x="39.8294" y="21.2517" transform="rotate(90 39.8294 21.2517)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">6</text><text x="9.7111" y="38.8442" transform="rotate(180 9.7111 38.8442)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">7</text><text x="9.7111" y="214.4878" transform="rotate(180 9.7111 214.4878)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">8</text><text x="39.8294" y="232.0803" transform="rotate(90 39.8294 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">9</text><text x="75.5774" y="232.0803" transform="rotate(90 75.5774 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">10</text><text x="111.3253" y="232.0803" transform="rotate(90 111.3253 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">11</text><text x="147.0733" y="232.0803" transform="rotate(90 147.0733 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">12</text><text x="182.8213" y="232.0803" transform="rotate(90 182.8213 232.0803)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">13</text><text x="309.628" y="47.8516" transform="rotate(180 309.628 47.8516)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">48</text><text x="309.628" y="201.2582" transform="rotate(180 309.628 201.2582)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="12.6666" fill="#b3b3b3">BAT</text><text x="231.2358" y="58.8293" transform="rotate(90 231.2358 58.8293)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="13.3703" fill="#b3b3b3">BOOT</text><text x="231.0951" y="190.7027" transform="rotate(90 231.0951 190.7027)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="13.3703" fill="#b3b3b3">RESET</text><text x="53.4812" y="210.547" transform="rotate(90 53.4812 210.547)" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="700" font-size="14.074" fill="#b3b3b3">48</text></g></g><g class="prow" data-slot="L1" transform="translate(-34 18.78)"><rect x="-30" y="-12" width="30" height="24" rx="2" fill="#3A3D42" stroke="#2a2c30" stroke-width="1" /><text x="-15" y="5.4" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">43</text><rect x="-130" y="-12" width="96" height="24" rx="2" fill="#00D9FF" stroke="#009AB5" stroke-width="1" /><text x="-76" y="5.4" text-anchor="middle" fill="#17181C" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">TX</text><line x1="0" y1="0" x2="34" y2="0" stroke="#3A3D42" stroke-width="2.5" stroke-linecap="round" /></g><g class="prow" data-slot="L2" transform="translate(-34 48.78)"><rect x="-30" y="-12" width="30" height="24" rx="2" fill="#3A3D42" stroke="#2a2c30" stroke-width="1" /><text x="-15" y="5.4" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">44</text><rect x="-130" y="-12" width="96" height="24" rx="2" fill="#C026FF" stroke="#8018AF" stroke-width="1" /><text x="-76" y="5.4" text-anchor="middle" fill="#17181C" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">RX</text><line x1="0" y1="0" x2="34" y2="0" stroke="#3A3D42" stroke-width="2.5" stroke-linecap="round" /></g><g class="prow" data-slot="L4" transform="translate(-34 108.78)"><rect x="-30" y="-12" width="30" height="24" rx="2" fill="#3A3D42" stroke="#2a2c30" stroke-width="1" /><text x="-15" y="5.4" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">2</text><rect x="-130" y="-12" width="96" height="24" rx="2" fill="#FFD000" stroke="#B89400" stroke-width="1" /><text x="-76" y="5.4" text-anchor="middle" fill="#17181C" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">GPIO2</text><line x1="0" y1="0" x2="34" y2="0" stroke="#3A3D42" stroke-width="2.5" stroke-linecap="round" /></g><g class="prow" data-slot="R2" transform="translate(246.599 48.78)"><rect x="0" y="-12" width="30" height="24" rx="2" fill="#3A3D42" stroke="#2a2c30" stroke-width="1" /><text x="15" y="5.4" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600" /><rect x="34" y="-12" width="78" height="24" rx="2" fill="#F5F5F5" stroke="#A3A3A3" stroke-width="1" /><text x="73" y="5.4" text-anchor="middle" fill="#17181C" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">GND</text><line x1="0" y1="0" x2="-34" y2="0" stroke="#3A3D42" stroke-width="2.5" stroke-linecap="round" /></g><g class="prow" data-slot="R3" transform="translate(246.599 78.78)"><rect x="0" y="-12" width="30" height="24" rx="2" fill="#3A3D42" stroke="#2a2c30" stroke-width="1" /><text x="15" y="5.4" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600" /><rect x="34" y="-12" width="78" height="24" rx="2" fill="#FF3B4E" stroke="#B51F2F" stroke-width="1" /><text x="73" y="5.4" text-anchor="middle" fill="#17181C" font-family="ui-monospace,Menlo,monospace" font-size="15" font-weight="600">3V3</text><line x1="0" y1="0" x2="-34" y2="0" stroke="#3A3D42" stroke-width="2.5" stroke-linecap="round" /></g></svg>
