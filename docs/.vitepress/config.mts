@@ -44,6 +44,7 @@ export default defineConfig({
   metaChunk: true,
   sitemap: { hostname: siteOrigin },
   head: [
+    ['link', { rel: 'icon', type: 'image/png', href: '/tinytouch.png' }],
     ['meta', { name: 'theme-color', content: '#ffffff' }],
     ['meta', { name: 'color-scheme', content: 'light dark' }],
   ],
