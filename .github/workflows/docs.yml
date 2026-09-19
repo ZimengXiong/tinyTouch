@@ -42,7 +42,7 @@ jobs:
           curl -fsSL --max-time 30 https://docs.tinytouch.dev/customer/setup \
             | grep -q 'releases/latest/download/install.sh'
           curl -fsSL --max-time 30 https://docs.tinytouch.dev/flash \
-            | grep -q '<title>Flash tinyTouch'
+            | grep -q '<title>Install firmware | tinyTouch Docs'
           curl -fsSL --max-time 60 \
             'https://docs.tinytouch.dev/api/github-release?file=tiny_touch_unified.bin' \
             -o firmware.bin

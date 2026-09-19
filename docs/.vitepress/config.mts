@@ -35,7 +35,7 @@ function githubReleaseDevApi() {
 }
 
 export default defineConfig({
-  title: 'tinyTouch',
+  title: 'tinyTouch Docs',
   description: 'Documentation for tinyTouch hardware, software, and firmware.',
   lang: 'en-US',
   appearance: 'dark',
@@ -44,7 +44,7 @@ export default defineConfig({
   metaChunk: true,
   sitemap: { hostname: siteOrigin },
   head: [
-    ['link', { rel: 'icon', type: 'image/png', href: '/tinytouch.png' }],
+    ['link', { rel: 'icon', type: 'image/png', href: '/favicon.png' }],
     ['meta', { name: 'theme-color', content: '#ffffff' }],
     ['meta', { name: 'color-scheme', content: 'light dark' }],
   ],
@@ -65,7 +65,7 @@ export default defineConfig({
     },
   },
   themeConfig: {
-    siteTitle: '×  tinyTouch',
+    siteTitle: '×  tinyTouch Docs',
     search: {
       provider: 'local',
     },
