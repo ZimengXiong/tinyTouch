@@ -12,11 +12,12 @@ In **HID mode**, TinyTouch presents a USB Ethernet adapter (CDC-ECM) alongside t
 4. Tap **Unlock** and touch the fingerprint sensor (or complete first-time setup when no fingerprints are enrolled).
 5. Enroll or delete slots, edit labels, and adjust Submit Enter / typing delay / idle ring light as needed.
 
-`tinytouch dashboard` also tries to keep the USB Ethernet service off the default route on macOS so browsing still uses Wi‑Fi or Ethernet.
+The dashboard command opens the page without changing macOS network settings.
+The device DHCP server does not advertise a default gateway.
 
 ## What stays on the Mac
 
-Passwords for HID typing stay in this Mac's Keychain. The dashboard does **not** store or edit Mac passwords. Each computer still needs `tinytouch setup --mode hid` or `tinytouch add-computer` so the helper can type when you touch the sensor.
+Passwords for HID typing stay in this Mac's Keychain. The dashboard does **not** store or edit Mac passwords. Each computer still needs `tinytouch setup --mode hid` so the helper can type when you touch the sensor.
 
 ## Architecture notes
 
@@ -29,10 +30,10 @@ Passwords for HID typing stay in this Mac's Keychain. The dashboard does **not**
 
 ## Limitations
 
-- **macOS + HID ECM**: designed and tested for macOS USB Ethernet accessory support. Windows USB Ethernet is not included in this build.
+- **macOS + HID ECM**: designed for macOS USB Ethernet accessory support; hardware validation is required. Windows USB Ethernet is not included in this build.
 - **Endpoint budget**: ESP32-S3 has five IN endpoints including EP0. HID mode omits the CDC notification endpoint so ECM can open; TinyUSB treats CDC notif as optional.
 - **PIV mode**: keeps CCID and does **not** present the dashboard network interface.
-- **Mode switch**: changing between HID and PIV changes the USB topology; reconnect (or let the firmware re-enumerate) after `SET MODE`.
+- **Mode switch**: changing between HID and PIV changes the USB topology; unplug and reconnect after `SET MODE`.
 - **Passwords**: remain in Mac Keychain via the TinyTouch helper; never on the dongle UI.
 
 ## Smoke check after flash

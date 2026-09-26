@@ -396,6 +396,7 @@ static void touch_hid_task(void *arg) {
   while (true) {
     // Dashboard enroll/unlock owns the sensor; pause background typing.
     if (dashboard_is_paused()) {
+      runtime.presence_armed = false;
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }

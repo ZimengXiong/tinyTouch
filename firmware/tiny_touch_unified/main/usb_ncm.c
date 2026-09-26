@@ -18,21 +18,23 @@
 #include "freertos/task.h"
 #include "lwip/esp_netif_net_stack.h"
 #include "lwip/ip4_addr.h"
-#include "tinyusb_net.h"
+#include "device/usbd_pvt.h"
+#include <stdatomic.h>
 #include "tusb.h"
 
 static const char *TAG = "usb_ncm";
 static esp_netif_t *s_usb_netif;
 static esp_netif_ip_info_t s_usb_ip;
 static bool ncm_started;
-static bool link_announced;
+static atomic_bool link_announced;
 static QueueHandle_t s_rx_queue;
+static QueueHandle_t s_tx_queue;
 static uint8_t s_lwip_mac[6];
-static unsigned s_rx_frames;
-static unsigned s_rx_drop;
-static unsigned s_tx_ok;
-static unsigned s_tx_fail;
-static unsigned s_arp_replies;
+static atomic_uint s_rx_frames;
+static atomic_uint s_rx_drop;
+static atomic_uint s_tx_ok;
+static atomic_uint s_tx_fail;
+static atomic_uint s_arp_replies;
 
 uint8_t tud_network_mac_address[6];
 
@@ -46,79 +48,53 @@ static void l2_free(void *h, void *buffer) {
   free(buffer);
 }
 
-static void free_tx_buffer(void *buffer, void *ctx) {
-  (void)ctx;
-  free(buffer);
+// ECM is enabled in TinyUSB, but esp_tinyusb 2.2.1 builds its network
+// adapter only for NCM. Keep a bounded ECM adapter here and perform endpoint
+// operations on the TinyUSB task.
+static void send_queued(void *unused) {
+  (void)unused;
+  usb_net_frame_t frame;
+  while (xQueuePeek(s_tx_queue, &frame, 0) == pdTRUE) {
+    if (tud_mounted() && !tud_network_can_xmit(frame.len)) return;
+    if (xQueueReceive(s_tx_queue, &frame, 0) != pdTRUE) return;
+    if (tud_mounted()) {
+      tud_network_xmit(frame.data, frame.len);
+      s_tx_ok++;
+    } else {
+      s_tx_fail++;
+    }
+    free(frame.data);
+  }
+}
+
+uint16_t tud_network_xmit_cb(uint8_t *dst, void *ref, uint16_t len) {
+  memcpy(dst, ref, len);
+  return len;
+}
+
+void tud_network_init_cb(void) {
+  link_announced = false;
 }
 
 static esp_err_t net_send_copy(const void *buffer, size_t len) {
-  if (!buffer || len == 0 || len > CFG_TUD_NET_MTU) {
+  if (!s_tx_queue || !buffer || len == 0 || len > CFG_TUD_NET_MTU)
     return ESP_ERR_INVALID_ARG;
-  }
-  void *copy = malloc(len);
-  if (!copy) {
-    return ESP_ERR_NO_MEM;
-  }
+  uint8_t *copy = malloc(len);
+  if (!copy) return ESP_ERR_NO_MEM;
   memcpy(copy, buffer, len);
-  if (tinyusb_net_send_async(copy, (uint16_t)len, copy) != ESP_OK) {
+  usb_net_frame_t frame = {.data = copy, .len = len};
+  if (xQueueSend(s_tx_queue, &frame, 0) != pdTRUE) {
     free(copy);
     s_tx_fail++;
-    return ESP_FAIL;
+    return ESP_ERR_NO_MEM;
   }
-  s_tx_ok++;
+  usbd_defer_func(send_queued, NULL, false);
   return ESP_OK;
 }
 
 static esp_err_t netif_transmit(void *h, void *buffer, size_t len) {
   (void)h;
   return net_send_copy(buffer, len);
-}
-
-static uint16_t rd16(const uint8_t *p) {
-  return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static void wr16(uint8_t *p, uint16_t v) {
-  p[0] = (uint8_t)(v >> 8);
-  p[1] = (uint8_t)v;
-}
-
-/* Reply to ARP who-has 192.168.7.1 from the RX worker (not TinyUSB task). */
-static void maybe_reply_arp(const uint8_t *frame, uint16_t len) {
-  if (len < 42) {
-    return;
-  }
-  if (rd16(frame + 12) != 0x0806) {
-    return;
-  }
-  if (rd16(frame + 20) != 0x0001) {
-    return; /* not request */
-  }
-  const uint8_t *tpa = frame + 38;
-  if (tpa[0] != DASHBOARD_IP_A || tpa[1] != DASHBOARD_IP_B || tpa[2] != DASHBOARD_IP_C ||
-      tpa[3] != DASHBOARD_IP_D) {
-    return;
-  }
-
-  uint8_t reply[42];
-  memcpy(reply + 0, frame + 6, 6);      /* dst = requester */
-  memcpy(reply + 6, s_lwip_mac, 6);     /* src = our lwIP MAC */
-  wr16(reply + 12, 0x0806);
-  wr16(reply + 14, 0x0001);
-  wr16(reply + 16, 0x0800);
-  reply[18] = 6;
-  reply[19] = 4;
-  wr16(reply + 20, 0x0002);             /* reply */
-  memcpy(reply + 22, s_lwip_mac, 6);    /* sender MAC */
-  reply[28] = DASHBOARD_IP_A;
-  reply[29] = DASHBOARD_IP_B;
-  reply[30] = DASHBOARD_IP_C;
-  reply[31] = DASHBOARD_IP_D;
-  memcpy(reply + 32, frame + 6, 6);     /* target MAC = requester */
-  memcpy(reply + 38, frame + 28, 4);    /* target IP = requester */
-  if (net_send_copy(reply, sizeof(reply)) == ESP_OK) {
-    s_arp_replies++;
-  }
 }
 
 static esp_err_t netif_recv(void *buffer, uint16_t len, void *ctx) {
@@ -143,6 +119,12 @@ static esp_err_t netif_recv(void *buffer, uint16_t len, void *ctx) {
   return ESP_OK;
 }
 
+bool tud_network_recv_cb(const uint8_t *buffer, uint16_t len) {
+  netif_recv((void *)buffer, len, NULL);
+  tud_network_recv_renew();
+  return true;
+}
+
 static void usb_net_rx_task(void *arg) {
   (void)arg;
   usb_net_frame_t frame;
@@ -153,14 +135,12 @@ static void usb_net_rx_task(void *arg) {
     if (!frame.data || frame.len == 0) {
       continue;
     }
-    maybe_reply_arp(frame.data, frame.len);
     if (s_usb_netif) {
       void *copy = malloc(frame.len);
       if (copy) {
         memcpy(copy, frame.data, frame.len);
-        if (esp_netif_receive(s_usb_netif, copy, frame.len, NULL) != ESP_OK) {
-          free(copy);
-        }
+        // esp-netif consumes the receive buffer even when input is dropped.
+        esp_netif_receive(s_usb_netif, copy, frame.len, NULL);
       }
     }
     free(frame.data);
@@ -169,7 +149,10 @@ static void usb_net_rx_task(void *arg) {
 
 static void net_link_up(void *ctx) {
   (void)ctx;
-  if (tud_mounted()) {
+  send_queued(NULL);
+  if (!tud_mounted()) {
+    link_announced = false;
+  } else if (!link_announced) {
     tud_network_link_state(0, true);
     link_announced = true;
     ESP_LOGI(TAG, "USB Ethernet link active");
@@ -198,8 +181,9 @@ void usb_ncm_start(void) {
     return;
   }
 
+  s_tx_queue = xQueueCreate(8, sizeof(usb_net_frame_t));
   s_rx_queue = xQueueCreate(8, sizeof(usb_net_frame_t));
-  if (!s_rx_queue) {
+  if (!s_rx_queue || !s_tx_queue) {
     ESP_LOGE(TAG, "RX queue alloc failed");
     return;
   }
@@ -248,17 +232,6 @@ void usb_ncm_start(void) {
   memcpy(tud_network_mac_address, usb_mac, 6);
   if (esp_netif_set_mac(s_usb_netif, s_lwip_mac) != ESP_OK) {
     ESP_LOGE(TAG, "esp_netif_set_mac failed");
-    return;
-  }
-
-  tinyusb_net_config_t net_config = {
-      .on_recv_callback = netif_recv,
-      .on_init_callback = net_link_up,
-      .free_tx_buffer = free_tx_buffer,
-  };
-  memcpy(net_config.mac_addr, usb_mac, 6);
-  if (tinyusb_net_init(&net_config) != ESP_OK) {
-    ESP_LOGE(TAG, "tinyusb_net_init failed");
     return;
   }
 
@@ -325,9 +298,5 @@ void usb_ncm_task(void) {
   if (!ncm_started) {
     return;
   }
-  if (!link_announced && tud_mounted()) {
-    tud_network_link_state(0, true);
-    link_announced = true;
-    ESP_LOGI(TAG, "USB Ethernet link announced after mount");
-  }
+  usbd_defer_func(net_link_up, NULL, false);
 }

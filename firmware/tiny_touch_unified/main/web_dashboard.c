@@ -8,7 +8,9 @@
 #define TINYTOUCH_FIRMWARE_VERSION "development"
 #endif
 
-#include "config_console.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "dashboard_api.h"
 #include "device_config.h"
 #include "esp_http_server.h"
@@ -23,6 +25,7 @@ extern const uint8_t index_html_gz_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t index_html_gz_end[] asm("_binary_index_html_gz_end");
 
 static const char *TAG = "web_dash";
+static SemaphoreHandle_t mutation_mutex;
 static char slot_labels[DASHBOARD_MAX_SLOTS][DASHBOARD_LABEL_MAX];
 
 static void fill_random(void *buf, size_t len) {
@@ -71,39 +74,49 @@ static bool host_ok(httpd_req_t *req) {
 }
 
 static bool session_ok(httpd_req_t *req) {
-  if (config_console_authorized()) return true;
   char cookie[160] = {0};
   if (httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof(cookie)) != ESP_OK) {
     return false;
   }
-  const char *found = strstr(cookie, "tt_session=");
-  if (!found) return false;
-  found += strlen("tt_session=");
-  char token[DASHBOARD_SESSION_HEX];
-  size_t n = 0;
-  while (found[n] && found[n] != ';' && n + 1 < sizeof(token)) {
-    token[n] = found[n];
-    n++;
+  char *save = NULL;
+  for (char *item = strtok_r(cookie, ";", &save); item; item = strtok_r(NULL, ";", &save)) {
+    while (*item == ' ') item++;
+    if (strncmp(item, "tt_session=", 11) == 0)
+      return dashboard_session_valid(item + 11, now_us());
   }
-  token[n] = '\0';
-  return dashboard_session_valid(token, now_us());
+  return false;
 }
 
 static void send_json(httpd_req_t *req, const char *json) {
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
 static void send_error(httpd_req_t *req, int status, const char *code) {
   httpd_resp_set_status(req, status == 401 ? "401 Unauthorized" :
-                             status == 403 ? "403 Forbidden" : "400 Bad Request");
+                             status == 403 ? "403 Forbidden" :
+                             status == 409 ? "409 Conflict" : "400 Bad Request");
   char json[96];
   snprintf(json, sizeof(json), "{\"error\":\"%s\"}", code);
   send_json(req, json);
 }
 
 static bool require_host(httpd_req_t *req) {
-  if (host_ok(req)) return true;
+  if (host_ok(req)) {
+    if (req->method == HTTP_GET) return true;
+    char origin[64] = {0}, content_type[64] = {0};
+    size_t origin_len = httpd_req_get_hdr_value_len(req, "Origin");
+    if (origin_len && (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
+        (strcmp(origin, "http://192.168.7.1") && strcmp(origin, "http://192.168.7.1:80")))) {
+      send_error(req, 403, "bad_origin");
+      return false;
+    }
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) == ESP_OK &&
+        strcmp(content_type, "application/json") == 0) return true;
+    send_error(req, 403, "json_required");
+    return false;
+  }
   send_error(req, 403, "bad_host");
   return false;
 }
@@ -124,6 +137,7 @@ static esp_err_t read_body(httpd_req_t *req, char *buf, size_t buf_len) {
     if (n <= 0) return ESP_FAIL;
     got += n;
   }
+  if (memchr(buf, '\0', got)) return ESP_FAIL;
   buf[got] = '\0';
   return ESP_OK;
 }
@@ -158,7 +172,7 @@ static esp_err_t handle_status(httpd_req_t *req) {
   status.typing_delay_ms = device_config_typing_delay_ms();
   status.idle_led = device_config_idle_led();
   status.paused = dashboard_is_paused();
-  status.authorized = session_ok(req) || config_console_authorized();
+  status.authorized = session_ok(req);
   status.ncm_ready = usb_ncm_ready();
   for (int i = 0; i < DASHBOARD_MAX_SLOTS; i++) status.labels[i] = slot_labels[i];
   char json[1024];
@@ -172,12 +186,15 @@ static esp_err_t handle_status(httpd_req_t *req) {
 
 static esp_err_t handle_log(httpd_req_t *req) {
   if (!require_host(req)) return ESP_OK;
-  char json[1536];
-  if (dashboard_build_log_json(json, sizeof(json)) < 0) {
+  size_t capacity = DASHBOARD_LOG_LINES * DASHBOARD_LOG_LINE_MAX * 6 + 32;
+  char *json = malloc(capacity);
+  if (!json || dashboard_build_log_json(json, capacity) < 0) {
+    free(json);
     send_error(req, 400, "log");
     return ESP_OK;
   }
   send_json(req, json);
+  free(json);
   return ESP_OK;
 }
 
@@ -190,10 +207,19 @@ static void grant_session(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "Set-Cookie", cookie);
 }
 
+static void unlock_prompt(void) { dashboard_log_event("PROMPT TOUCH"); }
+
 static esp_err_t handle_unlock(httpd_req_t *req) {
   if (!require_host(req)) return ESP_OK;
+  char body[8];
+  if (read_body(req, body, sizeof(body)) != ESP_OK || strcmp(body, "{}")) {
+    send_error(req, 400, "body");
+    return ESP_OK;
+  }
+  dashboard_session_clear();
   dashboard_set_paused(true);
-  bool ok = config_console_unlock();
+  int count = fingerprint_count();
+  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(unlock_prompt));
   dashboard_set_paused(false);
   if (!ok) {
     send_error(req, 401, "CONFIG_UNLOCK");
@@ -309,6 +335,13 @@ static esp_err_t handle_settings(httpd_req_t *req) {
     send_error(req, 400, "settings");
     return ESP_OK;
   }
+  if ((has_delay && (delay < 1 || delay > 100)) ||
+      (strstr(body, "\"typing_delay_ms\"") && !has_delay) ||
+      (strstr(body, "\"submit_enter\"") && !has_enter) ||
+      (strstr(body, "\"idle_led\"") && !has_idle)) {
+    send_error(req, 400, "settings");
+    return ESP_OK;
+  }
   if (has_enter && !device_config_set_submit_enter(submit_enter)) {
     send_error(req, 400, "submit_enter");
     return ESP_OK;
@@ -328,7 +361,65 @@ static esp_err_t handle_settings(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// Keep long fingerprint waits off the HTTP server task so the page can poll
+// enrollment prompts. Serialize mutations, including serial factory reset.
+static void mutation_task(void *arg) {
+  httpd_req_t *req = arg;
+  if (!strcmp(req->uri, "/api/unlock")) handle_unlock(req);
+  else if (!strcmp(req->uri, "/api/pause")) handle_pause(req);
+  else if (!strcmp(req->uri, "/api/enroll")) handle_enroll(req);
+  else if (!strcmp(req->uri, "/api/delete")) handle_delete(req);
+  else if (!strcmp(req->uri, "/api/label")) handle_label(req);
+  else if (!strcmp(req->uri, "/api/settings")) handle_settings(req);
+  httpd_req_async_handler_complete(req);
+  xSemaphoreGive(mutation_mutex);
+  vTaskDelete(NULL);
+}
+
+static esp_err_t handle_mutation(httpd_req_t *req) {
+  if (!require_host(req)) return ESP_OK;
+  if (xSemaphoreTake(mutation_mutex, 0) != pdTRUE) {
+    send_error(req, 409, "busy");
+    return ESP_OK;
+  }
+  httpd_req_t *async = NULL;
+  if (httpd_req_async_handler_begin(req, &async) != ESP_OK) {
+    xSemaphoreGive(mutation_mutex);
+    return ESP_FAIL;
+  }
+  if (xTaskCreate(mutation_task, "dashboard_op", 8192, async, 4, NULL) != pdPASS) {
+    send_error(async, 409, "busy");
+    httpd_req_async_handler_complete(async);
+    xSemaphoreGive(mutation_mutex);
+  }
+  return ESP_OK;
+}
+
+static esp_err_t handle_status_serialized(httpd_req_t *req) {
+  if (xSemaphoreTake(mutation_mutex, 0) != pdTRUE) {
+    send_error(req, 409, "busy");
+    return ESP_OK;
+  }
+  esp_err_t result = handle_status(req);
+  xSemaphoreGive(mutation_mutex);
+  return result;
+}
+
+void web_dashboard_begin_reset(void) {
+  if (mutation_mutex) xSemaphoreTake(mutation_mutex, portMAX_DELAY);
+}
+
+void web_dashboard_end_reset(void) {
+  dashboard_session_clear();
+  dashboard_set_paused(false);
+  memset(slot_labels, 0, sizeof(slot_labels));
+  if (mutation_mutex) xSemaphoreGive(mutation_mutex);
+}
+
 void web_dashboard_start(void) {
+  mutation_mutex = xSemaphoreCreateBinary();
+  if (!mutation_mutex) return;
+  xSemaphoreGive(mutation_mutex);
   labels_load();
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -346,14 +437,14 @@ void web_dashboard_start(void) {
   const httpd_uri_t uris[] = {
       {.uri = "/", .method = HTTP_GET, .handler = handle_index},
       {.uri = "/index.html", .method = HTTP_GET, .handler = handle_index},
-      {.uri = "/api/status", .method = HTTP_GET, .handler = handle_status},
+      {.uri = "/api/status", .method = HTTP_GET, .handler = handle_status_serialized},
       {.uri = "/api/log", .method = HTTP_GET, .handler = handle_log},
-      {.uri = "/api/unlock", .method = HTTP_POST, .handler = handle_unlock},
-      {.uri = "/api/pause", .method = HTTP_POST, .handler = handle_pause},
-      {.uri = "/api/enroll", .method = HTTP_POST, .handler = handle_enroll},
-      {.uri = "/api/delete", .method = HTTP_POST, .handler = handle_delete},
-      {.uri = "/api/label", .method = HTTP_POST, .handler = handle_label},
-      {.uri = "/api/settings", .method = HTTP_POST, .handler = handle_settings},
+      {.uri = "/api/unlock", .method = HTTP_POST, .handler = handle_mutation},
+      {.uri = "/api/pause", .method = HTTP_POST, .handler = handle_mutation},
+      {.uri = "/api/enroll", .method = HTTP_POST, .handler = handle_mutation},
+      {.uri = "/api/delete", .method = HTTP_POST, .handler = handle_mutation},
+      {.uri = "/api/label", .method = HTTP_POST, .handler = handle_mutation},
+      {.uri = "/api/settings", .method = HTTP_POST, .handler = handle_mutation},
   };
   for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
     httpd_register_uri_handler(server, &uris[i]);

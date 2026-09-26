@@ -1,11 +1,32 @@
 #include "dashboard_api.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdatomic.h>
+#ifdef ESP_PLATFORM
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+static portMUX_TYPE api_lock = portMUX_INITIALIZER_UNLOCKED;
+#define LOCK() portENTER_CRITICAL(&api_lock)
+#define UNLOCK() portEXIT_CRITICAL(&api_lock)
+#else
+#include <time.h>
+#define LOCK() ((void)0)
+#define UNLOCK() ((void)0)
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static bool paused;
+static int64_t paused_until;
+static int64_t clock_us(void) {
+#ifdef ESP_PLATFORM
+  return esp_timer_get_time();
+#else
+  return (int64_t)time(NULL) * 1000000;
+#endif
+}
 static char log_lines[DASHBOARD_LOG_LINES][DASHBOARD_LOG_LINE_MAX];
 static int log_head;
 static int log_count;
@@ -13,7 +34,7 @@ static char session_token[DASHBOARD_SESSION_HEX];
 static int64_t session_until_us;
 
 void dashboard_reset_for_tests(void) {
-  paused = false;
+  paused_until = 0;
   memset(log_lines, 0, sizeof(log_lines));
   log_head = 0;
   log_count = 0;
@@ -41,18 +62,25 @@ bool dashboard_sanitize_label(const char *in, char *out, size_t out_len) {
 }
 
 void dashboard_set_paused(bool value) {
-  paused = value;
+  LOCK();
+  paused_until = value ? clock_us() + 60000000 : 0;
+  UNLOCK();
 }
 
 bool dashboard_is_paused(void) {
-  return paused;
+  LOCK();
+  bool value = clock_us() < paused_until;
+  UNLOCK();
+  return value;
 }
 
 void dashboard_log_event(const char *message) {
   if (!message) message = "";
+  LOCK();
   snprintf(log_lines[log_head], sizeof(log_lines[log_head]), "%s", message);
   log_head = (log_head + 1) % DASHBOARD_LOG_LINES;
   if (log_count < DASHBOARD_LOG_LINES) log_count++;
+  UNLOCK();
 }
 
 static int json_escape(char *out, size_t out_len, const char *in) {
@@ -98,9 +126,14 @@ int dashboard_build_log_json(char *out, size_t out_len) {
   int n = snprintf(out, out_len, "{\"events\":[");
   if (n < 0 || (size_t)n >= out_len) return -1;
   used = (size_t)n;
-  int start = (log_count == DASHBOARD_LOG_LINES) ? log_head : 0;
-  for (int i = 0; i < log_count; i++) {
-    const char *line = log_lines[(start + i) % DASHBOARD_LOG_LINES];
+  char snapshot[DASHBOARD_LOG_LINES][DASHBOARD_LOG_LINE_MAX];
+  LOCK();
+  int count = log_count;
+  int start = (count == DASHBOARD_LOG_LINES) ? log_head : 0;
+  memcpy(snapshot, log_lines, sizeof(snapshot));
+  UNLOCK();
+  for (int i = 0; i < count; i++) {
+    const char *line = snapshot[(start + i) % DASHBOARD_LOG_LINES];
     if (i) {
       if (used + 2 >= out_len) return -1;
       out[used++] = ',';
@@ -166,75 +199,117 @@ static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
 void dashboard_session_grant(char *token_out, size_t token_len, int64_t now_us,
                              void (*fill_random)(void *buf, size_t len)) {
   uint8_t raw[DASHBOARD_SESSION_BYTES];
-  if (fill_random) fill_random(raw, sizeof(raw));
-  else memset(raw, 0, sizeof(raw));
+  if (!fill_random) { dashboard_session_clear(); return; }
+  fill_random(raw, sizeof(raw));
+  LOCK();
   bytes_to_hex(raw, sizeof(raw), session_token);
   session_until_us = now_us + DASHBOARD_SESSION_TTL_US;
   if (token_out && token_len) snprintf(token_out, token_len, "%s", session_token);
+  UNLOCK();
+  memset(raw, 0, sizeof(raw));
 }
 
 bool dashboard_session_valid(const char *token, int64_t now_us) {
-  if (!token || !session_token[0] || now_us >= session_until_us) return false;
-  if (strlen(token) != strlen(session_token)) return false;
+  if (!token || strlen(token) != DASHBOARD_SESSION_HEX - 1) return false;
+  LOCK();
+  bool valid = session_token[0] && now_us < session_until_us;
   unsigned diff = 0;
-  for (size_t i = 0; session_token[i]; i++) {
+  for (size_t i = 0; i < DASHBOARD_SESSION_HEX - 1; i++)
     diff |= (unsigned char)token[i] ^ (unsigned char)session_token[i];
-  }
-  return diff == 0;
+  UNLOCK();
+  return valid && diff == 0;
 }
 
 void dashboard_session_clear(void) {
+  LOCK();
   memset(session_token, 0, sizeof(session_token));
   session_until_us = 0;
+  UNLOCK();
 }
 
+static void skip_space(const char **p) {
+  while (**p && isspace((unsigned char)**p)) (*p)++;
+}
+
+// The API accepts flat objects with integer, boolean, and unescaped string
+// values. Validate the whole object, rather than searching inside arbitrary text.
 static const char *json_find_key(const char *json, const char *key) {
   if (!json || !key) return NULL;
-  char pattern[48];
-  snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-  const char *found = strstr(json, pattern);
-  if (!found) return NULL;
-  found += strlen(pattern);
-  while (*found && isspace((unsigned char)*found)) found++;
-  if (*found != ':') return NULL;
-  found++;
-  while (*found && isspace((unsigned char)*found)) found++;
-  return found;
+  const char *p = json, *result = NULL;
+  skip_space(&p);
+  if (*p++ != '{') return NULL;
+  skip_space(&p);
+  if (*p == '}') return NULL;
+  while (*p) {
+    if (*p++ != '"') return NULL;
+    const char *name = p;
+    while (*p && *p != '"') {
+      if ((unsigned char)*p < 0x20 || *p == '\\') return NULL;
+      p++;
+    }
+    if (*p != '"') return NULL;
+    bool matches = (size_t)(p - name) == strlen(key) && !strncmp(name, key, p - name);
+    p++;
+    skip_space(&p);
+    if (*p++ != ':') return NULL;
+    skip_space(&p);
+    if (matches) {
+      if (result) return NULL;
+      result = p;
+    }
+    if (*p == '"') {
+      p++;
+      while (*p && *p != '"') {
+        if ((unsigned char)*p < 0x20 || *p == '\\') return NULL;
+        p++;
+      }
+      if (*p++ != '"') return NULL;
+    } else if (!strncmp(p, "true", 4)) p += 4;
+    else if (!strncmp(p, "false", 5)) p += 5;
+    else {
+      if (*p == '-') p++;
+      if (!isdigit((unsigned char)*p)) return NULL;
+      if (*p == '0') p++;
+      else while (isdigit((unsigned char)*p)) p++;
+    }
+    skip_space(&p);
+    if (*p == '}') {
+      p++;
+      skip_space(&p);
+      return *p ? NULL : result;
+    }
+    if (*p++ != ',') return NULL;
+    skip_space(&p);
+  }
+  return NULL;
 }
 
 bool dashboard_json_get_int(const char *json, const char *key, int *out) {
   const char *value = json_find_key(json, key);
   if (!value || !out || (*value != '-' && !isdigit((unsigned char)*value))) return false;
-  *out = (int)strtol(value, NULL, 10);
+  errno = 0;
+  long parsed = strtol(value, NULL, 10);
+  if (errno || parsed < INT_MIN || parsed > INT_MAX) return false;
+  *out = (int)parsed;
   return true;
 }
 
 bool dashboard_json_get_bool(const char *json, const char *key, bool *out) {
   const char *value = json_find_key(json, key);
   if (!value || !out) return false;
-  if (strncmp(value, "true", 4) == 0) {
-    *out = true;
-    return true;
-  }
-  if (strncmp(value, "false", 5) == 0) {
-    *out = false;
-    return true;
-  }
+  if (strncmp(value, "true", 4) == 0) { *out = true; return true; }
+  if (strncmp(value, "false", 5) == 0) { *out = false; return true; }
   return false;
 }
 
 bool dashboard_json_get_string(const char *json, const char *key, char *out, size_t out_len) {
   const char *value = json_find_key(json, key);
-  if (!value || !out || out_len == 0 || *value != '"') return false;
-  value++;
-  size_t n = 0;
-  while (*value && *value != '"') {
-    if (*value == '\\') return false;
-    if (n + 1 >= out_len) return false;
-    out[n++] = *value++;
-  }
-  out[n] = '\0';
-  return *value == '"';
+  if (!value || !out || out_len == 0 || *value++ != '"') return false;
+  const char *end = strchr(value, '"');
+  if (!end || (size_t)(end - value) >= out_len) return false;
+  memcpy(out, value, end - value);
+  out[end - value] = '\0';
+  return true;
 }
 
 bool dashboard_host_allowed(const char *host) {

@@ -97,6 +97,20 @@ int main(void) {
                   strcmp(extracted, "Left") == 0,
               "json string");
 
+
+  expect_true(!dashboard_json_get_int("{\"slot\":4294967297}", "slot", &slot), "reject integer overflow");
+  expect_true(!dashboard_json_get_int("{\"slot\":1.5}", "slot", &slot), "reject fractional slot");
+  expect_true(!dashboard_json_get_int("{\"slot\":1,\"slot\":2}", "slot", &slot), "reject duplicate slot");
+  expect_true(!dashboard_json_get_int("{\"nested\":{\"slot\":1}}", "slot", &slot), "reject nested slot");
+  expect_true(!dashboard_json_get_int("{\"slot\":1}garbage", "slot", &slot), "reject trailing input");
+  expect_true(!dashboard_json_get_int("{\"slot\":01}", "slot", &slot), "reject leading zero");
+  expect_true(!dashboard_json_get_bool("{\"paused\":trueish}", "paused", &paused), "reject invalid boolean");
+  dashboard_session_grant(token, sizeof(token), 3000, NULL);
+  expect_true(!dashboard_session_valid(token, 3000), "missing randomness denies session");
+  dashboard_session_grant(token, sizeof(token), 4000, fill_aa);
+  dashboard_session_clear();
+  expect_true(!dashboard_session_valid(token, 4000), "reset revokes session");
+
   if (failures) {
     printf("%d failures\n", failures);
     return 1;

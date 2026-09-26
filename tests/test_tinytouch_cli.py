@@ -797,51 +797,27 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertFalse(args.no_open)
         printed = []
         with mock.patch.object(cli, "say", side_effect=printed.append):
-            with mock.patch.object(cli, "keep_usb_ethernet_off_default_route"):
+            with mock.patch.object(cli, "require_macos"):
                 with mock.patch.object(cli.subprocess, "run") as run:
                     cli.command_dashboard(args)
         self.assertEqual(printed[0], cli.DASHBOARD_URL)
         self.assertEqual(cli.DASHBOARD_URL, "http://192.168.7.1/")
         self.assertTrue(any("not stored on the dongle" in line for line in printed))
-        self.assertTrue(any("add-computer" in line for line in printed))
-        run.assert_called_once_with(["open", cli.DASHBOARD_URL], check=False)
+        self.assertFalse(any("add-computer" in line for line in printed))
+        run.assert_called_once_with(["open", cli.DASHBOARD_URL], check=True)
 
     def test_dashboard_command_can_skip_open(self):
         args = cli.parser().parse_args(["dashboard", "--no-open"])
         with mock.patch.object(cli, "say"):
-            with mock.patch.object(cli, "keep_usb_ethernet_off_default_route"):
+            with mock.patch.object(cli, "require_macos"):
                 with mock.patch.object(cli.subprocess, "run") as run:
                     cli.command_dashboard(args)
         run.assert_not_called()
 
-    def test_dashboard_does_not_steal_serial_from_helper(self):
-        self.assertNotIn("dashboard", cli.DEVICE_COMMANDS)
-
-    def test_usb_ethernet_is_kept_off_the_default_route(self):
-        calls = []
-
-        def fake_run(argv, **kwargs):
-            result = mock.Mock(returncode=0, stdout="")
-            if argv[:2] == ["networksetup", "-listallnetworkservices"]:
-                result.stdout = (
-                    "An asterisk (*) denotes that a network service is disabled.\n"
-                    "USB 10/100/1000 LAN\n"
-                    "tinyTouch\n"
-                    "Wi-Fi\n"
-                )
-            calls.append(list(argv))
-            return result
-
-        with mock.patch.object(cli.subprocess, "run", side_effect=fake_run):
-            with mock.patch.object(cli.sys, "platform", "darwin"):
-                cli.keep_usb_ethernet_off_default_route()
-
-        self.assertIn(["networksetup", "-setdhcp", "tinyTouch"], calls)
-        self.assertIn(["networksetup", "-setv6off", "tinyTouch"], calls)
-        self.assertIn(
-            ["networksetup", "-ordernetworkservices", "USB 10/100/1000 LAN", "Wi-Fi", "tinyTouch"],
-            calls,
-        )
+    def test_dashboard_leaves_network_settings_alone(self):
+        with mock.patch.object(cli.subprocess, "run") as run:
+            cli.command_dashboard(cli.parser().parse_args(["dashboard", "--no-open"]))
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

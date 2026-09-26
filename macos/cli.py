@@ -54,13 +54,6 @@ USB_ETHERNET_SERVICE = "tinyTouch"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
 
-# Commands that open the device CDC port. `dashboard` is intentionally absent so
-# it never steals the serial session from the macOS helper.
-DEVICE_COMMANDS = {
-    "setup", "mode", "config", "enroll", "delete", "computers", "factory-reset",
-    "update", "rom", "bootloader", "status", "logs", "test", "keys", "pair",
-}
-
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
@@ -1446,60 +1439,17 @@ def command_status(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     data = status(port)
     say(json.dumps(data, indent=2, sort_keys=True))
-    if data.get("mode") == "hid":
-        say(f"On-device dashboard: {DASHBOARD_URL}")
-        say("Password typing still uses this Mac's Keychain via the helper.")
-
-
-def keep_usb_ethernet_off_default_route() -> None:
-    if sys.platform != "darwin":
-        return
-    listed = subprocess.run(
-        ["networksetup", "-listallnetworkservices"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if listed.returncode != 0:
-        return
-    services = []
-    for line in listed.stdout.splitlines():
-        if not line or line.startswith("An asterisk"):
-            continue
-        name = line[1:] if line.startswith("*") else line
-        name = name.strip()
-        if name:
-            services.append(name)
-    if USB_ETHERNET_SERVICE not in services:
-        return
-    subprocess.run(
-        ["networksetup", "-setdhcp", USB_ETHERNET_SERVICE],
-        capture_output=True,
-        check=False,
-    )
-    subprocess.run(
-        ["networksetup", "-setv6off", USB_ETHERNET_SERVICE],
-        capture_output=True,
-        check=False,
-    )
-    ordered = [name for name in services if name != USB_ETHERNET_SERVICE]
-    ordered.append(USB_ETHERNET_SERVICE)
-    subprocess.run(
-        ["networksetup", "-ordernetworkservices", *ordered],
-        capture_output=True,
-        check=False,
-    )
 
 
 def command_dashboard(args: argparse.Namespace) -> None:
-    keep_usb_ethernet_off_default_route()
     say(DASHBOARD_URL)
     say("Plug in TinyTouch, allow the USB Ethernet accessory if macOS asks, then open this page.")
     say("Password typing uses the TinyTouch helper on this computer. It is not stored on the dongle.")
-    say("A new computer still needs: tinytouch setup --mode hid   or   tinytouch add-computer")
+    say("A new computer still needs: tinytouch setup --mode hid")
     if args.no_open:
         return
-    subprocess.run(["open", DASHBOARD_URL], check=False)
+    require_macos()
+    run(["open", DASHBOARD_URL])
 
 
 def command_logs(args: argparse.Namespace) -> None:

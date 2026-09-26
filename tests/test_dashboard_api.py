@@ -40,7 +40,7 @@ class DashboardUiTests(unittest.TestCase):
         self.assertNotRegex(html.lower(), r"keychain")
         self.assertIn("not stored on the dongle", html)
         self.assertIn("tinytouch setup --mode hid", html)
-        self.assertIn("add-computer", html)
+        self.assertNotIn("add-computer", html)
         self.assertIn('id="slots"', html)
         self.assertIn("/api/pause", html)
         self.assertIn("Submit Enter", html)

@@ -30,7 +30,7 @@ label.chk { display:flex; gap:8px; align-items:center; margin:8px 0; }
 <body>
 <main>
   <h1>TinyTouch</h1>
-  <p class="banner">Password typing uses the TinyTouch helper on this computer. It is not stored on the dongle. A new Mac still needs <code>tinytouch setup --mode hid</code> or <code>tinytouch add-computer</code>.</p>
+  <p class="banner">Password typing uses the TinyTouch helper on this computer. It is not stored on the dongle. A new Mac still needs <code>tinytouch setup --mode hid</code>.</p>
   <div class="grid" id="stats"></div>
   <p id="unlock-state"></p>
   <button id="unlock">Unlock with fingerprint</button>
@@ -61,7 +61,7 @@ const errMsg = {
   ENROLL: 'Enroll failed. Touch → lift → touch again with the same finger.',
   slot: 'Invalid fingerprint slot.',
 };
-function pause(on) { api('/api/pause', {method:'POST', body: JSON.stringify({paused:on})}); }
+function pause(on) { return api('/api/pause', {method:'POST', body: JSON.stringify({paused:on})}).catch(() => {}); }
 async function json(path, opts) {
   const res = await api(path, opts);
   const data = await res.json().catch(() => ({}));
@@ -112,7 +112,13 @@ function renderStatus(s) {
   renderSlots(s.slots);
 }
 async function refresh() {
-  if (busy) return;
+  if (busy) {
+    try {
+      const log = await json('/api/log');
+      logEl.textContent = (log.events || []).join('\n');
+    } catch (_) {}
+    return;
+  }
   try {
     renderStatus(await json('/api/status'));
     if (!editingLabel()) {
@@ -125,7 +131,7 @@ async function refresh() {
 }
 document.getElementById('unlock').onclick = async () => {
   setBusy(true, 'PROMPT TOUCH — hold an enrolled finger on the sensor');
-  pause(true);
+  await pause(true);
   try {
     await json('/api/unlock', {method:'POST', body:'{}'});
     logEl.textContent = 'Unlocked.';
@@ -160,7 +166,7 @@ document.getElementById('slots').addEventListener('click', async e => {
   try {
     if (enroll) {
       setBusy(true, 'Enrolling slot ' + enroll + ' — touch, lift, then touch again. Keep this tab open (~30s).');
-      pause(true);
+      await pause(true);
       await json('/api/enroll', {method:'POST', body: JSON.stringify({slot: Number(enroll)})});
       logEl.textContent = 'Enrolled slot ' + enroll + '.';
     }

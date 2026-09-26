@@ -208,12 +208,6 @@ static usbd_class_driver_t const ccid_driver = {
 };
 
 usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count) {
-  // HID mode presents keyboard + CDC + ECM instead of CCID. Skip the custom
-  // CCID class so TinyUSB does not claim endpoints the HID config reuses.
-  if (device_config_mode() != DEVICE_MODE_PIV) {
-    *driver_count = 0;
-    return NULL;
-  }
   *driver_count = 1;
   return &ccid_driver;
 }
