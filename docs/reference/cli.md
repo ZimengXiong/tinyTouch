@@ -199,3 +199,4 @@ Changes this Mac's Keychain credentials without resetting fingerprints or pairin
 The default password applies to every slot without an override. `list` shows only
 configured slots; it never prints passwords. Removing an override restores the
 default for that slot. Select a device with `--port PATH` when needed.
+Set `TINYTOUCH_NO_SOUND=1` to disable touch and enrollment sounds.

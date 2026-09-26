@@ -245,6 +245,28 @@ def show_startup_mark(command: str) -> None:
     say("")
 
 
+_sound_process = None
+
+
+def chime(name: str) -> None:
+    """Play optional sensor feedback without blocking the serial exchange."""
+    global _sound_process
+    if sys.platform != "darwin" or os.environ.get("TINYTOUCH_NO_SOUND"):
+        return
+    sound = Path("/System/Library/Sounds") / f"{name}.aiff"
+    if not sound.is_file():
+        return
+    if _sound_process is not None and _sound_process.poll() is None:
+        return
+    try:
+        _sound_process = subprocess.Popen(
+            ["/usr/bin/afplay", str(sound)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def verbose(message: str) -> None:
     if VERBOSE:
         say(f"[verbose] {message}")
@@ -580,6 +602,10 @@ def exchange_serial(
                 continue
             lines.append(line)
             verbose("device: " + line)
+            if line in {"EVENT TOUCH", "EVENT TOUCH_AGAIN"}:
+                chime("Tink")
+            elif line == "EVENT LIFT":
+                chime("Pop")
             if line.startswith("EVENT ") and event_handler is not None:
                 event_handler(line)
                 if line == "EVENT TOUCH":
@@ -813,6 +839,7 @@ def password_for(account: str) -> str:
         finally:
             _setup_password[:] = b"\x00" * len(_setup_password)
             _setup_password = None
+    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Password again: ")
     if not first or first != second:
@@ -983,6 +1010,7 @@ def enroll(port: str, skip: bool) -> None:
     current = status(port)
     if current.get("fingerprints") != "4":
         raise ToolError("Live verification failed: the four-view fingerprint profile was not reported.")
+    chime("Glass")
 
 
 def command_setup(args: argparse.Namespace) -> None:
@@ -1204,6 +1232,7 @@ def command_enroll(args: argparse.Namespace) -> None:
     if int(current.get("fingerprints", "0")) < 1:
         raise ToolError("Live verification failed: the enrollment was not reported.")
     say("Fingerprint enrolled.")
+    chime("Glass")
 
 
 def command_delete(args: argparse.Namespace) -> None:
