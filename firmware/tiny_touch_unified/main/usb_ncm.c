@@ -187,10 +187,6 @@ void usb_ncm_start(void) {
     ESP_LOGE(TAG, "RX queue alloc failed");
     return;
   }
-  if (xTaskCreate(usb_net_rx_task, "usb_net_rx", 4096, NULL, 5, NULL) != pdPASS) {
-    ESP_LOGE(TAG, "RX task create failed");
-    return;
-  }
 
   s_usb_ip.ip.addr = ESP_IP4TOADDR(DASHBOARD_IP_A, DASHBOARD_IP_B, DASHBOARD_IP_C,
                                    DASHBOARD_IP_D);
@@ -256,6 +252,12 @@ void usb_ncm_start(void) {
   }
 
   esp_netif_action_start(s_usb_netif, 0, 0, 0);
+  // Do not consume packets until esp-netif has installed its lwIP handle.
+  if (xTaskCreate(usb_net_rx_task, "usb_net_rx", 4096, NULL, 5, NULL) != pdPASS) {
+    ESP_LOGE(TAG, "RX task create failed");
+    return;
+  }
+
   /* Do NOT call tud_network_link_state here: ECM notify EP is not open yet
    * (ep_notif==0) and claiming EP0 corrupts the stack. Announce after mount. */
 
