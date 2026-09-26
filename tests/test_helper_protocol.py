@@ -1,13 +1,14 @@
 import importlib.util
 import hashlib
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
-    "tinytouch_helper", ROOT / "software" / "macos-helper" / "tinytouch_helper.py"
+    "tinytouch_helper", ROOT / "macos" / "tinytouch_helper.py"
 )
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
@@ -30,6 +31,55 @@ class SerialFramingTests(unittest.TestCase):
 
 
 class WorkerStateMachineTests(unittest.TestCase):
+    def test_manager_failure_drains_workers_before_restart(self):
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.fake", "1-1")
+        stopped = threading.Event()
+        workers = []
+        original_worker = helper.Worker
+
+        def worker_factory(endpoint):
+            worker = original_worker(endpoint)
+            workers.append(worker)
+            return worker
+
+        def serve(*_args, stop_event, **_kwargs):
+            stop_event.wait(2)
+            stopped.set()
+
+        with (
+            mock.patch.object(helper, "Worker", side_effect=worker_factory),
+            mock.patch.object(helper, "serve_port", side_effect=serve),
+            mock.patch.object(helper, "credentials_exist", return_value=True),
+            mock.patch.object(helper.LeaseObserver, "active", return_value=None),
+            mock.patch.object(helper, "device_endpoints",
+                              side_effect=[[endpoint], OSError("discovery failed")]),
+            mock.patch.object(helper.time, "sleep"),
+            mock.patch.object(helper, "diagnostic"),
+        ):
+            with self.assertRaises(OSError):
+                helper.run_manager()
+        self.assertEqual(len(workers), 1)
+        self.assertTrue(workers[0].stop_event.is_set())
+        self.assertTrue(stopped.is_set())
+        self.assertFalse(workers[0].thread.is_alive())
+
+    def test_worker_does_not_retain_exception_frames(self):
+        def fail(*_args, **_kwargs):
+            try:
+                raise ValueError("inner")
+            except ValueError as exc:
+                raise OSError("outer") from exc
+
+        endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.fake", "1-1")
+        with mock.patch.object(helper, "serve_port", side_effect=fail):
+            worker = helper.Worker(endpoint)
+            worker.start()
+            worker.thread.join()
+        self.assertIsInstance(worker.error, OSError)
+        self.assertIsNone(worker.error.__traceback__)
+        self.assertIsNone(worker.error.__context__)
+        self.assertIsNone(worker.error.__cause__)
+
     def test_worker_failure_has_explicit_terminal_phase(self):
         endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.example", "1-1")
         with mock.patch.object(helper, "serve_port", side_effect=OSError("injected")):
@@ -73,6 +123,47 @@ class WorkerStateMachineTests(unittest.TestCase):
 
 
 class HelperProtocolTests(unittest.TestCase):
+    def test_serial_setup_failure_closes_descriptor(self):
+        connection = mock.Mock()
+        connection.reset_input_buffer.side_effect = OSError("disconnected")
+        with mock.patch.object(helper.serial, "Serial", return_value=connection):
+            with self.assertRaises(OSError):
+                helper.open_serial("/dev/cu.fake")
+        connection.close.assert_called_once_with()
+
+    def test_pairing_key_failure_wipes_loaded_password(self):
+        secret = bytearray(b"password")
+        with (
+            mock.patch.object(helper, "load_passwords", return_value={0: secret}),
+            mock.patch.object(helper, "pairing_keychain_get", side_effect=KeyError),
+        ):
+            with self.assertRaises(KeyError):
+                helper.serve_port("/dev/cu.fake", device_id="TT-001122334455")
+        self.assertFalse(any(secret))
+
+    def test_state_failure_wipes_password_and_pairing_key(self):
+        secret = bytearray(b"password")
+        key = bytearray(range(32))
+        with (
+            mock.patch.object(helper, "load_passwords", return_value={0: secret}),
+            mock.patch.object(helper, "pairing_keychain_get", return_value=key),
+            mock.patch.object(helper, "load_state", side_effect=OSError),
+        ):
+            with self.assertRaises(OSError):
+                helper.serve_port("/dev/cu.fake", device_id="TT-001122334455")
+        self.assertFalse(any(secret))
+        self.assertFalse(any(key))
+
+    def test_partial_password_load_failure_wipes_previous_slots(self):
+        secret = bytearray(b"password")
+        with (
+            mock.patch.object(helper, "keychain_get", return_value=secret),
+            mock.patch.object(helper, "has_password", side_effect=OSError),
+        ):
+            with self.assertRaises(OSError):
+                helper.load_passwords(helper.ACCOUNT)
+        self.assertFalse(any(secret))
+
     @staticmethod
     def decrypt_response(key, nonce, response):
         parts = response.split()

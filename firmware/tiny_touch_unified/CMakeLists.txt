@@ -5,6 +5,9 @@ cmake_minimum_required(VERSION 3.16)
 option(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
        "Allow local development firmware to bypass fingerprint authorization"
        OFF)
+option(TINYTOUCH_RECOVERY_BUILD
+       "Build one-time firmware that clears the fingerprint sensor and device state"
+       OFF)
 
 set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")

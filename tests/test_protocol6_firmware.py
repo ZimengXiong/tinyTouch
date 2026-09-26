@@ -64,9 +64,44 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertIn("piv_create_identity", piv)
         self.assertIn("piv_reload_keys()", piv)
 
+    def test_piv_certificates_separate_login_and_keychain_usage(self) -> None:
+        piv = self.source("piv.c")
+        self.assertIn("#define PIV_IDENTITY_SCHEMA 3", piv)
+        self.assertIn("MBEDTLS_X509_KU_KEY_ENCIPHERMENT", piv)
+        self.assertIn("MBEDTLS_X509_KU_DIGITAL_SIGNATURE", piv)
+        self.assertIn("if (result == 0 && !key_management)", piv)
+        self.assertNotIn(
+            "MBEDTLS_X509_KU_DIGITAL_SIGNATURE | "
+            "MBEDTLS_X509_KU_KEY_ENCIPHERMENT",
+            piv,
+        )
+
+    def test_piv_token_identifier_changes_with_the_identity(self) -> None:
+        piv = self.source("piv.c")
+        console = self.source("config_console.c")
+        self.assertIn("set_chuid_guid(cert_9a_der, cert_9a_der_len)", piv)
+        self.assertIn("set_chuid_guid(mac, sizeof(mac))", piv)
+        self.assertIn("usb_ccid_rescan();", console)
+
+    def test_piv_configuration_allows_bounded_keychain_wrapping(self) -> None:
+        piv = self.source("piv.c")
+        console = self.source("config_console.c")
+        self.assertIn("CONFIGURATION_PRESENCE_WINDOW_TICKS", piv)
+        self.assertIn("CONFIGURATION_PIV_OPERATION_LIMIT", piv)
+        self.assertIn("user_presence_operations_left", piv)
+        self.assertIn("user_presence_allows_repeated_slots", piv)
+        self.assertIn("piv_note_configuration_presence", console)
+        self.assertIn('"piv_crypto_ok"', piv)
+        self.assertIn('"piv_crypto_rejected"', piv)
+
     def test_fingerprint_auth_requires_presence(self) -> None:
         source = self.source("touch_pin_hid.c")
         self.assertIn("if (!present || !runtime.presence_armed)", source)
+        auth_pause = source.index("if (fingerprint_prompted_authorization_active())")
+        auth_resume = source.index("TickType_t now", auth_pause)
+        paused_source = source[auth_pause:auth_resume]
+        self.assertIn("runtime.presence_armed = false", paused_source)
+        self.assertIn("auth_wait_for_lift", paused_source)
         self.assertIn("if (!fingerprint_is_ready())", source)
         self.assertIn("wait_hid_ready()", source)
         self.assertNotIn("fingerprint_service_health", source)

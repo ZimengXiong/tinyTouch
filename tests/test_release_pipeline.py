@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "release_integrity", ROOT / "packaging" / "release_integrity.py"
+    "release_integrity", ROOT / "release" / "release_integrity.py"
 )
 integrity = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(integrity)
@@ -29,7 +29,7 @@ def metadata(path: Path) -> dict:
 class ReleasePipelineTests(unittest.TestCase):
     commit = "1234567890ab" + "c" * 28
 
-    def make_app(self, path: Path) -> None:
+    def make_app(self, path: Path, kind: str) -> None:
         payload = bytearray(512)
         offset = 32
         struct.pack_into("<I", payload, offset, integrity.APP_DESCRIPTION_MAGIC)
@@ -41,6 +41,8 @@ class ReleasePipelineTests(unittest.TestCase):
         idf = b"v5.3.2"
         payload[offset + 112:offset + 112 + len(idf)] = idf
         payload[256:268] = self.commit[:12].encode()
+        if kind == "recovery":
+            payload[300:317] = b"RECOVERY COMPLETE"
         path.write_bytes(payload)
 
     def make_cli(self, path: Path) -> None:
@@ -64,7 +66,10 @@ class ReleasePipelineTests(unittest.TestCase):
             for address, name in images.items():
                 path = directory / name
                 if address == 0x10000:
-                    self.make_app(path)
+                    self.make_app(path, kind)
+                elif name == "recovery-request.bin":
+                    request = integrity.RECOVERY_REQUEST
+                    path.write_bytes(request + b"\xff" * (4096 - len(request)))
                 elif name == "ota_data_initial.bin":
                     path.write_bytes(b"ota" * 32)
                 elif name == "partition-table.bin":
@@ -116,7 +121,7 @@ class ReleasePipelineTests(unittest.TestCase):
             output = root / "publish"
             subprocess.run(
                 [
-                    "python3", str(ROOT / "packaging" / "finalize-release.py"),
+                    "python3", str(ROOT / "release" / "finalize-release.py"),
                     str(release), "--output", str(output), "--commit", self.commit,
                 ],
                 check=True,
@@ -124,32 +129,11 @@ class ReleasePipelineTests(unittest.TestCase):
             integrity.validate_release(output, self.commit, flat=True)
             integrity.validate_checksums(output)
             self.assertTrue((output / "ota_data_initial.bin").is_file())
+            self.assertTrue((output / "tiny_touch_recovery.bin").is_file())
+            self.assertTrue((output / "tiny_touch_recovery_full.bin").is_file())
             self.assertFalse((output / "ota_slot1.bin").exists())
             self.assertFalse((output / "tinytouch-web-flashers.tar.gz").exists())
 
-            public = root / "public"
-            public.mkdir()
-            subprocess.run(
-                [
-                    "python3", str(ROOT / "packaging" / "sync-docs-release.py"),
-                    str(output), str(public), "--commit", self.commit,
-                ],
-                check=True,
-            )
-            release_manifest = json.loads((output / "release-manifest.json").read_text())
-            self.assertEqual(
-                json.loads((public / "flash" / "factory" / "manifest.json").read_text()),
-                release_manifest["firmware"]["factory"],
-            )
-            self.assertEqual(
-                json.loads((public / "release.json").read_text()), release_manifest
-            )
-            self.assertTrue((public / "flash" / "recovery" / "manifest.json").is_file())
-            self.assertEqual(
-                json.loads((public / "flash" / "recovery" / "manifest.json").read_text()),
-                release_manifest["firmware"]["factory"],
-            )
-            self.assertTrue((public / "cli" / "tinytouch-macos-arm64.tar.gz").is_file())
             (output / "unexpected.bin").write_bytes(b"unexpected")
             with self.assertRaisesRegex(integrity.IntegrityError, "published asset set mismatch"):
                 integrity.validate_release(output, self.commit, flat=True)
@@ -185,92 +169,59 @@ class ReleasePipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(integrity.IntegrityError, "links are not allowed"):
                 integrity.safe_extract(archive_path, root / "output")
 
-    def test_tag_workflow_promotes_without_rebuilding(self):
+    def test_release_workflow_is_ci_and_tag_driven(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
-        self.assertNotIn("idf.py", workflow)
-        self.assertNotIn("build-standalone-macos", workflow)
-        self.assertNotIn("--clobber", workflow)
-        self.assertIn('workflows: ["Release candidate"]', workflow)
-        self.assertIn("AUTOMATIC_COMMIT", workflow)
-        self.assertIn("AUTOMATIC_RUN_ID", workflow)
-        self.assertIn("Create automatic release tag", workflow)
-        self.assertIn("Version $release_tag is already published and active", workflow)
-        self.assertGreaterEqual(workflow.count("git/ref/heads/$RELEASE_BRANCH"), 1)
-        self.assertIn('test "$tag_type" = tag', workflow)
-        self.assertIn('if [[ "$tag_sha" = "$release_commit" ]]', workflow)
-        self.assertIn("already published and active", workflow)
-        self.assertIn("Confirm automatic candidate is still current", workflow)
-        self.assertIn("--signer-workflow", workflow)
-        self.assertIn("--source-digest", workflow)
-        self.assertNotIn("Activate verified CLI update channel", workflow)
-        self.assertIn("group: release-promotion", workflow)
-        self.assertIn("Verify published GitHub release", workflow)
-        self.assertNotIn("Commit verified docs release assets", workflow)
-        self.assertNotIn("alpacaengineer/dispatches", workflow)
-        self.assertNotIn("PUBLIC_SITE_ORIGIN", workflow)
-        self.assertNotIn("base=https://alpacaengineer.ing/tinytouch", workflow)
-        self.assertIn("releases/latest/download", workflow)
-        self.assertNotIn("packaging/sync-docs-release.py", workflow)
-        self.assertIn("sha256sum --check --strict", workflow)
-        self.assertIn("--json tagName,isDraft", workflow)
-        self.assertNotIn("releases/tags/$GITHUB_REF_NAME", workflow)
-        self.assertIn("release immutability is a configured server-side prerequisite", workflow)
-        self.assertNotIn("TINYTOUCH_RELEASE_ADMIN_TOKEN", workflow)
-        self.assertIn("CANDIDATE_WAIT_SECONDS", workflow)
-        self.assertIn("release_state=published", workflow)
-        self.assertIn('git rev-parse "$release_tag^{commit}"', workflow)
-        self.assertNotIn("release_target", workflow)
-        candidate = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
-        self.assertIn("paths-ignore:", candidate)
-        self.assertIn("channels/**", candidate)
-        self.assertIn("docs/**", candidate)
-        self.assertNotIn("docs/public/release.json", candidate)
-        self.assertNotIn("docs/public/flash/factory/**", candidate)
-        self.assertNotIn("workflow_dispatch:", candidate)
-        self.assertIn('branches: [main, "beta/**"]', candidate)
-        self.assertIn("group: release-candidate-${{ github.ref }}", candidate)
-        self.assertIn("cancel-in-progress: true", candidate)
-        self.assertIn('refs/heads/beta/*', candidate)
-        self.assertNotIn("tinytouch-web-flashers.tar.gz", workflow)
-        self.assertNotIn("web/flash", workflow)
-        docs_workflow = (ROOT / ".github" / "workflows" / "docs.yml").read_text()
-        self.assertIn("group: production-documentation", docs_workflow)
-        self.assertIn("environment: release-publishing", docs_workflow)
-        self.assertIn("api/github-release?file=tiny_touch_unified.bin", docs_workflow)
-        candidate_workflow = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text()
-        self.assertNotIn("build-recovery", candidate_workflow)
-        self.assertNotIn("--recovery-build", candidate_workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("workflow_run:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("Existing annotated release tag", workflow)
+        self.assertIn('git cat-file -t "refs/tags/$RELEASE_TAG"', workflow)
+        self.assertIn("idf.py -C firmware/tiny_touch_unified build", workflow)
+        self.assertIn("TINYTOUCH_RECOVERY_BUILD=ON", workflow)
+        self.assertIn("-B firmware/tiny_touch_unified/build-recovery", workflow)
+        self.assertIn("--recovery-build", workflow)
+        self.assertIn("release/build-standalone-macos.sh", workflow)
+        self.assertIn("environment: release-signing", workflow)
+        self.assertNotIn("beta-signing", workflow)
+        self.assertIn("release-publishing", workflow)
+        self.assertIn("attest-build-provenance", workflow)
+        self.assertIn('gh release create "$RELEASE_TAG"', workflow)
+        self.assertFalse((ROOT / ".github" / "workflows" / "release-candidate.yml").exists())
 
-        build_script = (ROOT / "packaging" / "build-standalone-macos.sh").read_text()
+        build_script = (ROOT / "release" / "build-standalone-macos.sh").read_text()
         self.assertIn("--require-hashes", build_script)
         self.assertIn("--no-build-isolation", build_script)
         self.assertIn("requirements-bootstrap.txt", build_script)
         self.assertIn("requirements-release.txt", build_script)
-        tag_script = (ROOT / "packaging" / "tag-release").read_text()
-        self.assertIn("git diff --cached --quiet", tag_script)
-        self.assertNotIn("git status --porcelain", tag_script)
-        self.assertIn("Timed out after 600s", tag_script)
-        self.assertLess(tag_script.index("release-candidate.yml"), tag_script.index("git tag -a"))
-        self.assertIn("release.yml/runs", tag_script)
-        self.assertIn("Release promotion ended with", tag_script)
-        self.assertNotIn("\n  status=", tag_script)
-        release_script = (ROOT / "packaging" / "release").read_text()
-        self.assertIn('git push origin "$release_branch"', release_script)
-        self.assertIn('beta/*', release_script)
-        self.assertIn("GitHub Actions is handling the release", release_script)
-        self.assertNotIn("tag-release", release_script)
+        self.assertNotIn("_network_test", build_script)
+        self.assertFalse((ROOT / "release" / "release-local").exists())
+        self.assertFalse((ROOT / "release" / "tag-release").exists())
+        self.assertFalse((ROOT / "release" / "release").exists())
+
+    def test_recovery_clears_sensor_before_device_state(self):
+        source = (ROOT / "firmware" / "tiny_touch_unified" / "main" / "main.c").read_text()
+        recovery = source.split("static void recover_device(void)", 1)[1].split("#endif", 1)[0]
+        self.assertLess(recovery.index("fingerprint_delete_all()"), recovery.index("nvs_flash_erase()"))
+        self.assertLess(recovery.index("fingerprint_count() == 0"), recovery.index("nvs_flash_erase()"))
+        self.assertIn("esp_partition_erase_range(partition", recovery)
+        partitions = (ROOT / "firmware" / "tiny_touch_unified" / "partitions.csv").read_text()
+        self.assertIn("recovery,   data, 0x40", partitions)
 
     def test_browser_requires_protocol_six_and_prefetches_before_usb(self):
         source = (ROOT / "docs" / ".vitepress" / "theme" / "FlashTool.vue").read_text()
         self.assertIn("const UPDATE_PROTOCOL = 6", source)
-        self.assertIn("await loader.eraseFlash()", source)
+        self.assertNotIn("await loader.eraseFlash()", source)
+        self.assertIn("release.firmware?.recovery", source)
         self.assertIn("function releaseAsset(file: string, tag?: string)", source)
         self.assertNotIn("/firmware/${image.file}", source)
-        self.assertIn("<option value=\"beta\">Beta firmware</option>", source)
+        self.assertIn(
+            '<option value="dev">Development firmware</option>', source
+        )
         self.assertIn("release.prerelease", source)
         proxy = (ROOT / "docs" / "api" / "github-release.js").read_text()
         self.assertIn("redirect: 'follow'", proxy)
         self.assertIn("RELEASE_ASSETS.has(file)", proxy)
+        self.assertIn("'tiny_touch_recovery.bin'", proxy)
         self.assertNotIn('"rewrites"', (ROOT / "docs" / "vercel.json").read_text())
         self.assertNotIn("/flash/recovery", source)
         self.assertIn("nextManifest.eraseAll !== false", source)

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "software" / "macos-helper"))
+sys.path.insert(0, str(ROOT / "macos"))
 
 from tinytouch_runtime import (  # noqa: E402
     BackoffPolicy,
@@ -90,6 +90,10 @@ class LeaseTests(unittest.TestCase):
 
 
 class BackoffTests(unittest.TestCase):
+    def test_prolonged_failure_stays_capped_without_overflow(self):
+        policy = BackoffPolicy(initial=0.25, maximum=2)
+        self.assertEqual(policy.delay(1_000_000, random_value=lambda: 0.5), 2)
+
     def test_backoff_is_exponential_bounded_and_jittered(self):
         policy = BackoffPolicy(initial=1, maximum=8, jitter=0.25)
         self.assertEqual(policy.delay(1, random_value=lambda: 0.5), 1)

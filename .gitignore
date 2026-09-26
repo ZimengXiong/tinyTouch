@@ -4,7 +4,7 @@ firmware/tiny_touch_unified/main/secrets.h
 *.pem
 !*.example.pem
 
-# ESP-IDF and packaging outputs
+# Build and release outputs
 firmware/tiny_touch_unified/build/
 firmware/tiny_touch_unified/build-local/
 firmware/tiny_touch_unified/build-recovery/
@@ -14,12 +14,17 @@ firmware/tiny_touch_unified/sdkconfig.old
 build/
 dist/
 
+# Files kept outside the source repository
+/Media Assets/
+/Archive.zip
+
 # Python / macOS noise
 __pycache__/
 *.py[cod]
 .DS_Store
 __MACOSX/
 .venv/
+.venv-release/
 .venv-x86_64/
 .python-x86_64/
 .vercel
