@@ -21,7 +21,8 @@ class CcidHostTests(unittest.TestCase):
 #include <assert.h>
 #define DEVICE_MODE_PIV 0
 #define ESP_LOGW(...) ((void)0)
-static uint8_t rx_buf[2048], tx_buf[2048];
+extern uint8_t rx_buf[2048]; // The handler uses only its size; USB owns the storage.
+static uint8_t tx_buf[2048];
 static int mode = 1, calls;
 static uint8_t reply_type, reply_status, reply_error, payload[32];
 static size_t payload_len;
