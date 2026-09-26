@@ -24,6 +24,11 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
   ERROR_QUIET
 )
+# Containerized checkouts may not permit Git to read the worktree. The release
+# workflow supplies the validated target separately from its dispatch SHA.
+if(NOT TINYTOUCH_SOURCE_COMMIT AND DEFINED ENV{RELEASE_COMMIT})
+  set(TINYTOUCH_SOURCE_COMMIT "$ENV{RELEASE_COMMIT}")
+endif()
 if(TINYTOUCH_SOURCE_COMMIT)
   string(SUBSTRING "${TINYTOUCH_SOURCE_COMMIT}" 0 12 TINYTOUCH_BUILD_ID)
 elseif(DEFINED ENV{GITHUB_SHA} AND NOT "$ENV{GITHUB_SHA}" STREQUAL "")
@@ -32,6 +37,7 @@ endif()
 if(NOT TINYTOUCH_BUILD_ID)
   set(TINYTOUCH_BUILD_ID "development")
 endif()
+message(STATUS "tinyTouch build ${TINYTOUCH_BUILD_ID}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 if(NOT (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR EQUAL 3))
