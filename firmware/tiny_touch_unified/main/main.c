@@ -61,6 +61,7 @@ void app_main(void) {
   recover_device();
 #endif
   device_config_init();
+  fingerprint_led_idle();
   // Prime the sensor's live-detection state before the HID task begins. This
   // is the same probe STATUS performs; doing it at boot avoids requiring a
   // host status command after USB reconnect before the first fingerprint.

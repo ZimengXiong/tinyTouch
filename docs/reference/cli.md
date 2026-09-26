@@ -172,6 +172,7 @@ Without a value, prints status. With a value, writes a protected setting:
 
 | Name | Range | Default | Effect |
 |---|---:|---:|---|
+| `idle_led` | 0 or 1 | 1 | Idle blue ring; result feedback remains enabled |
 | `typing_delay_ms` | 1–100 | 7 | Delay after HID key press and release |
 | `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
