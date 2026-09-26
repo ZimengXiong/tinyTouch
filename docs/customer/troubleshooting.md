@@ -116,3 +116,9 @@ in a Keychain password prompt. If the problem persists, retain your existing
 keys and collect `tinytouch --version`, `tinytouch status`, `sw_vers`, and
 `sc_auth identities` for diagnosis. A repeated prompt still needs investigation
 on the affected Mac; repeatedly resetting the device is not a reliable repair.
+
+## Turn off the idle blue ring
+
+Run `tinytouch config idle_led 0` and approve with your fingerprint. The setting
+survives reconnects; green/red result feedback remains enabled. Use
+`tinytouch config idle_led 1` to restore the idle light.

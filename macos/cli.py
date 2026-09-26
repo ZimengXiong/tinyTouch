@@ -55,7 +55,7 @@ VERBOSE = False
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import atomic_write_bytes, ForegroundLease, LeaseProtocolError  # type: ignore  # noqa: E402
+from tinytouch_runtime import atomic_write_bytes, ForegroundLease, LeaseProtocolError, LeaseBusyError  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
@@ -642,7 +642,7 @@ def foreground_session(port: str):
     lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
     try:
         lease.acquire(wait_for_ack=helper_loaded())
-    except LeaseProtocolError as exc:
+    except (LeaseProtocolError, LeaseBusyError) as exc:
         raise ToolError(f"Could not pause the HID helper: {exc}") from exc
     try:
         with connected_serial(port) as session_port:
@@ -1305,6 +1305,8 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     account = device_account(port)
     keychain_delete(PAIRING_SERVICE, account)
     keychain_delete(PASSWORD_SERVICE, account)
+    for slot in range(1, 6):
+        keychain_delete(PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
     say("Factory reset completed.")
 
 
@@ -1335,7 +1337,11 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
         touch_prompt="Touch the fingerprint sensor now to approve the firmware update.",
     )
     token = secrets.token_hex(16)
-    was_loaded = unload_helper()
+    lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
+    try:
+        lease.acquire(wait_for_ack=helper_loaded())
+    except (LeaseProtocolError, LeaseBusyError) as exc:
+        raise ToolError(f"Could not pause the HID helper: {exc}") from exc
     try:
         with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
             try:
@@ -1370,8 +1376,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
                     pass
                 raise
     finally:
-        if was_loaded:
-            load_helper()
+        lease.release()
     line = next((item for item in commit if item.startswith("OK OTA STAGED")), "")
     if "power_cycle=required" not in line:
         raise ToolError("The firmware did not confirm the OTA slot was staged safely.")
