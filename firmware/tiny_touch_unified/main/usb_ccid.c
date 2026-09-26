@@ -99,6 +99,18 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
     send_ccid(0x81, slot, seq, 0x42, 0x01, NULL, 0);
     return;
   }
+  // Keep the USB topology stable, but expose an empty reader in HID mode.
+  // Returning an ATR here makes macOS announce an unpaired smart card.
+  if (device_config_mode() != DEVICE_MODE_PIV) {
+    if (type == 0x63 || type == 0x65) {
+      send_ccid(0x81, slot, seq, 0x02, 0x00, NULL, 0);
+    } else {
+      uint8_t response = (type == 0x62 || type == 0x6f) ? 0x80 :
+                         (type == 0x61 || type == 0x6c || type == 0x6d) ? 0x82 : 0x81;
+      send_ccid(response, slot, seq, 0x42, 0xfe, NULL, 0);
+    }
+    return;
+  }
 
   switch (type) {
     case 0x62: {

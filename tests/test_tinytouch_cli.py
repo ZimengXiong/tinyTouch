@@ -21,6 +21,87 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_setup_preserves_a_second_finger(self):
+        with (mock.patch.object(cli, "status", return_value={"fingerprints": "5"}),
+              mock.patch.object(cli, "serial_command") as command,
+              mock.patch.object(cli, "say")):
+            cli.enroll("port", False)
+        command.assert_not_called()
+
+    def test_single_slot_enrollment_does_not_claim_to_be_a_view(self):
+        with (mock.patch.object(cli, "choose_port", return_value="port"),
+              mock.patch.object(cli, "status", return_value={"firmware": "unified", "protocol": "6", "sensor": "ready", "fingerprints": "2"}),
+              mock.patch.object(cli, "unlock"),
+              mock.patch.object(cli, "serial_command") as command,
+              mock.patch.object(cli, "show_enrollment_event") as visual,
+              mock.patch.object(cli, "say")):
+            cli.command_enroll(SimpleNamespace(port="port", slot=2))
+        self.assertEqual(command.call_args.args, ("port", "FINGER ENROLL 2"))
+        self.assertIn("center", command.call_args.kwargs["touch_prompt"])
+        visual.assert_not_called()
+
+    def test_hid_mode_requires_a_paired_host(self):
+        with (mock.patch.object(cli, "choose_port", return_value="port"),
+              mock.patch.object(cli, "status", return_value={"firmware": "unified", "protocol": "6", "hosts": "0"}),
+              mock.patch.object(cli, "serial_command") as command):
+            with self.assertRaisesRegex(cli.ToolError, "setup --mode hid"):
+                cli.command_mode(SimpleNamespace(port="port", mode="hid"))
+        command.assert_not_called()
+
+    def test_hid_setup_rechecks_host_count_before_success(self):
+        state = {"firmware": "unified", "protocol": "6", "mode": "hid", "sensor": "ready", "hosts": "0"}
+        with (mock.patch.object(cli, "require_macos"),
+              mock.patch.object(cli, "choose_port", return_value="port"),
+              mock.patch.object(cli, "remove_helper"),
+              mock.patch.object(cli, "foreground_session"),
+              mock.patch.object(cli, "status", return_value=state),
+              mock.patch.object(cli, "unlock"),
+              mock.patch.object(cli, "configure_hid"),
+              mock.patch.object(cli, "enroll"),
+              mock.patch.object(cli, "install_helper") as install):
+            with self.assertRaisesRegex(cli.ToolError, "incomplete"):
+                cli._command_setup(SimpleNamespace(mode="hid", port="port", skip_enroll=True))
+        install.assert_not_called()
+
+    def test_failed_connection_releases_helper_lease(self):
+        with (mock.patch.object(cli, "ForegroundLease") as lease,
+              mock.patch.object(cli, "helper_loaded", return_value=True),
+              mock.patch.object(cli, "connected_serial", side_effect=cli.ToolError("offline"))):
+            with self.assertRaisesRegex(cli.ToolError, "offline"):
+                with cli.foreground_session("port"):
+                    self.fail("connection unexpectedly succeeded")
+        lease.return_value.acquire.assert_called_once_with(wait_for_ack=True)
+        lease.return_value.release.assert_called_once()
+
+    def test_failed_setup_restores_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = Path(directory) / "helper.plist"
+            agent.write_bytes(b"previous agent")
+            def fail(_args):
+                agent.unlink()
+                raise cli.ToolError("offline")
+            with (mock.patch.object(cli, "LAUNCH_AGENT", agent),
+                  mock.patch.object(cli, "_command_setup", side_effect=fail),
+                  mock.patch.object(cli, "load_helper") as load):
+                with self.assertRaisesRegex(cli.ToolError, "offline"):
+                    cli.command_setup(SimpleNamespace())
+            self.assertEqual(agent.read_bytes(), b"previous agent")
+            load.assert_called_once()
+
+    def test_no_match_explains_sensor_recovery(self):
+        self.assertIn("firmware=recovery", cli.human_error("ERR AUTH no_match"))
+
+    def test_password_override_uses_slot_account(self):
+        with (mock.patch.object(cli, "require_macos"),
+              mock.patch.object(cli, "choose_port", return_value="port"),
+              mock.patch.object(cli, "foreground_session"),
+              mock.patch.object(cli, "status", return_value={"firmware": "unified", "protocol": "6"}),
+              mock.patch.object(cli, "device_account", return_value="TT-1234"),
+              mock.patch.object(cli, "password_for") as password,
+              mock.patch.object(cli, "say")):
+            cli.command_password(SimpleNamespace(action="set", slot=5, port="port"))
+        password.assert_called_once_with("TT-1234:fingerprint:5")
+
     def test_startup_mark_shows_version_and_command_section(self):
         with (
             mock.patch.object(cli.sys.stdout, "isatty", return_value=True),
@@ -253,9 +334,7 @@ class ProtocolSixTests(unittest.TestCase):
 
     def test_hid_add_is_live_and_does_not_provision_piv(self):
         computer = "test-mac"
-        key = hashlib.sha256(
-            f"tinyTouch HID pairing|TT-1234|{computer}".encode("utf-8")
-        ).digest()
+        key = bytes(range(32))
         commands = []
         identifier = cli.host_id(key)
         registered = set()
@@ -274,6 +353,7 @@ class ProtocolSixTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "prepare_hid_password"),
+            mock.patch.object(cli.secrets, "token_bytes", return_value=key),
             mock.patch.object(cli, "keychain_get", return_value=None),
             mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "keychain_exists", return_value=True),

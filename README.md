@@ -127,7 +127,7 @@ asks the card to use the piv private key. the esp only allows that key operation
 right after a fingerprint match.
 
 macos also expects a piv pin, so the firmware has a tiny hid side path that types
-the dummy pin `000000`. that pin is not your mac password. it is just there to
+the dummy pin `111111`. that pin is not your mac password. it is just there to
 get through the macos piv prompt while the real authorization is the fingerprint
 gate around the piv key.
 
@@ -136,89 +136,38 @@ cards, like login and `sudo` with pam.
 
 ## install
 
+Use the [setup guide](https://docs.tinytouch.dev/customer/setup) and
+[Flash center](https://docs.tinytouch.dev/flash) for the current release.
+The supported firmware is `firmware/tiny_touch_unified`; the old Arduino
+sketch and `software/macos-helper` paths are no longer part of this project.
+
 ### red pill
-use this if you just want the thing to type your password.
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r software/macos-helper/requirements.txt
-
-pairing_key="$(openssl rand -hex 32)"
-.venv/bin/python software/macos-helper/tinytouch_helper.py --set-pairing-key "$pairing_key"
-.venv/bin/python software/macos-helper/tinytouch_helper.py --set-password 'your-password-here'
-
-cp firmware/tiny_touch_keyboard/secrets.example.h firmware/tiny_touch_keyboard/secrets.h
+tinytouch setup --mode hid
 ```
 
-edit `firmware/tiny_touch_keyboard/secrets.h` so it contains the same pairing
-key bytes, then flash `firmware/tiny_touch_keyboard/tiny_touch_keyboard.ino`
-with arduino ide.
-
-board settings used here:
-
-```text
-usb cdc on boot: enabled
-usb mode: usb-otg
-```
-
-run the helper:
+The CLI pairs this Mac, saves the password in its login Keychain, and installs
+the background helper. To change a saved password without resetting the device:
 
 ```sh
-.venv/bin/python software/macos-helper/tinytouch_helper.py
+tinytouch password set
 ```
-
-for launchd, edit paths in
-`software/macos-helper/launchd/com.tinytouch.helper.plist`, then copy it to
-`~/Library/LaunchAgents/`.
 
 ### blue pill
 
-use this if you want the current better path. it exposes piv over ccid, plus hid
-only for the dummy pin `000000`.
-
-`main/secrets.h` needs the piv certs and private keys for slots `9a` and `9d`.
-
-generate test keys:
-
 ```sh
-cd firmware/tiny_touch_smartcard
-openssl req -newkey rsa:2048 -nodes -keyout piv_key_9a.pem -x509 -days 3650 -out piv_cert_9a.pem -subj "/CN=tinytouch piv auth/"
-openssl req -newkey rsa:2048 -nodes -keyout piv_key_9d.pem -x509 -days 3650 -out piv_cert_9d.pem -subj "/CN=tinytouch piv key management/"
-cp main/secrets.example.h main/secrets.h
+tinytouch setup --mode piv
 ```
 
-then paste:
+The device generates its own PIV keys. Approve the macOS pairing when prompted.
+The dummy PIN is `111111`; fingerprint presence gates private-key operations.
 
-- `piv_cert_9a.pem` into `PIV_CERT_9A_PEM`
-- `piv_key_9a.pem` into `PIV_PRIVATE_KEY_9A_PEM`
-- `piv_cert_9d.pem` into `PIV_CERT_9D_PEM`
-- `piv_key_9d.pem` into `PIV_PRIVATE_KEY_9D_PEM`
+### building from source
 
-build and flash:
-
-```sh
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/cu.usbmodem101 flash
-```
-
-after flashing:
-
-```sh
-system_profiler SPSmartCardsDataType
-sc_auth identities
-sudo sc_auth pair -u "$USER" -h <auth-cert-hash>
-```
-
-to test sudo:
-
-```sh
-sudo -k
-sudo -v
-```
-
-when macos asks for the pin, touch the sensor.
+Use ESP-IDF **5.3.x** (CI pins the 5.3 toolchain). Other versions are rejected at
+configure time. Follow the [build guide](https://docs.tinytouch.dev/customer/build)
+for signing and flashing instructions. Source CLI entry point: `macos/cli.py`.
 
 ## hardware
 
@@ -236,17 +185,17 @@ microcontroller families can work, but are not currently supported.
 
 ## wiring
 
-the fingerprint sensor connects over uart to pins 6 and 7 for tx and rx.
-
-the interrupt pin can be connected anywhere. in firmware, it is connected to pin
-1.
+Connect sensor RX to ESP GPIO43 (XIAO D6), sensor TX to GPIO44 (XIAO D7),
+and sensor INT to GPIO2 (XIAO D1). Connect both sensor 3.3 V supplies and ground.
+GPIO numbers and XIAO D labels are different. See the
+[wiring guide](https://docs.tinytouch.dev/customer/build) for the connector pinout.
 
 ## notes
 
 do not commit:
 
-- `firmware/tiny_touch_keyboard/secrets.h`
-- `firmware/tiny_touch_smartcard/main/secrets.h`
+- `firmware/tiny_touch_unified/main/secrets.h`
+- `firmware/tiny_touch_unified/secure_boot_signing_key.pem`
 
 [cad](https://cad.onshape.com/documents/d0e6bb7977e6171d4e4a5086/w/1ded27ad6c634fd1fdaf26d0/e/aca67210e400490a08d0b29a?renderMode=0&uiState=6a4c1df32e292f12144a65fe). if you make changes, please make them open source as well.
 

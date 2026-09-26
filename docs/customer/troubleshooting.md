@@ -82,3 +82,37 @@ sw_vers
 tinytouch --verbose status
 tinytouch logs
 ```
+
+## Fingerprints enroll but do not trigger typing
+
+Check the INT wire as well as UART: sensor INT must reach **GPIO2** (XIAO **D1**).
+The background touch detector uses this wire. Both sensor power pins need 3.3 V.
+Run `tinytouch update` for boot initialization, framing, and USB wake fixes.
+
+A green ring alone does not prove HID pairing is complete. `tinytouch status`
+must show `mode=hid` and at least one host. Finish pairing on this Mac with
+`tinytouch setup --mode hid --skip-enroll` after reconnecting.
+
+## No enrolled finger matches
+
+`AUTH no_match` means no stored template matched, even if `sensor=ready`.
+Try an enrolled finger. If none work or a new sensor contains unknown templates,
+use [Recovery firmware](/customer/recovery); ordinary factory reset still requires
+a matching finger. Recovery clears the sensor as well as device keys and settings.
+
+## Wrong password or keyboard characters
+
+Use `tinytouch password set` to replace the saved password. No factory reset is
+needed. The current helper maps characters through macOS's active ASCII-capable
+keyboard layout; use the same input source at setup and at the password field.
+Unsupported characters are rejected and logged instead of being silently replaced.
+
+## PIV login still asks for the login Keychain password
+
+Update both firmware and CLI first. Current certificates distinguish the login
+and key-management identities, and setup rejects an incomplete Keychain pairing.
+A macOS login password and a smart-card PIN are different: do not enter `111111`
+in a Keychain password prompt. If the problem persists, retain your existing
+keys and collect `tinytouch --version`, `tinytouch status`, `sw_vers`, and
+`sc_auth identities` for diagnosis. A repeated prompt still needs investigation
+on the affected Mac; repeatedly resetting the device is not a reliable repair.

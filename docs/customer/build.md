@@ -26,3 +26,28 @@ next:
 ## 3. Wire it up
 
 <SensorPinout />
+
+## Build firmware from source
+
+The current project is `firmware/tiny_touch_unified`, built with **ESP-IDF 5.3.x**.
+There is no current Arduino `.ino` sketch. Select and activate the 5.3 toolchain:
+
+```sh
+git clone --branch v5.3.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.3.3
+cd ~/esp/esp-idf-v5.3.3
+./install.sh esp32s3
+. ./export.sh
+cd /path/to/tinyTouch
+espsecure.py generate_signing_key --version 2 firmware/tiny_touch_unified/secure_boot_signing_key.pem
+idf.py -C firmware/tiny_touch_unified build
+```
+
+Keep the signing key private and reuse it for your device's later updates.
+A locally signed image cannot replace a production-signed image through OTA;
+use ROM flashing for your own development device. The [Flash center](/flash)
+is the supported way to install official firmware.
+
+After a failed build with another IDF version, remove generated `build/` and
+`managed_components/` directories, restore the repository's `sdkconfig` and
+`dependencies.lock` (save any local changes first), then build with 5.3.x.
+Do not remove the project's signing and partition settings.

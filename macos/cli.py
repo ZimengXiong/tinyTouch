@@ -55,7 +55,7 @@ VERBOSE = False
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_runtime import atomic_write_bytes, ForegroundLease, LeaseProtocolError  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
@@ -431,6 +431,13 @@ def is_terminal(command: str, line: str) -> bool:
 
 def human_error(line: str, *, touch_prompted: bool = False) -> str:
     """Turn compact device failures into the next useful user action."""
+    if line == "ERR AUTH no_match":
+        return (
+            "No enrolled fingerprint matched. Lift your finger and retry with an "
+            "enrolled finger. If none match, use Recovery firmware at "
+            f"{FACTORY_FLASH_URL}?firmware=recovery to erase the sensor and device, "
+            "then run 'tinytouch setup'. Recovery erases all keys and pairings."
+        )
     if line == "ERR AUTH":
         if touch_prompted:
             return (
@@ -606,7 +613,22 @@ def foreground_session(port: str):
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("pyserial is required. Run setup again.") from exc
-    was_loaded = unload_helper()
+    lease = ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK)
+    try:
+        lease.acquire(wait_for_ack=helper_loaded())
+    except LeaseProtocolError as exc:
+        raise ToolError(f"Could not pause the HID helper: {exc}") from exc
+    try:
+        with connected_serial(port) as session_port:
+            yield session_port
+    finally:
+        lease.release()
+
+
+@contextmanager
+def connected_serial(port: str):
+    global _active_serial
+    import serial
     deadline = time.monotonic() + 6.0
     last_error: Exception | None = None
     device = None
@@ -637,8 +659,6 @@ def foreground_session(port: str):
     finally:
         _active_serial = None
         device.close()
-        if was_loaded:
-            load_helper()
 
 
 def serial_command(
@@ -806,17 +826,32 @@ def password_for(account: str) -> str:
 def configure_hid(port: str, device: dict[str, str]) -> None:
     prepare_hid_password()
     account = device_account(port)
-    key = hashlib.sha256(
+    legacy_key = hashlib.sha256(
         f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
     ).digest()
+    saved_key = keychain_get(PAIRING_SERVICE, account)
+    try:
+        key = bytes.fromhex(saved_key or "")
+    except ValueError:
+        key = b""
+    if len(key) != 32 or key == legacy_key:
+        key = secrets.token_bytes(32)
     identifier = host_id(key)
     registered, capacity = host_list(port)
+    legacy_id = host_id(legacy_key)
+    if legacy_id in registered:
+        serial_command(port, f"HOST REMOVE {legacy_id}", timeout=4)
+        registered.remove(legacy_id)
     if identifier not in registered:
         if len(registered) >= capacity:
             raise ToolError("This device has no free HID host slot. Remove an old host first.")
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
     keychain_set(PAIRING_SERVICE, account, key.hex())
     password_for(account)
+    # Removing the final legacy host selects PIV. Restore the requested mode
+    # after the replacement credential has been persisted.
+    if device.get("mode") == "hid":
+        serial_command(port, "SET MODE HID", timeout=4)
     current = status(port)
     if current.get("hosts", "0") == "0":
         raise ToolError("HID setup is incomplete: the device has no registered host.")
@@ -915,11 +950,9 @@ def enroll(port: str, skip: bool) -> None:
         say("Fingerprint enrollment skipped.")
         return
     count = int(current.get("fingerprints", "0"))
-    if count == 4:
-        return
     if count:
-        if ask("Replace the existing fingerprint enrollment? [y/N] ").lower() not in {"y", "yes"}:
-            raise ToolError("Fingerprint enrollment was not changed.")
+        say(f"Keeping {count} enrolled templates. Use 'tinytouch enroll SLOT' to add or replace one.")
+        return
     say("")
     unlock(port, reason="start fingerprint enrollment")
     visual = sys.stdout.isatty()
@@ -953,6 +986,26 @@ def enroll(port: str, skip: bool) -> None:
 
 
 def command_setup(args: argparse.Namespace) -> None:
+    global _helper_suppressed, _setup_password
+    previous_agent = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
+    try:
+        _command_setup(args)
+    except BaseException:
+        if previous_agent is not None and not LAUNCH_AGENT.exists():
+            atomic_write_bytes(LAUNCH_AGENT, previous_agent, mode=0o644)
+            _helper_suppressed = False
+            try:
+                load_helper()
+            except ToolError:
+                say("The HID helper could not restart. Run 'tinytouch setup --mode hid --skip-enroll'.")
+        raise
+    finally:
+        if _setup_password is not None:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
+
+
+def _command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
@@ -971,7 +1024,7 @@ def command_setup(args: argparse.Namespace) -> None:
             mode == "piv"
             and device.get("mode") == "piv"
             and device.get("piv") == "ready"
-            and device.get("fingerprints") == "4"
+            and int(device.get("fingerprints", "0")) > 0
             and paired_piv_identities()
         ):
             say("PIV is already set up on this Mac.")
@@ -1019,7 +1072,13 @@ def command_setup(args: argparse.Namespace) -> None:
         say("")
         say("Please unplug and reconnect tinyTouch to apply the new mode.")
         say("Waiting for the device to disconnect...")
-        reconnected_port = wait_for_reconnect(port)
+        try:
+            reconnected_port = wait_for_reconnect(port)
+        except ToolError as exc:
+            raise ToolError(
+                f"Setup is incomplete. Reconnect tinyTouch and run "
+                f"'tinytouch setup --mode {mode}' to finish pairing. {exc}"
+            ) from exc
         say("Device reconnected. Continuing setup...")
         say("")
         resumed = argparse.Namespace(**vars(args))
@@ -1045,6 +1104,8 @@ def command_setup(args: argparse.Namespace) -> None:
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete: the identity is not ready.")
     if mode == "hid":
+        if device.get("mode") != "hid" or int(device.get("hosts", "0")) < 1:
+            raise ToolError("HID setup is incomplete: run 'tinytouch setup --mode hid' to pair this Mac.")
         install_helper()
         if not helper_loaded():
             raise ToolError("HID setup is incomplete: the helper is not loaded.")
@@ -1065,6 +1126,8 @@ def command_mode(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
+    if args.mode == "hid" and int(device.get("hosts", "0")) < 1:
+        raise ToolError("HID has no paired computers. Run 'tinytouch setup --mode hid' first.")
     unlock(
         port,
         reason=f"switch to {args.mode.upper()} mode",
@@ -1099,30 +1162,48 @@ def command_config(args: argparse.Namespace) -> None:
     say(f"Updated {args.name} to {args.value}.")
 
 
+def command_password(args: argparse.Namespace) -> None:
+    require_macos()
+    port = choose_port(args.port)
+    with foreground_session(port):
+        protocol6(status(port))
+        account = device_account(port)
+        if args.action == "list":
+            for slot in range(6):
+                item = account if slot == 0 else f"{account}:fingerprint:{slot}"
+                if keychain_exists(PASSWORD_SERVICE, item):
+                    say("default" if slot == 0 else f"slot {slot}")
+            return
+        item = account if args.slot == 0 else f"{account}:fingerprint:{args.slot}"
+        if args.action == "remove":
+            if args.slot == 0:
+                raise ToolError("The default password is required. Use 'password set' to replace it.")
+            keychain_delete(PASSWORD_SERVICE, item)
+        else:
+            say("Nothing appears as you type. The password is stored in this Mac's Keychain.")
+            password_for(item)
+        say("Password updated. Other computers and fingerprint templates are unchanged.")
+
+
 def command_enroll(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
     sensor_ready(device)
     unlock(port, reason="add this fingerprint")
-    visual = sys.stdout.isatty()
-    if visual and sys.stdin.isatty():
-        introduce_enrollment()
-    view_index = min(max(args.slot - 1, 0), len(ENROLLMENT_VIEWS) - 1)
+    say(f"Enroll one fingerprint template in slot {args.slot} (two taps of the same finger).")
+    say("An existing template in this slot will be replaced. Other slots are kept.")
     serial_command(
         port,
         f"FINGER ENROLL {args.slot}",
         timeout=45,
-        event_handler=(
-            lambda event: show_enrollment_event(view_index, event)
-        ) if visual else None,
+        touch_prompt="Place the center of the finger you want to enroll on the sensor.",
+        touch_again_prompt="Place the same finger on the sensor again.",
     )
-    if visual:
-        sys.stdout.write("\033[2J\033[H")
-        say("Fingerprint enrolled.")
     current = status(port)
     if int(current.get("fingerprints", "0")) < 1:
         raise ToolError("Live verification failed: the enrollment was not reported.")
+    say("Fingerprint enrolled.")
 
 
 def command_delete(args: argparse.Namespace) -> None:
@@ -1617,12 +1698,17 @@ def parser() -> argparse.ArgumentParser:
     config.add_argument("value", nargs="?")
     config.add_argument("--port")
     config.set_defaults(func=command_config)
+    password = sub.add_parser("password", help="manage passwords in this Mac's Keychain")
+    password.add_argument("action", choices=("set", "list", "remove"))
+    password.add_argument("--slot", type=int, choices=range(1, 6), default=0)
+    password.add_argument("--port")
+    password.set_defaults(func=command_password)
     enroll_cmd = sub.add_parser("enroll")
-    enroll_cmd.add_argument("slot", type=int)
+    enroll_cmd.add_argument("slot", type=int, choices=range(1, 6))
     enroll_cmd.add_argument("--port")
     enroll_cmd.set_defaults(func=command_enroll)
     delete = sub.add_parser("delete")
-    delete.add_argument("slot", type=int)
+    delete.add_argument("slot", type=int, choices=range(1, 6))
     delete.add_argument("--port")
     delete.set_defaults(func=command_delete)
     computers = sub.add_parser("computers")

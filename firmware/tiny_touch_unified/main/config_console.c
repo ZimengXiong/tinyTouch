@@ -152,12 +152,14 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s",
+           "hosts=%u ota=%s type_delay=%u submit_enter=%u cooldown=%u",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
-           (firmware_update_active() ? "writing" : "idle"));
+           (firmware_update_active() ? "writing" : "idle"),
+           device_config_typing_delay_ms(), device_config_submit_enter(),
+           device_config_touch_cooldown_ms());
   reply(line);
 }
 

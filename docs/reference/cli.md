@@ -89,7 +89,9 @@ Prints up to 32 recent touch and HID events.
 tinytouch enroll SLOT [--port PATH]
 ```
 
-Enrolls slot `1` through `5`. Existing templates require fingerprint approval.
+Enrolls one template in slot `1` through `5`, using two taps of the same finger.
+The slot number is a storage location, not a finger view. An occupied slot is
+replaced; other slots are kept. Existing templates require fingerprint approval.
 
 Examples:
 
@@ -98,7 +100,9 @@ tinytouch enroll 5
 tinytouch enroll 3 --port /dev/cu.usbmodem101
 ```
 
-Setup uses slots 1–4.
+First setup uses slots 1–4 for four views of one finger. To add a different
+finger without replacing those views, use `tinytouch enroll 5`. Setup preserves
+existing templates, including profiles with a fifth finger.
 
 ## `delete`
 
@@ -172,7 +176,7 @@ Without a value, prints status. With a value, writes a protected setting:
 | `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
 
-`STATUS` doesn't return these values. A successful write can still report a verification error.
+`STATUS` returns `type_delay`, `submit_enter`, and `cooldown` for live verification.
 
 ## Developer commands
 
@@ -180,3 +184,17 @@ Without a value, prints status. With a value, writes a protected setting:
 |---|---|
 | `tinytouch hid-smoke` | Test HID setup against a simulated device on macOS |
 | `tinytouch enroll-demo` | Preview enrollment in an interactive terminal |
+
+## `password`
+
+```sh
+tinytouch password set
+tinytouch password set --slot 5
+tinytouch password list
+tinytouch password remove --slot 5
+```
+
+Changes this Mac's Keychain credentials without resetting fingerprints or pairing.
+The default password applies to every slot without an override. `list` shows only
+configured slots; it never prints passwords. Removing an override restores the
+default for that slot. Select a device with `--port PATH` when needed.
