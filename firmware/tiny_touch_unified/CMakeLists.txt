@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.16)
+
+# Local hardware recovery only. Release builds leave this OFF and therefore
+# require a matching enrolled fingerprint for every protected operation.
+option(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
+       "Allow local development firmware to bypass fingerprint authorization"
+       OFF)
+option(TINYTOUCH_RECOVERY_BUILD
+       "Build one-time firmware that clears the fingerprint sensor and device state"
+       OFF)
+
+set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
+file(READ "${TINYTOUCH_VERSION_FILE}" TINYTOUCH_VERSION)
+string(STRIP "${TINYTOUCH_VERSION}" TINYTOUCH_VERSION)
+set(PROJECT_VER "${TINYTOUCH_VERSION}")
+
+if(DEFINED ENV{GITHUB_SHA} AND NOT "$ENV{GITHUB_SHA}" STREQUAL "")
+  string(SUBSTRING "$ENV{GITHUB_SHA}" 0 12 TINYTOUCH_BUILD_ID)
+else()
+  execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../.."
+    OUTPUT_VARIABLE TINYTOUCH_BUILD_ID
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+endif()
+if(NOT TINYTOUCH_BUILD_ID)
+  set(TINYTOUCH_BUILD_ID "development")
+endif()
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+if(NOT (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR EQUAL 3))
+  message(FATAL_ERROR
+    "tinyTouch requires ESP-IDF 5.3.x; found ${IDF_VERSION}. "
+    "Install or select ESP-IDF 5.3 before building.")
+endif()
+project(tiny_touch_unified)

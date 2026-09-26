@@ -1,13 +1,31 @@
-.DS_Store
-.venv/
-__pycache__/
-*.pyc
+# Local firmware signing / provisioning material
+firmware/tiny_touch_unified/secure_boot_signing_key.pem
+firmware/tiny_touch_unified/main/secrets.h
+*.pem
+!*.example.pem
 
-firmware/tiny_touch_keyboard/secrets.h
-firmware/tiny_touch_smartcard/main/secrets.h
-firmware/tiny_touch_smartcard/build/
-firmware/tiny_touch_smartcard/managed_components/
-firmware/tiny_touch_smartcard/sdkconfig.old
-
-build/distribution/
+# Build and release outputs
+firmware/tiny_touch_unified/build/
+firmware/tiny_touch_unified/build-local/
+firmware/tiny_touch_unified/build-recovery/
+firmware/tiny_touch_unified/.cache/
+firmware/tiny_touch_unified/managed_components/
+firmware/tiny_touch_unified/sdkconfig.old
+build/
 dist/
+
+# Files kept outside the source repository
+/Media Assets/
+/Archive.zip
+
+# Python / macOS noise
+__pycache__/
+*.py[cod]
+.DS_Store
+__MACOSX/
+.venv/
+.venv-release/
+.venv-x86_64/
+.python-x86_64/
+.vercel
+.env*

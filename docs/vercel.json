@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".vitepress/dist",
+  "cleanUrls": true,
+  "redirects": [
+    {
+      "source": "/recovery",
+      "destination": "/flash?firmware=recovery",
+      "permanent": false
+    },
+    {
+      "source": "/setup",
+      "destination": "/customer/setup",
+      "permanent": true
+    }
+  ]
+}
