@@ -187,3 +187,5 @@ bool device_config_factory_reset(void) {
   if (!device_config_set_idle_led(true)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
 }
+
+bool device_config_hid_key_configured(void) { return device_config_hid_host_count() > 0; }

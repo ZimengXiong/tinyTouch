@@ -227,11 +227,12 @@ usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count) {
 void usb_ccid_start(ccid_apdu_handler_t handler) {
   apdu_handler = handler;
   tiny_touch_init_serial();
+  usb_descriptors_apply_mode(device_config_mode());
   tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
   tusb_cfg.descriptor.device = &tiny_touch_device_descriptor;
   tusb_cfg.descriptor.string = tiny_touch_string_descriptors;
   tusb_cfg.descriptor.string_count = tiny_touch_string_descriptor_count;
-  tusb_cfg.descriptor.full_speed_config = tiny_touch_configuration_descriptor;
+  tusb_cfg.descriptor.full_speed_config = usb_descriptors_configuration();
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 }

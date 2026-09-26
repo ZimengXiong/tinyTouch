@@ -22,6 +22,9 @@
 #define CFG_TUD_HID 1
 #define CFG_TUD_MIDI 0
 #define CFG_TUD_VENDOR 0
+#define CFG_TUD_ECM_RNDIS 1
+#define CFG_TUD_NCM 0
+#define CFG_TUD_NET_MTU 1514
 
 #define CFG_TUD_CCID 1
 #define CFG_TUD_CCID_RX_BUFSIZE 512

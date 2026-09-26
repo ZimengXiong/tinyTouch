@@ -49,6 +49,8 @@ OTA_WRITE_WINDOW = 8
 RELEASE_DOWNLOAD_URL = "https://github.com/ZimengXiong/tinyTouch/releases/download"
 LATEST_RELEASE_URL = "https://github.com/ZimengXiong/tinyTouch/releases/latest/download"
 FACTORY_FLASH_URL = "https://docs.tinytouch.dev/flash"
+DASHBOARD_URL = "http://192.168.7.1/"
+USB_ETHERNET_SERVICE = "tinyTouch"
 TLS = ssl.create_default_context(cafile=certifi.where())
 VERBOSE = False
 
@@ -1554,6 +1556,17 @@ def command_status(args: argparse.Namespace) -> None:
     say(json.dumps(data, indent=2, sort_keys=True))
 
 
+def command_dashboard(args: argparse.Namespace) -> None:
+    say(DASHBOARD_URL)
+    say("Plug in TinyTouch, allow the USB Ethernet accessory if macOS asks, then open this page.")
+    say("Password typing uses the TinyTouch helper on this computer. It is not stored on the dongle.")
+    say("A new computer still needs: tinytouch setup --mode hid")
+    if args.no_open:
+        return
+    require_macos()
+    run(["open", DASHBOARD_URL])
+
+
 def command_logs(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     for line in serial_command(port, "LOGS", timeout=4):
@@ -1770,6 +1783,12 @@ def parser() -> argparse.ArgumentParser:
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("--port")
     status_cmd.set_defaults(func=command_status)
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="open the on-device dashboard at http://192.168.7.1/ (HID mode USB Ethernet)",
+    )
+    dashboard.add_argument("--no-open", action="store_true", help="print the URL without opening a browser")
+    dashboard.set_defaults(func=command_dashboard)
     logs = sub.add_parser("logs", help="show the device event log without probing the sensor")
     logs.add_argument("--port")
     logs.set_defaults(func=command_logs)

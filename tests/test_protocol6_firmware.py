@@ -14,14 +14,12 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn("esp_restart", source)
         self.assertNotIn("RTC_CNTL_FORCE_DOWNLOAD_BOOT", source)
 
-    def test_protocol_six_has_one_stable_usb_descriptor(self) -> None:
-        cmake = self.source("CMakeLists.txt")
+    def test_usb_topology_is_selected_only_at_boot(self) -> None:
+        console = self.source("config_console.c")
         usb = self.source("usb_ccid.c")
-        descriptors = self.source("usb_descriptors.c")
-        self.assertIn("TINYTOUCH_PROTOCOL_VERSION=6", cmake)
-        self.assertIn("tiny_touch_configuration_descriptor", usb)
-        self.assertNotIn("tiny_touch_hid_configuration_descriptor", descriptors)
-        self.assertNotIn("tiny_touch_piv_configuration_descriptor", descriptors)
+        self.assertNotIn("usb_descriptors_apply_mode(", console)
+        self.assertIn("usb_descriptors_apply_mode(device_config_mode())", usb)
+        self.assertIn("usb_descriptors_configuration()", usb)
 
     def test_usb_resume_reenumerates_without_restarting_firmware(self) -> None:
         defaults = (MAIN.parent / "sdkconfig.defaults").read_text()

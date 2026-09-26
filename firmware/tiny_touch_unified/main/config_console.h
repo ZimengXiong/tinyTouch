@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #define CONFIG_CONSOLE_STACK_SIZE 8192
 
 void config_console_start(void);

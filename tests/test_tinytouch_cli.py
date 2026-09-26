@@ -921,6 +921,33 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(launch_agent["ProcessType"], "Interactive")
         self.assertEqual(launch_agent["ThrottleInterval"], 1)
 
+    def test_dashboard_command_prints_device_url_and_opens_it(self):
+        args = cli.parser().parse_args(["dashboard"])
+        self.assertFalse(args.no_open)
+        printed = []
+        with mock.patch.object(cli, "say", side_effect=printed.append):
+            with mock.patch.object(cli, "require_macos"):
+                with mock.patch.object(cli.subprocess, "run") as run:
+                    cli.command_dashboard(args)
+        self.assertEqual(printed[0], cli.DASHBOARD_URL)
+        self.assertEqual(cli.DASHBOARD_URL, "http://192.168.7.1/")
+        self.assertTrue(any("not stored on the dongle" in line for line in printed))
+        self.assertFalse(any("add-computer" in line for line in printed))
+        run.assert_called_once_with(["open", cli.DASHBOARD_URL], check=True)
+
+    def test_dashboard_command_can_skip_open(self):
+        args = cli.parser().parse_args(["dashboard", "--no-open"])
+        with mock.patch.object(cli, "say"):
+            with mock.patch.object(cli, "require_macos"):
+                with mock.patch.object(cli.subprocess, "run") as run:
+                    cli.command_dashboard(args)
+        run.assert_not_called()
+
+    def test_dashboard_leaves_network_settings_alone(self):
+        with mock.patch.object(cli.subprocess, "run") as run:
+            cli.command_dashboard(cli.parser().parse_args(["dashboard", "--no-open"]))
+        run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

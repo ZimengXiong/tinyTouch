@@ -19,6 +19,8 @@
 #include "piv.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
+#include "usb_descriptors.h"
+#include "web_dashboard.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
 #define TINYTOUCH_FIRMWARE_VERSION "development"
@@ -243,12 +245,14 @@ static void fingerprint_command(char *arguments) {
 
 static void factory_reset(void) {
   if (!require_authorized()) return;
+  web_dashboard_begin_reset();
   bool ok = fingerprint_delete_all() && nvs_flash_erase() == ESP_OK &&
             nvs_flash_init() == ESP_OK && device_config_factory_reset();
   if (ok) {
     piv_reload_keys();
     authorized_until = 0;
   }
+  web_dashboard_end_reset();
   reply(ok ? "OK RESET FACTORY" : "ERR RESET FACTORY");
 }
 

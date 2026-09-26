@@ -104,6 +104,19 @@ First setup uses slots 1–4 for four views of one finger. To add a different
 finger without replacing those views, use `tinytouch enroll 5`. Setup preserves
 existing templates, including profiles with a fifth finger.
 
+In HID mode, `tinytouch status` also prints the on-device dashboard URL.
+
+## Dashboard
+
+```sh
+tinytouch dashboard
+tinytouch dashboard --no-open
+```
+
+Opens [http://192.168.7.1/](http://192.168.7.1/) for fingerprint and typing settings on the dongle. See [On-device dashboard](/on-device-dashboard).
+
+## Fingerprints
+
 ## `delete`
 
 ```text

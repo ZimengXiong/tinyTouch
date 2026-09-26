@@ -93,6 +93,7 @@ export default defineConfig({
         collapsed: true,
         items: [
           { text: 'Update', link: '/customer/update' },
+          { text: 'On-device dashboard', link: '/on-device-dashboard' },
           { text: 'Recovery', link: '/customer/recovery' },
           { text: 'Troubleshooting', link: '/customer/troubleshooting' },
         ],
