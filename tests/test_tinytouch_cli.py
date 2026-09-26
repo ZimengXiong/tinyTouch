@@ -21,6 +21,55 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_hid_setup_reuses_random_key_and_replaces_legacy_key(self):
+        legacy = hashlib.sha256(b"tinyTouch HID pairing|TT-1234|mac").digest()
+        random_key = bytes(range(32))
+        for previous in (random_key, legacy):
+            with self.subTest(legacy=previous == legacy):
+                registered = {cli.host_id(previous)}
+                commands = []
+                def exchange(_port, command, **_kwargs):
+                    commands.append(command)
+                    if command.startswith("HOST REMOVE "):
+                        registered.remove(command.split()[2])
+                    if command.startswith("HOST ADD "):
+                        registered.add(command.split()[2])
+                    return ["OK"]
+                with (mock.patch.object(cli, "prepare_hid_password"),
+                      mock.patch.object(cli, "device_account", return_value="TT-1234"),
+                      mock.patch.object(cli.platform, "node", return_value="mac"),
+                      mock.patch.object(cli, "keychain_get", return_value=previous.hex()),
+                      mock.patch.object(cli, "keychain_set") as save,
+                      mock.patch.object(cli, "password_for"),
+                      mock.patch.object(cli, "host_list", side_effect=lambda _p: (registered.copy(), 8)),
+                      mock.patch.object(cli, "status", return_value={"hosts": "1"}),
+                      mock.patch.object(cli, "serial_command", side_effect=exchange),
+                      mock.patch.object(cli.secrets, "token_bytes", return_value=random_key) as random):
+                    cli.configure_hid("port", {"mode": "hid"})
+                save.assert_called_once_with(cli.PAIRING_SERVICE, "TT-1234", random_key.hex())
+                if previous == legacy:
+                    random.assert_called_once_with(32)
+                    self.assertIn(f"HOST REMOVE {cli.host_id(legacy)}", commands)
+                else:
+                    random.assert_not_called()
+                    self.assertFalse(any(c.startswith("HOST ADD") for c in commands))
+                self.assertEqual(registered, {cli.host_id(random_key)})
+
+    def test_setup_reconnect_timeout_gives_a_resume_command(self):
+        state = {"protocol": "6", "firmware": "unified", "mode": "piv", "sensor": "ready"}
+        with (mock.patch.object(cli, "require_macos"),
+              mock.patch.object(cli, "choose_port", return_value="port"),
+              mock.patch.object(cli, "remove_helper"),
+              mock.patch.object(cli, "foreground_session"),
+              mock.patch.object(cli, "status", return_value=state),
+              mock.patch.object(cli, "unlock"),
+              mock.patch.object(cli, "serial_command"),
+              mock.patch.object(cli, "say"),
+              mock.patch.object(cli, "notify"),
+              mock.patch.object(cli, "wait_for_reconnect", side_effect=cli.ToolError("timeout"))):
+            with self.assertRaisesRegex(cli.ToolError, "setup --mode hid"):
+                cli._command_setup(SimpleNamespace(mode="hid", port="port"))
+
     def test_setup_preserves_a_second_finger(self):
         with (mock.patch.object(cli, "status", return_value={"fingerprints": "5"}),
               mock.patch.object(cli, "serial_command") as command,
