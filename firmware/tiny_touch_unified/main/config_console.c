@@ -12,6 +12,7 @@
 #include "mbedtls/base64.h"
 #include "nvs_flash.h"
 #include "tusb.h"
+#include "tinyusb_cdc_acm.h"
 
 #include "device_config.h"
 #include "fingerprint.h"
@@ -40,6 +41,7 @@ static char ota_token[33];
 static int64_t authorized_until;
 static int64_t ota_last_activity;
 static SemaphoreHandle_t write_lock;
+static SemaphoreHandle_t rx_signal;
 static volatile bool piv_create_active;
 static volatile bool usb_reconnect_active;
 
@@ -365,6 +367,12 @@ static void handle_command(void) {
   else reply("ERR COMMAND");
 }
 
+static void console_rx(int interface, cdcacm_event_t *event) {
+  (void)interface;
+  (void)event;
+  xSemaphoreGive(rx_signal);
+}
+
 static void console_task(void *arg) {
   (void)arg;
   char buffer[1024];
@@ -388,16 +396,22 @@ static void console_task(void *arg) {
         else command_overflow = true;
       }
     }
-    // The scheduler tick is 10 ms. A 2 ms conversion becomes zero and leaves
-    // this higher-priority loop ready forever, starving app_main before it can
-    // create the background fingerprint task.
-    if (!activity) vTaskDelay(1);
+    // RX wakes us immediately, including encrypted password responses. The
+    // bounded idle wait also keeps OTA expiry active without polling at 100 Hz.
+    if (!activity) xSemaphoreTake(rx_signal, pdMS_TO_TICKS(100));
   }
 }
 
 void config_console_start(void) {
   write_lock = xSemaphoreCreateMutex();
   configASSERT(write_lock);
+  rx_signal = xSemaphoreCreateBinary();
+  configASSERT(rx_signal);
+  const tinyusb_config_cdcacm_t cdc = {
+    .cdc_port = TINYUSB_CDC_ACM_0,
+    .callback_rx = console_rx,
+  };
+  ESP_ERROR_CHECK(tinyusb_cdcacm_init(&cdc));
   BaseType_t created = xTaskCreate(console_task, "console", 6144, NULL, 3, NULL);
   configASSERT(created == pdPASS);
 }

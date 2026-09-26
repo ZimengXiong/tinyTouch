@@ -13,12 +13,22 @@ tinyTouch stores schema-6 configuration in ESP32 NVS. Invalid data resets to def
 |---|---:|---:|
 | Mode | PIV | PIV or HID |
 | Submit Enter after HID password | On | Off or on |
-| HID typing delay | 7 ms | 1–100 ms |
+| HID typing delay | 1 ms | 1–100 ms |
 | Touch cooldown | 800 ms | 100–5000 ms |
 | HID computers | 0 | Up to 8 |
 | Fingerprint slots | 0 | Slots 1–5 |
 
 After enrollment, protected changes require a matching fingerprint.
+
+Existing devices retain their saved typing delay. For the fastest pacing:
+
+```sh
+tinytouch config typing_delay_ms 1
+```
+
+Each key press and release waits for USB completion and the configured minimum
+delay. Increase the delay if a particular application misses characters. See
+[Unlock latency](/reference/performance) for measurement and validation details.
 
 ## Fingerprint profile
 

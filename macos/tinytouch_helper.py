@@ -7,6 +7,7 @@ import argparse
 import ctypes
 from collections import deque
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import hmac
 import json
@@ -35,6 +36,7 @@ from tinytouch_runtime import (
     SerialFrameDecoder,
     atomic_write_json,
     diagnostic,
+    read_available,
 )
 from tinytouch_ports import comports
 
@@ -166,7 +168,8 @@ def load_settings(device_id: str) -> dict[str, str]:
     return {"keyboard_layout": layout if layout in {"auto", "us"} else "auto"}
 
 
-def current_keyboard_output_map() -> dict[str, str]:
+@lru_cache(maxsize=1)
+def _keyboard_layout_libraries():
     hitoolbox = ctypes.CDLL(
         "/System/Library/Frameworks/Carbon.framework/Frameworks/"
         "HIToolbox.framework/HIToolbox"
@@ -179,6 +182,8 @@ def current_keyboard_output_map() -> dict[str, str]:
     hitoolbox.TISGetInputSourceProperty.restype = ctypes.c_void_p
     core_foundation.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
     core_foundation.CFDataGetBytePtr.restype = ctypes.c_void_p
+    core_foundation.CFDataGetLength.argtypes = [ctypes.c_void_p]
+    core_foundation.CFDataGetLength.restype = ctypes.c_ssize_t
     core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
     translate = hitoolbox.UCKeyTranslate
     translate.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16,
@@ -187,6 +192,11 @@ def current_keyboard_output_map() -> dict[str, str]:
                           ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint16)]
     translate.restype = ctypes.c_int32
     property_key = ctypes.c_void_p.in_dll(hitoolbox, "kTISPropertyUnicodeKeyLayoutData")
+    return hitoolbox, core_foundation, property_key
+
+
+def current_keyboard_output_map() -> dict[str, str]:
+    hitoolbox, core_foundation, property_key = _keyboard_layout_libraries()
     source = hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
     if not source:
         raise RuntimeError("macOS did not provide a keyboard layout")
@@ -195,24 +205,37 @@ def current_keyboard_output_map() -> dict[str, str]:
         layout = core_foundation.CFDataGetBytePtr(data) if data else None
         if not layout:
             raise RuntimeError("macOS keyboard layout has no Unicode key map")
-        output_map: dict[str, str] = {}
-        for wire in (chr(value) for value in range(32, 127)):
-            base = _US_SHIFTED.get(wire, wire)
-            keycode = _MAC_KEYCODES.get(base.lower())
-            if keycode is None:
-                continue
-            modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
-            dead_key = ctypes.c_uint32(0)
-            actual = ctypes.c_uint32(0)
-            chars = (ctypes.c_uint16 * 4)()
-            status = translate(layout, keycode, 0, modifiers, 0, 1,
-                               ctypes.byref(dead_key), len(chars),
-                               ctypes.byref(actual), chars)
-            if status == 0 and actual.value == 1 and dead_key.value == 0:
-                output_map[chr(chars[0])] = wire
-        return output_map
+        length = core_foundation.CFDataGetLength(data)
+        if length <= 0:
+            raise RuntimeError("macOS keyboard layout has an empty Unicode key map")
+        layout_bytes = ctypes.string_at(layout, length)
     finally:
         core_foundation.CFRelease(source)
+    # Recheck the active source on every touch. Cache by its contents so layout
+    # changes (including edits with the same source ID) never use a stale map.
+    return _keyboard_output_map(layout_bytes).copy()
+
+
+@lru_cache(maxsize=8)
+def _keyboard_output_map(layout_bytes: bytes) -> dict[str, str]:
+    hitoolbox, _, _ = _keyboard_layout_libraries()
+    layout = ctypes.create_string_buffer(layout_bytes)
+    output_map: dict[str, str] = {}
+    for wire in (chr(value) for value in range(32, 127)):
+        base = _US_SHIFTED.get(wire, wire)
+        keycode = _MAC_KEYCODES.get(base.lower())
+        if keycode is None:
+            continue
+        modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
+        dead_key = ctypes.c_uint32(0)
+        actual = ctypes.c_uint32(0)
+        chars = (ctypes.c_uint16 * 4)()
+        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 1,
+                                        ctypes.byref(dead_key), len(chars),
+                                        ctypes.byref(actual), chars)
+        if status == 0 and actual.value == 1 and dead_key.value == 0:
+            output_map[chr(chars[0])] = wire
+    return output_map
 
 
 def translate_password(password: bytes, output_map: dict[str, str] | None) -> bytes:
@@ -550,7 +573,7 @@ def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> Non
     ser.flush()
     deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        chunk = ser.read(256)
+        chunk = read_available(ser)
         if not chunk:
             continue
         for raw in decoder.feed(chunk):
@@ -598,7 +621,7 @@ def serve_port(
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return
-                chunk = ser.read(256)
+                chunk = read_available(ser)
                 if not chunk:
                     # pyserial can leave a descriptor open after macOS removes
                     # the USB device during sleep.  In that state readline()
@@ -662,7 +685,6 @@ def serve_port(
                         )
                         if once:
                             return
-                time.sleep(0.01)
     finally:
         for value in password.values():
             value[:] = b"\x00" * len(value)

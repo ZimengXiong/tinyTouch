@@ -104,6 +104,7 @@ export default defineConfig({
         items: [
           { text: 'CLI commands', link: '/reference/cli' },
           { text: 'Device configuration', link: '/reference/configuration' },
+          { text: 'Unlock latency', link: '/reference/performance' },
           { text: 'Recovery', link: '/reference/recovery' },
         ],
       },

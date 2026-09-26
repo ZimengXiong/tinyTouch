@@ -42,6 +42,7 @@ static void resume_reconnect_task(void *argument) {
 static void usb_event_cb(tinyusb_event_t *event, void *arg) {
   (void)arg;
   if (event->id == TINYUSB_EVENT_ATTACHED) touch_pin_hid_usb_attached();
+  else if (event->id == TINYUSB_EVENT_DETACHED) touch_pin_hid_usb_detached();
 #ifdef CONFIG_TINYUSB_RESUME_CALLBACK
   else if (event->id == TINYUSB_EVENT_RESUMED && !resume_reconnect_active) {
     resume_reconnect_active = true;

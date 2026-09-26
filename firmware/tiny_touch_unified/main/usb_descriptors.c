@@ -10,6 +10,8 @@
 #define USB_VID 0x303a
 #define USB_PID 0x4001
 #define USB_BCD 0x0200
+// ESP32-S3 uses full-speed USB: bInterval is in 1 ms frames.
+#define HID_POLL_INTERVAL_MS 1
 
 #define ITF_NUM_CCID 0
 #define ITF_NUM_HID 1
@@ -128,7 +130,7 @@ static const uint8_t piv_configuration_descriptor[] = {
   7, TUSB_DESC_ENDPOINT, EPNUM_CCID_OUT, TUSB_XFER_BULK, 64, 0x00, 0,
   7, TUSB_DESC_ENDPOINT, EPNUM_CCID_IN, TUSB_XFER_BULK, 64, 0x00, 0,
   TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
-                     sizeof(tiny_touch_hid_report_descriptor), EPNUM_PIV_HID, 8, 10),
+                     sizeof(tiny_touch_hid_report_descriptor), EPNUM_PIV_HID, 8, HID_POLL_INTERVAL_MS),
 
   TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 0, EPNUM_PIV_CDC_NOTIF, 8,
                      EPNUM_PIV_CDC_OUT, EPNUM_PIV_CDC_IN, 64),
@@ -138,7 +140,7 @@ static const uint8_t hid_configuration_descriptor[] = {
   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_HID_TOTAL, 0, HID_CONFIG_TOTAL_LEN,
                         TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
   TUD_HID_DESCRIPTOR(ITF_NUM_HID_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
-                     sizeof(tiny_touch_hid_report_descriptor), EPNUM_HID_HID, 8, 10),
+                     sizeof(tiny_touch_hid_report_descriptor), EPNUM_HID_HID, 8, HID_POLL_INTERVAL_MS),
   TUD_CDC_DESCRIPTOR_NO_NOTIF(ITF_NUM_HID_CDC, 0, EPNUM_HID_CDC_OUT, EPNUM_HID_CDC_IN, 64),
   TUD_CDC_ECM_DESCRIPTOR(ITF_NUM_HID_NCM, 5, 4, EPNUM_HID_NCM_NOTIF, 8,
                          EPNUM_HID_NCM_OUT, EPNUM_HID_NCM_IN, 64, CFG_TUD_NET_MTU),
