@@ -205,6 +205,8 @@ static void grant_session(httpd_req_t *req) {
   snprintf(cookie, sizeof(cookie),
            "tt_session=%s; Path=/; Max-Age=120; HttpOnly; SameSite=Strict", token);
   httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+  // ESP-IDF retains header pointers until the response is sent.
+  send_json(req, "{\"ok\":true}");
 }
 
 static void unlock_prompt(void) { dashboard_log_event("PROMPT TOUCH"); }
@@ -226,7 +228,6 @@ static esp_err_t handle_unlock(httpd_req_t *req) {
     return ESP_OK;
   }
   grant_session(req);
-  send_json(req, "{\"ok\":true}");
   return ESP_OK;
 }
 
