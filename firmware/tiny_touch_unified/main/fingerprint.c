@@ -1,4 +1,5 @@
 #include "fingerprint.h"
+#include "fingerprint_led.h"
 
 #include <string.h>
 
@@ -19,10 +20,6 @@ static const int INT_ACTIVE_VALUE = 1;
 static const uint16_t START_SLOT = 1;
 static const uint16_t END_SLOT = 5;
 static const uint32_t FINGER_WAIT_MS = 7000;
-static const uint8_t FP_LED_BLUE = 0x01;
-static const uint8_t FP_LED_GREEN = 0x02;
-static const uint8_t FP_LED_RED = 0x04;
-static const uint8_t FP_LED_FUNC_STEADY = 3;
 
 static SemaphoreHandle_t fp_mutex;
 static volatile bool prompted_authorization_active;
@@ -193,10 +190,30 @@ static void fp_give(void) {
   if (fp_mutex) xSemaphoreGive(fp_mutex);
 }
 
-static void set_aura(uint8_t color) {
-  uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
+bool fingerprint_led_command(const uint8_t params[4]) {
   uint8_t confirm = 0xff;
-  fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000);
+  return fp_command(0x3c, params, 4, &confirm, NULL, NULL, 120) && confirm == 0x00;
+}
+
+static uint32_t led_time_ms(void) {
+  return (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
+}
+
+static void set_aura(uint8_t color) {
+  fingerprint_led_show(color, gpio_get_level(FP_INT_PIN) == INT_ACTIVE_VALUE,
+                       led_time_ms());
+}
+
+static void fingerprint_led_task(void *arg) {
+  (void)arg;
+  while (true) {
+    if (fp_take(0)) {
+      fingerprint_led_service(gpio_get_level(FP_INT_PIN) == INT_ACTIVE_VALUE,
+                              led_time_ms());
+      fp_give();
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
 }
 
 static void show_result(bool ok) {
@@ -291,14 +308,17 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
 
 fingerprint_match_t fingerprint_authorize_poll_match(void) {
   fingerprint_match_t no_match = {0};
-  if (!fp_take(0)) return no_match;
+  // Let a pending LED command (at most 120 ms) finish without losing the touch.
+  if (!fp_take(200)) return no_match;
+  set_aura(FP_LED_BLUE);
   uint8_t confirm = 0xff;
   if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
+    set_aura(FP_LED_BLUE);
     fp_give();
     return no_match;
   }
   fingerprint_match_t match = fingerprint_match_captured(true);
-  if (match.slot) set_aura(FP_LED_GREEN);
+  set_aura(match.slot ? FP_LED_GREEN : FP_LED_RED);
   fp_give();
   return match;
 }
@@ -340,7 +360,11 @@ void fingerprint_init(void) {
     if (!ok && attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
   }
   ESP_LOGI(TAG, "sensor verify: %s", ok ? "ok" : "failed");
+  fingerprint_led_init(led_time_ms());
   if (ok) fingerprint_led_idle();
+  BaseType_t created = xTaskCreate(fingerprint_led_task, "fingerprint_led", 3072,
+                                  NULL, 3, NULL);
+  configASSERT(created == pdPASS);
 }
 
 bool fingerprint_is_ready(void) {
@@ -365,6 +389,7 @@ bool fingerprint_recover(void) {
     if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(100));
   }
   set_sensor_ready(ok);
+  if (ok) set_aura(FP_LED_BLUE);
   fp_give();
   return ok;
 }

@@ -434,8 +434,8 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    // Presence is the sole trigger for a capture. Idle operation never sends
-    // sensor commands and therefore never flashes a failure indication.
+    // Presence is the sole trigger for a capture. Idle authentication never
+    // captures images; the LED task manages the ring independently.
     if (!fingerprint_is_ready()) {
       // Recover in the background after a transient UART error. Throttle this
       // path so a disconnected sensor cannot monopolize the task.

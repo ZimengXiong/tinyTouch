@@ -20,6 +20,12 @@ tinyTouch stores schema-6 configuration in ESP32 NVS. Invalid data resets to def
 
 After enrollment, protected changes require a matching fingerprint.
 
+## Sensor ring
+
+The ring fades out after three seconds without a finger and lights up blue when
+touched again. A touch also cancels a fade already in progress. Authentication
+results show green or red briefly, then return to the idle lighting behavior.
+
 ## Fingerprint profile
 
 Setup stores four views of one finger in slots 1–4. Slot 5 is available for manual enrollment.
