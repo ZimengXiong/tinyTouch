@@ -56,11 +56,14 @@ void app_main(void) {
     ESP_LOGW("tiny_touch", "RECOVERY: device state unavailable before sensor clear");
   }
 #endif
+#ifndef TINYTOUCH_RECOVERY_BUILD
+  device_config_init();
+#endif
   fingerprint_init();
 #ifdef TINYTOUCH_RECOVERY_BUILD
   recover_device();
-#endif
   device_config_init();
+#endif
   // Prime the sensor's live-detection state before the HID task begins. This
   // is the same probe STATUS performs; doing it at boot avoids requiring a
   // host status command after USB reconnect before the first fingerprint.

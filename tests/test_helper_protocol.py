@@ -329,6 +329,17 @@ class HelperProtocolTests(unittest.TestCase):
                 helper.parse_event(f"EV {nonce} {counter} {slot} {score} {'00' * 32}", key)
             )
 
+    def test_matches_from_all_forty_templates_are_authenticated(self):
+        key = bytes(range(32))
+        nonce = "09" * 16
+        for slot in (1, 5, 6, 39, 40):
+            signature = helper.mac_hex(key, f"EV|{nonce}|1|{slot}|42")
+            event = helper.parse_event(f"EV {nonce} 1 {slot} 42 {signature}", key)
+            self.assertIsNotNone(event)
+            self.assertEqual(event.slot, slot)
+        signature = helper.mac_hex(key, f"EV|{nonce}|1|41|42")
+        self.assertIsNone(helper.parse_event(f"EV {nonce} 1 41 42 {signature}", key))
+
     def test_fingerprint_slot_selects_override_and_falls_back_to_default(self):
         key = bytes(range(32))
         passwords = {0: b"default", 5: b"fifth finger"}

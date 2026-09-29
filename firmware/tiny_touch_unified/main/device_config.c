@@ -25,6 +25,7 @@ typedef struct {
 
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
+static bool led_enabled = true;
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -85,6 +86,10 @@ void device_config_init(void) {
   bool opened = nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) == ESP_OK;
   bool loaded_ok = opened && nvs_get_blob(handle, CONFIG_KEY, &loaded, &length) == ESP_OK &&
                    length == sizeof(loaded) && valid(&loaded);
+  uint8_t stored_led = 1;
+  led_enabled = true;
+  if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK && stored_led <= 1)
+    led_enabled = stored_led != 0;
   if (opened) nvs_close(handle);
   lock();
   if (loaded_ok) config = loaded;
@@ -159,6 +164,27 @@ bool device_config_set_submit_enter(bool value) { lock(); stored_config_t c = co
 uint16_t device_config_touch_cooldown_ms(void) { lock(); uint16_t value = config.touch_cooldown_ms; unlock(); return value; }
 bool device_config_set_touch_cooldown_ms(uint16_t value) { lock(); stored_config_t c = config; c.touch_cooldown_ms = value; bool ok = replace_locked(&c); unlock(); return ok; }
 
+bool device_config_led_enabled(void) {
+  // Sensor initialization precedes configuration during destructive recovery.
+  if (!config_mutex) return true;
+  lock(); bool value = led_enabled; unlock(); return value;
+}
+
+bool device_config_set_led_enabled(bool value) {
+  lock();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, "led_enabled", value ? 1 : 0);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) led_enabled = value;
+  unlock();
+  return result == ESP_OK;
+}
+
 bool device_config_factory_reset(void) {
+  if (!device_config_set_led_enabled(true)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
 }

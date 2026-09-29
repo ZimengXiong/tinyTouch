@@ -35,3 +35,6 @@ bool device_config_set_submit_enter(bool value);
 uint16_t device_config_touch_cooldown_ms(void);
 bool device_config_set_touch_cooldown_ms(uint16_t value);
 bool device_config_factory_reset(void);
+
+bool device_config_led_enabled(void);
+bool device_config_set_led_enabled(bool value);
