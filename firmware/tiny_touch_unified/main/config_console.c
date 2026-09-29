@@ -152,12 +152,12 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s finger_groups=1",
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
-           (firmware_update_active() ? "writing" : "idle"), device_config_led_enabled() ? "on" : "off");
+           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name());
   reply(line);
 }
 
@@ -177,8 +177,8 @@ static void set_value(char *arguments) {
   if (ok && strcmp(arguments, "TYPE_DELAY") == 0) ok = device_config_set_typing_delay_ms(number);
   else if (ok && strcmp(arguments, "SUBMIT_ENTER") == 0 && number <= 1) ok = device_config_set_submit_enter(number);
   else if (ok && strcmp(arguments, "COOLDOWN") == 0) ok = device_config_set_touch_cooldown_ms(number);
-  else if (ok && strcmp(arguments, "LED") == 0 && number <= 1)
-    ok = fingerprint_set_led_enabled(number != 0);
+  else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH)
+    ok = fingerprint_set_led_mode((device_led_mode_t)number);
   else ok = false;
   reply(ok ? "OK SET" : "ERR SET");
 }

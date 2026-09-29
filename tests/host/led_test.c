@@ -6,7 +6,7 @@
 static TickType_t clock_ticks;
 static int mutexes[32], mutex_count;
 static stored_config_t disk_config;
-static bool have_config, have_led, fail_save;
+static bool have_config, have_led, stage_led, fail_save;
 static uint8_t disk_led, pending_led;
 static finger_profiles_t disk_profiles, staged_profiles;
 static bool have_profiles, stage_profiles;
@@ -17,6 +17,7 @@ static bool wrong_count;
 static uint8_t request[64], response[96], last_led[4];
 static size_t request_len, response_len;
 static int led_commands, reject_led;
+static unsigned led_colors[8];
 static bool reject_capture, no_match;
 
 TickType_t xTaskGetTickCount(void) { return clock_ticks++; }
@@ -55,12 +56,13 @@ int nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *value) {
   if (!have_led) return -1; *value = disk_led; return ESP_OK;
 }
 int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value) {
-  (void)handle; assert(strcmp(key, "led_enabled") == 0); pending_led = value; return ESP_OK;
+  (void)handle; assert(strcmp(key, "led_enabled") == 0); pending_led = value; stage_led = true; return ESP_OK;
 }
 int nvs_commit(nvs_handle_t handle) {
   (void)handle; if (fail_save) return -1;
   if (stage_profiles) { disk_profiles = staged_profiles; have_profiles = true; stage_profiles = false; }
-  disk_led = pending_led; have_led = true; return ESP_OK;
+  if (stage_led) { disk_led = pending_led; have_led = true; stage_led = false; }
+  return ESP_OK;
 }
 void nvs_close(nvs_handle_t handle) { (void)handle; }
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224) {
@@ -73,6 +75,7 @@ int uart_write_bytes(uart_port_t port, const void *data, size_t size) {
   size_t extra = 0;
   if (instruction == 0x3c) {
     memcpy(last_led, request + 10, 4); led_commands++;
+    assert(last_led[1] < 8); led_colors[last_led[1]]++;
     if (reject_led > 0) { reject_led--; confirm = 1; }
   } else if (instruction == 0x01 && reject_capture) confirm = 2;
   else if (instruction == 0x04) {
@@ -132,14 +135,14 @@ int main(void) {
   memset(disk_config.hid_hosts[0].id, 42, 8);
   disk_config.typing_delay_ms = 23; have_config = true;
   stored_config_t before = disk_config;
-  device_config_init(); assert(device_config_led_enabled());
+  device_config_init(); assert(device_config_led_mode() == DEVICE_LED_ON);
   fingerprint_init(); expect_led(FP_LED_BLUE);
-  assert(fingerprint_set_led_enabled(false)); expect_led(0);
+  assert(fingerprint_set_led_mode(DEVICE_LED_OFF)); expect_led(0);
   assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
   assert(device_config_mode() == DEVICE_MODE_HID && device_config_typing_delay_ms() == 23);
   // Reboot loads the saved preference before the sensor's first LED command.
   device_config_init(); fingerprint_init(); expect_led(0);
-  assert(!device_config_led_enabled());
+  assert(device_config_led_mode() == DEVICE_LED_OFF);
   assert(fingerprint_authorize_poll_match().slot == 1); expect_led(0);
   no_match = true; assert(fingerprint_authorize_poll_match().slot == 0); expect_led(0);
   no_match = false; reject_capture = true;
@@ -148,16 +151,52 @@ int main(void) {
   assert(fingerprint_recover()); expect_led(0);
   // A failed commit must not change the live preference or claim success.
   fail_save = true; int previous = led_commands;
-  assert(!fingerprint_set_led_enabled(true)); assert(!device_config_led_enabled());
+  assert(!fingerprint_set_led_mode(DEVICE_LED_ON)); assert(device_config_led_mode() == DEVICE_LED_OFF);
   assert(led_commands == previous); fail_save = false;
   // Transient sensor rejection retries; persistent rejection is an error.
-  reject_led = 2; assert(fingerprint_set_led_enabled(true)); expect_led(FP_LED_BLUE);
+  reject_led = 2; assert(fingerprint_set_led_mode(DEVICE_LED_ON)); expect_led(FP_LED_BLUE);
   assert(led_commands == previous + 3);
-  reject_led = 3; assert(!fingerprint_set_led_enabled(false)); assert(!device_config_led_enabled());
-  assert(fingerprint_set_led_enabled(true));
+  reject_led = 3; assert(!fingerprint_set_led_mode(DEVICE_LED_OFF)); assert(device_config_led_mode() == DEVICE_LED_OFF);
+  assert(fingerprint_set_led_mode(DEVICE_LED_ON));
   assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
   fingerprint_led_idle(); expect_led(FP_LED_BLUE);
-  assert(device_config_factory_reset()); assert(device_config_led_enabled());
+  // The third mode suppresses blue while keeping both authentication results.
+  assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH)); expect_led(0);
+  assert(strcmp(device_config_led_mode_name(), "only-auth") == 0);
+  assert(disk_led == 2);
+  unsigned green = led_colors[FP_LED_GREEN], red = led_colors[FP_LED_RED];
+  unsigned blue = led_colors[FP_LED_BLUE];
+  assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
+  fingerprint_led_idle(); expect_led(0);
+  no_match = true;
+  assert(fingerprint_authorize_poll_match().slot == 0); expect_led(FP_LED_RED);
+  fingerprint_led_idle(); expect_led(0); no_match = false;
+  reject_capture = true;
+  assert(fingerprint_authorize_poll_match().slot == 0); expect_led(0);
+  assert(led_colors[FP_LED_RED] == red + 1); reject_capture = false;
+  show_result(true); expect_led(0); show_result(false); expect_led(0);
+  assert(led_colors[FP_LED_GREEN] == green + 2 && led_colors[FP_LED_RED] == red + 2);
+  assert(fingerprint_recover()); expect_led(0);
+  device_config_init(); fingerprint_init(); expect_led(0);
+  assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH);
+  // Foreground AUTH also clears its result without relying on the HID task.
+  assert(fingerprint_authorize_prompted(NULL)); expect_led(0);
+  no_match = true;
+  assert(!fingerprint_authorize_prompted(NULL)); expect_led(0); no_match = false;
+  assert(led_colors[FP_LED_BLUE] == blue);
+  assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
+  fail_save = true;
+  assert(!fingerprint_set_led_mode(DEVICE_LED_OFF));
+  assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH); fail_save = false;
+  assert(!fingerprint_set_led_mode((device_led_mode_t)3));
+  assert(!fingerprint_set_led_mode((device_led_mode_t)-1));
+  assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH);
+  // Old saved 0/1 values and invalid values have deterministic upgrade behavior.
+  disk_led = 0; device_config_init(); assert(device_config_led_mode() == DEVICE_LED_OFF);
+  disk_led = 1; device_config_init(); assert(device_config_led_mode() == DEVICE_LED_ON);
+  disk_led = 255; device_config_init(); assert(device_config_led_mode() == DEVICE_LED_ON);
+  assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH));
+  assert(device_config_factory_reset()); assert(device_config_led_mode() == DEVICE_LED_ON);
   assert(device_config_mode() == DEVICE_MODE_PIV && device_config_hid_host_count() == 0);
   return 0;
 }
