@@ -32,32 +32,3 @@ For PIV, enter `111111` if macOS asks for a smart-card PIN. For HID, enter your 
 ## 3. Try it
 
 Lock your Mac, then touch the sensor to sign in. In HID mode, select the password field first.
-
-## Add another finger
-
-```sh
-tinytouch fingers
-tinytouch enroll 2
-```
-
-Choose an empty finger number from 1 through 10. One command guides you through
-all four views; keep using the same finger and lift it when prompted. Existing
-finger numbers require confirmation before replacement. Rerunning `tinytouch setup`
-preserves existing enrollment.
-
-`tinytouch delete 2` removes the whole second finger. If upgrading an older device,
-a partially occupied finger number is reserved until you explicitly replace or
-delete it. See [finger enrollment](/reference/configuration#fingers-and-existing-enrollment).
-
-## Turn the sensor light off
-
-```sh
-tinytouch led off
-```
-
-Fingerprint sensing continues with the ring off. This also suppresses authentication
-lighting, and the setting survives reconnects. Use `tinytouch led on` to restore it.
-For red/green authentication feedback without idle blue, use
-`tinytouch led only-auth` (CLI and firmware 0.1.30+).
-The `on` and `off` commands require CLI and firmware 0.1.29 or later; follow the
-[update guide](/customer/update) first if needed.
