@@ -72,7 +72,7 @@ Prints JSON containing:
 | `build` | First 12 characters of the source commit, or `development` |
 | `mode` | `piv` or `hid` |
 | `piv` | `ready` or `unconfigured` |
-| `led` | Saved sensor LED setting: `on`, `off`, or `only-auth` (0.1.30+) |
+| `led` | Saved sensor LED setting: `on`/`off` (0.1.29+) or `only-auth` (0.1.30+) |
 | `led_only_auth` | `1` when authentication-only lighting is supported (firmware 0.1.30+) |
 | `sensor` | `ready` or `offline` after a live UART probe |
 | `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for finger blocks |
