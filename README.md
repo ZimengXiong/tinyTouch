@@ -236,15 +236,10 @@ microcontroller families can work, but are not currently supported.
 
 ## wiring
 
-the fingerprint sensor connects over uart to gpio 43 for tx and gpio 44 for rx.
-these are the esp32-s3's default uart0 console pins, so a serial console is not
-available once the sensor is wired.
+the fingerprint sensor connects over uart to pins 6 and 7 for tx and rx.
 
-the interrupt pin can be connected anywhere. in firmware, it is connected to gpio
-2.
-
-to change any of these, edit `FP_TX_PIN`, `FP_RX_PIN`, and `FP_INT_PIN` at the top
-of `firmware/tiny_touch_smartcard/main/fingerprint.c`.
+the interrupt pin can be connected anywhere. in firmware, it is connected to pin
+1.
 
 ## notes
 
