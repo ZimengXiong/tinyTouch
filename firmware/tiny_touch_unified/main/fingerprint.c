@@ -209,7 +209,9 @@ static void fp_give(void) {
 }
 
 static bool set_aura(uint8_t color) {
-  if (!device_config_led_enabled()) color = 0;
+  device_led_mode_t mode = device_config_led_mode();
+  if (mode == DEVICE_LED_OFF || (mode == DEVICE_LED_ONLY_AUTH && color == FP_LED_BLUE))
+    color = 0;
   uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
   uint8_t confirm = 0xff;
   return fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) && confirm == 0x00;
@@ -227,9 +229,9 @@ void fingerprint_led_idle(void) {
   fp_give();
 }
 
-bool fingerprint_set_led_enabled(bool enabled) {
+bool fingerprint_set_led_mode(device_led_mode_t mode) {
   if (!fp_take(1000)) return false;
-  bool ok = device_config_set_led_enabled(enabled);
+  bool ok = device_config_set_led_mode(mode);
   if (ok) {
     // The sensor can discard a command while its own animation is running.
     // Reassert a steady colour and only report success after acknowledgment.
@@ -327,13 +329,18 @@ fingerprint_match_t fingerprint_authorize_poll_match(void) {
   if (!fp_take(0)) return no_match;
   uint8_t confirm = 0xff;
   if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
-    if (!device_config_led_enabled()) set_aura(0);
+    if (device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
     fp_give();
     return no_match;
   }
   fingerprint_match_t match = fingerprint_match_captured(true);
-  if (match.slot) set_aura(FP_LED_GREEN);
-  else if (!device_config_led_enabled()) set_aura(0);
+  device_led_mode_t mode = device_config_led_mode();
+  if (mode == DEVICE_LED_ONLY_AUTH && prompted_authorization_active) {
+    // Foreground AUTH has no HID result timer to restore the idle light.
+    show_result(match.slot != 0);
+  } else if (match.slot) set_aura(FP_LED_GREEN);
+  else if (mode == DEVICE_LED_ONLY_AUTH) set_aura(FP_LED_RED);
+  else if (mode == DEVICE_LED_OFF) set_aura(0);
   fp_give();
   return match;
 }
@@ -406,7 +413,7 @@ bool fingerprint_recover(void) {
     if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(100));
   }
   set_sensor_ready(ok);
-  if (ok && !device_config_led_enabled()) set_aura(0);
+  if (ok && device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
   fp_give();
   return ok;
 }
@@ -460,7 +467,7 @@ static bool wait_capture_template(uint8_t buffer_id, uint32_t timeout_ms) {
     if (enrollment_connected && !enrollment_connected()) return false;
     uint8_t confirm = 0xff;
     bool captured = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 600) && confirm == 0x00;
-    if (!device_config_led_enabled()) set_aura(0);
+    if (device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
     if (captured) {
       uint8_t params[] = {buffer_id};
       if (fp_command(0x02, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
@@ -482,7 +489,7 @@ static bool wait_finger_removed(uint32_t timeout_ms) {
     if (enrollment_connected && !enrollment_connected()) return false;
     uint8_t confirm = 0xff;
     bool answered = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500);
-    if (!device_config_led_enabled()) set_aura(0);
+    if (device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
     if (answered && confirm == 0x02) {
       if (++absent_samples >= 3) return true;
     } else if (answered && confirm == 0x00) {

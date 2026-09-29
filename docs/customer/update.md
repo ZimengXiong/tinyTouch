@@ -36,6 +36,9 @@ Use an empty finger number to add a finger. An occupied number asks before repla
 its entire block. Existing prints are preserved by the update, including legacy
 partial blocks. `tinytouch led on` restores the default lighting.
 
+Version 0.1.30 adds `tinytouch led only-auth`: idle blue stays off while red/green
+authentication feedback remains enabled. Update and reconnect before selecting it.
+
 ## If an update is interrupted
 
 Reconnect the device and run `tinytouch update` again.

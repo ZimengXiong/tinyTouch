@@ -57,5 +57,7 @@ tinytouch led off
 
 Fingerprint sensing continues with the ring off. This also suppresses authentication
 lighting, and the setting survives reconnects. Use `tinytouch led on` to restore it.
+For red/green authentication feedback without idle blue, use
+`tinytouch led only-auth` (CLI and firmware 0.1.30+).
 These commands require CLI and firmware 0.1.29 or later; follow the
 [update guide](/customer/update) first if needed.

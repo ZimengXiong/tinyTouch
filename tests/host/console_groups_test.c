@@ -26,6 +26,27 @@ static void command(const char *text) {
 int main(void) {
   defaults(&disk_config); have_config = true;
   device_config_init(); fingerprint_init();
+  char locked_led[] = "LED 2";
+  set_value(locked_led); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
+  assert(device_config_led_mode() == DEVICE_LED_ON);
+  authorized_until = INT64_MAX;
+  for (unsigned mode = 0; mode <= 2; mode++) {
+    char value[16]; snprintf(value, sizeof(value), "LED %u", mode);
+    set_value(value); assert(strcmp(last_reply, "OK SET") == 0);
+    assert(device_config_led_mode() == (device_led_mode_t)mode);
+    expect_led(mode == DEVICE_LED_ON ? FP_LED_BLUE : 0);
+  }
+  const char *bad_led[] = {"LED 3", "LED -1", "LED 65536", "LED only-auth", "LED", "LED 2 junk"};
+  for (unsigned i = 0; i < sizeof(bad_led) / sizeof(bad_led[0]); i++) {
+    char value[32]; snprintf(value, sizeof(value), "%s", bad_led[i]);
+    set_value(value); assert(strcmp(last_reply, "ERR SET") == 0);
+    assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH);
+  }
+  fail_save = true;
+  char failed_led[] = "LED 0";
+  set_value(failed_led); assert(strcmp(last_reply, "ERR SET") == 0);
+  assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH); fail_save = false;
+  authorized_until = 0;
   sensor_templates = UINT64_C(0x3e); // physical slots 1 through 5
   command("LIST");
   assert(strcmp(last_reply, "OK FINGER LIST groups=1:4,2:1 available=8 capacity=40 pending=0") == 0);

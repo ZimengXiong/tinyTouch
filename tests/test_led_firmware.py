@@ -33,7 +33,8 @@ class LedFirmwareTests(unittest.TestCase):
             # with serial output and the authorization clock supplied by the fixture.
             parsing = console[console.index("static bool parse_u32("):console.index("static void touch_prompt(")]
             groups = console[console.index("static bool enrollment_running;"):console.index("static void factory_reset(")]
-            (build / "console_under_test.h").write_text(parsing + groups)
+            settings = console[console.index("static void set_value("):console.index("static void host_add(")]
+            (build / "console_under_test.h").write_text(parsing + settings + groups)
             executable = build / "led_test"
             flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if os.environ.get("TINYTOUCH_TEST_SANITIZERS") else []
             subprocess.run([

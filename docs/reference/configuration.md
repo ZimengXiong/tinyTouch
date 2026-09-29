@@ -26,6 +26,8 @@ After enrollment, protected changes require a matching fingerprint.
 Run `tinytouch led off` to disable the ring, or `tinytouch led on` to restore it.
 This applies to idle and authentication lighting without disabling fingerprint
 sensing. The setting survives reconnects; factory reset restores it to on.
+Use `tinytouch led only-auth` to disable idle blue while keeping red/green
+authentication feedback (CLI and firmware 0.1.30+).
 Firmware 0.1.29 adds this setting separately from the existing configuration,
 so upgrading preserves fingerprints, paired computers, and timing settings.
 

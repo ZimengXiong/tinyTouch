@@ -1147,8 +1147,14 @@ def command_led(args: argparse.Namespace) -> None:
                 "This firmware does not support LED control. Run 'tinytouch update', "
                 "then unplug and reconnect tinyTouch before trying again."
             )
-        unlock(port, reason=f"turn the sensor LED {args.state}")
-        serial_command(port, f"SET LED {int(args.state == 'on')}", timeout=5)
+        if args.state == "only-auth" and device.get("led_only_auth") != "1":
+            raise ToolError(
+                "This firmware does not support authentication-only lighting. Run 'tinytouch update', "
+                "then unplug and reconnect tinyTouch before trying again."
+            )
+        unlock(port, reason=f"set the sensor LED to {args.state}")
+        value = {"off": 0, "on": 1, "only-auth": 2}[args.state]
+        serial_command(port, f"SET LED {value}", timeout=5)
         fresh_status(port, {"led": args.state})
         say(f"Sensor LED is {args.state}. This setting is saved on tinyTouch.")
 
@@ -1682,8 +1688,8 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("mode", choices=("hid", "piv"))
     mode.add_argument("--port")
     mode.set_defaults(func=command_mode)
-    led = sub.add_parser("led", help="turn the sensor LED on or off")
-    led.add_argument("state", choices=("on", "off"))
+    led = sub.add_parser("led", help="set sensor lighting: on, off, or authentication feedback only")
+    led.add_argument("state", choices=("on", "off", "only-auth"))
     led.add_argument("--port")
     led.set_defaults(func=command_led)
     config = sub.add_parser("config")

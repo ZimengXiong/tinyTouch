@@ -21,14 +21,14 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
-    def test_led_command_saves_and_verifies_both_states_in_one_session(self):
-        for state, value in (("off", "0"), ("on", "1")):
+    def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
+        for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
             with (
                 self.subTest(state=state),
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session") as session,
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.29", "led": "on"},
+                    {"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"},
                     {"led": state},
                 ]),
                 mock.patch.object(cli, "unlock") as unlock,
@@ -55,6 +55,34 @@ class ProtocolSixTests(unittest.TestCase):
                 args.func(args)
             unlock.assert_not_called()
             command.assert_not_called()
+
+    def test_led_only_auth_on_old_firmware_requires_update_without_writing(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.29", "led": "off"}),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "only-auth"])
+            with self.assertRaisesRegex(cli.ToolError, "unplug and reconnect"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
+
+    def test_led_wrong_readback_does_not_report_success(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"}),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "only-auth"])
+            with self.assertRaises(cli.ToolError):
+                args.func(args)
+            output.assert_not_called()
 
     def test_led_failed_write_does_not_report_success(self):
         with (

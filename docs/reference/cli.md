@@ -50,16 +50,12 @@ Changes mode after fingerprint approval. Reconnect the device when prompted.
 ## `led`
 
 ```text
-tinytouch led {on,off} [--port PATH]
+tinytouch led {on,off,only-auth} [--port PATH]
 ```
 
-Turns the sensor ring on or off, including authentication feedback. The setting
-is saved on the device and survives reconnects. Fingerprint sensing stays active.
-An enrolled device asks for a matching fingerprint before changing the setting.
-
-To upgrade from an older release, run `tinytouch update`, unplug and reconnect
-once when prompted, then run `tinytouch led off`. Use `tinytouch led on` to restore
-the default lighting.
+`on` enables the sensor ring. `off` disables it, including authentication feedback.
+`only-auth` disables idle blue and keeps red/green authentication feedback
+(CLI and firmware 0.1.30+).
 
 ## `status`
 
@@ -76,7 +72,8 @@ Prints JSON containing:
 | `build` | First 12 characters of the source commit, or `development` |
 | `mode` | `piv` or `hid` |
 | `piv` | `ready` or `unconfigured` |
-| `led` | Saved sensor LED setting: `on` or `off` (firmware 0.1.29+) |
+| `led` | Saved sensor LED setting: `on`, `off`, or `only-auth` (0.1.30+) |
+| `led_only_auth` | `1` when authentication-only lighting is supported (firmware 0.1.30+) |
 | `sensor` | `ready` or `offline` after a live UART probe |
 | `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for finger blocks |
 | `finger_groups` | `1` when whole-finger commands are supported (firmware 0.1.29+) |
@@ -113,15 +110,6 @@ tinytouch enroll 1
 tinytouch enroll 2
 tinytouch enroll 3 --port /dev/cu.usbmodem101
 ```
-
-Finger 1 owns templates 1–4, finger 2 owns 5–8, and so on. Any existing print in
-a block makes it occupied. Occupied blocks require confirmation before replacement;
-`--replace` skips that confirmation. Existing templates in other blocks are preserved.
-After a failed replacement, the replaced finger may need to be enrolled again.
-An enrolled device requires a matching fingerprint before enrollment starts.
-
-First-time setup enrolls finger 1. Rerunning setup keeps existing prints. Update
-both CLI and firmware to 0.1.29 or later before using whole-finger commands.
 
 ## `fingers`
 
