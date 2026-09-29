@@ -668,7 +668,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch the fingerprint sensor now to pair PIV with this Mac.",
+            "Touch the fingerprint sensor now with an already-enrolled finger to pair PIV with this Mac.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):

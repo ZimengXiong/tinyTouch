@@ -729,7 +729,7 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt=f"Touch the fingerprint sensor now to {reason}.",
+                touch_prompt=f"Touch the fingerprint sensor now with an already-enrolled finger to {reason}.",
             )
             if explain_pin:
                 explain_piv_pin()
@@ -975,7 +975,7 @@ def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool 
         elif event == "EVENT LIFT":
             say("Lift your finger from the sensor.")
 
-    unlock(port, reason=f"enroll finger {finger}")
+    unlock(port, reason=f"begin enrolling finger {finger}")
     command = f"FINGER ENROLL_GROUP {finger}" + (" REPLACE" if replace else "")
     try:
         serial_command(port, command, timeout=300, event_handler=event_handler)
