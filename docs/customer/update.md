@@ -21,24 +21,6 @@ tinytouch status
 
 The `ota` field returns to `idle` after a successful boot.
 
-## LED control and whole-finger enrollment
-
-Version 0.1.29 adds LED control and up to ten fingers. After `tinytouch update`
-and the requested unplug/reconnect:
-
-```sh
-tinytouch led off
-tinytouch fingers
-tinytouch enroll 2
-```
-
-Use an empty finger number to add a finger. An occupied number asks before replacing
-its entire block. Existing prints are preserved by the update, including legacy
-partial blocks. `tinytouch led on` restores the default lighting.
-
-Version 0.1.30 adds `tinytouch led only-auth`: idle blue stays off while red/green
-authentication feedback remains enabled. Update and reconnect before selecting it.
-
 ## If an update is interrupted
 
 Reconnect the device and run `tinytouch update` again.
