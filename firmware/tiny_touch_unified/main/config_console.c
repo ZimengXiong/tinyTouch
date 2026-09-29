@@ -152,7 +152,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s",
+           "hosts=%u ota=%s led=%s finger_groups=1",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
@@ -223,16 +223,78 @@ static void host_list(void) {
   reply(line);
 }
 
+static bool enrollment_running;
+static bool enrollment_disconnected;
+static portMUX_TYPE enrollment_state_lock = portMUX_INITIALIZER_UNLOCKED;
+
+void tud_cdc_line_state_cb(uint8_t interface, bool dtr, bool rts) {
+  (void)interface;
+  (void)rts;
+  portENTER_CRITICAL(&enrollment_state_lock);
+  if (!dtr && enrollment_running) enrollment_disconnected = true;
+  portEXIT_CRITICAL(&enrollment_state_lock);
+}
+
+static bool enrollment_connected(void) {
+  portENTER_CRITICAL(&enrollment_state_lock);
+  bool disconnected = enrollment_disconnected;
+  portEXIT_CRITICAL(&enrollment_state_lock);
+  return !disconnected && tud_cdc_connected();
+}
+
+static void fingerprint_list(void) {
+  fingerprint_inventory_t inventory;
+  if (!fingerprint_inventory(&inventory)) { reply("ERR FINGER inventory_unavailable"); return; }
+  char groups[96] = {0};
+  size_t offset = 0;
+  unsigned available = 0, pending = 0;
+  for (unsigned finger = 1; finger <= FINGER_PROFILE_COUNT; finger++) {
+    uint64_t block = finger_profiles_block(finger);
+    unsigned count = finger_profiles_count(inventory.occupied & block);
+    if (inventory.profiles.pending & block) pending = finger;
+    if (count || (inventory.profiles.pending & block)) {
+      offset += snprintf(groups + offset, sizeof(groups) - offset, "%s%u:%u",
+                         offset ? "," : "", finger, count);
+    } else if (finger_profiles_block_fits(finger, inventory.capacity)) available++;
+  }
+  char line[240];
+  snprintf(line, sizeof(line),
+           "OK FINGER LIST groups=%s available=%u capacity=%u pending=%u",
+           offset ? groups : "none", available, inventory.capacity,
+           pending);
+  reply(line);
+}
+
 static void fingerprint_command(char *arguments) {
+  if (strcmp(arguments, "LIST") == 0) { fingerprint_list(); return; }
   if (!require_authorized()) return;
-  uint32_t slot = 0;
+  uint32_t finger = 0;
   bool ok = false;
-  if (strncmp(arguments, "ENROLL ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
-    ok = fingerprint_enroll((uint16_t)slot, enroll_prompt);
-  } else if (strncmp(arguments, "DELETE ", 7) == 0 && parse_u32(arguments + 7, UINT16_MAX, &slot)) {
-    ok = fingerprint_delete((uint16_t)slot) && device_config_set_fingerprint_profile_views(0);
+  if (strncmp(arguments, "ENROLL_GROUP ", 13) == 0) {
+    char *number = arguments + 13;
+    char *option = strchr(number, ' ');
+    bool replace = option && strcmp(option, " REPLACE") == 0;
+    if (option) *option = '\0';
+    if ((!option || replace) && parse_u32(number, FINGER_PROFILE_COUNT, &finger) && finger) {
+      portENTER_CRITICAL(&enrollment_state_lock);
+      enrollment_disconnected = false;
+      enrollment_running = true;
+      portEXIT_CRITICAL(&enrollment_state_lock);
+      ok = fingerprint_enroll_finger(finger, replace, enroll_prompt, enrollment_connected);
+      portENTER_CRITICAL(&enrollment_state_lock);
+      enrollment_running = false;
+      portEXIT_CRITICAL(&enrollment_state_lock);
+    }
+    reply(ok ? "OK FINGER ENROLL_GROUP" : "ERR FINGER enrollment_failed");
+    return;
+  } else if (strncmp(arguments, "DELETE_GROUP ", 13) == 0 &&
+             parse_u32(arguments + 13, FINGER_PROFILE_COUNT, &finger) && finger) {
+    ok = fingerprint_delete_finger(finger);
   } else if (strcmp(arguments, "CLEAR") == 0) {
     ok = fingerprint_delete_all() && device_config_set_fingerprint_profile_views(0);
+  } else if (strncmp(arguments, "ENROLL ", 7) == 0 || strncmp(arguments, "DELETE ", 7) == 0) {
+    reply("ERR FINGER update_cli");
+    return;
   }
   reply(ok ? "OK FINGER" : "ERR FINGER");
 }

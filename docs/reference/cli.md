@@ -78,7 +78,8 @@ Prints JSON containing:
 | `piv` | `ready` or `unconfigured` |
 | `led` | Saved sensor LED setting: `on` or `off` (firmware 0.1.29+) |
 | `sensor` | `ready` or `offline` after a live UART probe |
-| `fingerprints` | Number of occupied sensor slots |
+| `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for finger blocks |
+| `finger_groups` | `1` when whole-finger commands are supported (firmware 0.1.29+) |
 | `hosts` | Number of registered HID computers |
 | `ota` | `idle`, `writing`, or `staged` |
 
@@ -101,27 +102,50 @@ Prints up to 32 recent touch and HID events.
 ## `enroll`
 
 ```text
-tinytouch enroll SLOT [--port PATH]
+tinytouch enroll FINGER [--replace] [--port PATH]
 ```
 
-Enrolls slot `1` through `5`. Existing templates require fingerprint approval.
-
-Examples:
+Enrolls finger `1` through `10` through the complete four-view sequence. Use the
+same finger for every view and lift it when prompted. Each view is scanned twice.
 
 ```sh
-tinytouch enroll 5
+tinytouch enroll 1
+tinytouch enroll 2
 tinytouch enroll 3 --port /dev/cu.usbmodem101
 ```
 
-Setup uses slots 1–4.
+Finger 1 owns templates 1–4, finger 2 owns 5–8, and so on. Any existing print in
+a block makes it occupied. Occupied blocks require confirmation before replacement;
+`--replace` skips that confirmation. Existing templates in other blocks are preserved.
+After a failed replacement, the replaced finger may need to be enrolled again.
+An enrolled device requires a matching fingerprint before enrollment starts.
+
+First-time setup enrolls finger 1. Rerunning setup keeps existing prints. Update
+both CLI and firmware to 0.1.29 or later before using whole-finger commands.
+
+## `fingers`
+
+```text
+tinytouch fingers [--port PATH]
+```
+
+Lists occupied and partially occupied finger blocks and space for additional
+fingers. With existing templates 1–5, fingers 1 and 2 are occupied and eight blocks
+remain available. No changes or fingerprint authorization are needed to list them.
 
 ## `delete`
 
 ```text
-tinytouch delete SLOT [--port PATH]
+tinytouch delete FINGER [--port PATH]
 ```
 
-Deletes slot `1` through `5` after fingerprint approval. To delete all state, use `factory-reset`.
+Deletes the **entire** block for finger `1` through `10` after fingerprint approval.
+For example, `tinytouch delete 2` deletes templates 5–8, including any legacy print
+in that block. It does not delete other fingers. To delete all state, use
+`factory-reset`.
+
+See [Device configuration](/reference/configuration#fingers-and-existing-enrollment)
+for the complete mapping and interrupted-enrollment behavior.
 
 ## `computers`
 

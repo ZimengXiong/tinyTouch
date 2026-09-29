@@ -4,6 +4,7 @@ idf_component_register(
     "config_console.c"
     "device_config.c"
     "fingerprint.c"
+    "finger_profiles.c"
     "firmware_update.c"
     "piv.c"
     "touch_pin_hid.c"

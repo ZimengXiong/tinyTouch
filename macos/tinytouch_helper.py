@@ -400,7 +400,7 @@ def parse_event(line: str, pairing_key: bytes) -> AuthenticatedEvent | None:
     if not all(re.fullmatch(r"[0-9]+", item) for item in (counter_text, slot_text, score_text)):
         return None
     counter, slot, score = map(int, (counter_text, slot_text, score_text))
-    if not 0 <= counter <= MAX_COUNTER or slot not in range(1, 6) or not 0 <= score <= MAX_SCORE:
+    if not 0 <= counter <= MAX_COUNTER or slot not in range(1, 41) or not 0 <= score <= MAX_SCORE:
         return None
 
     key_id: str | None = None

@@ -17,8 +17,7 @@ static const int FP_TX_PIN = 43;
 static const int FP_RX_PIN = 44;
 static const int FP_INT_PIN = 2;
 static const int INT_ACTIVE_VALUE = 1;
-static const uint16_t START_SLOT = 1;
-static const uint16_t END_SLOT = 5;
+static const uint16_t END_SLOT = FINGER_TEMPLATE_LIMIT - 1;
 static const uint32_t FINGER_WAIT_MS = 7000;
 static const uint8_t FP_LED_BLUE = 0x01;
 static const uint8_t FP_LED_GREEN = 0x02;
@@ -28,6 +27,21 @@ static const uint8_t FP_LED_FUNC_STEADY = 3;
 static SemaphoreHandle_t fp_mutex;
 static volatile bool prompted_authorization_active;
 static bool sensor_ready;
+static finger_profiles_t profiles;
+static bool profiles_ready;
+static bool (*enrollment_connected)(void);
+static bool cleanup_pending_locked(void);
+
+static bool template_usable(uint16_t slot) {
+  return profiles_ready && slot < FINGER_TEMPLATE_LIMIT &&
+         !(profiles.pending & (UINT64_C(1) << slot));
+}
+
+static uint16_t event_slot(uint16_t slot) {
+  // Keep legacy event IDs 1-39; physical slot zero has the nonzero ID 40.
+  return slot ? slot : FINGER_TEMPLATE_LIMIT;
+}
+
 static portMUX_TYPE sensor_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool sensor_ready_snapshot(void) {
@@ -222,6 +236,7 @@ bool fingerprint_set_led_enabled(bool enabled) {
     for (int attempt = 0; attempt < 3; attempt++) {
       ok = set_aura(FP_LED_BLUE);
       if (ok) break;
+      if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(50));
     }
   }
   fp_give();
@@ -248,10 +263,10 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
     return no_match;
   }
 
-  uint16_t count = END_SLOT - START_SLOT + 1;
+  uint16_t count = FINGER_TEMPLATE_LIMIT;
   uint8_t search_params[] = {
     0x01,
-    (uint8_t)(START_SLOT >> 8), (uint8_t)(START_SLOT & 0xff),
+    0, 0,
     (uint8_t)(count >> 8), (uint8_t)(count & 0xff)
   };
   uint8_t search_data[4];
@@ -261,19 +276,20 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   } else if (confirm == 0x00 && search_len == sizeof(search_data)) {
     uint16_t score = ((uint16_t)search_data[2] << 8) | search_data[3];
     uint16_t slot = ((uint16_t)search_data[0] << 8) | search_data[1];
-    bool ok = score > 0 && slot >= START_SLOT && slot <= END_SLOT;
+    bool ok = score > 0 && template_usable(slot);
     ESP_LOGI(TAG, "fingerprint search: %s slot=%u score=%u", ok ? "ok" : "failed",
              slot, score);
     if (!quiet) {
       show_result(ok);
     }
-    if (ok) return (fingerprint_match_t){.slot = slot, .score = score};
+    if (ok) return (fingerprint_match_t){.slot = event_slot(slot), .score = score};
     return no_match;
   } else if (!quiet) {
     ESP_LOGW(TAG, "search failed confirm=0x%02x len=%u", confirm, (unsigned)search_len);
   }
 
-  for (uint16_t slot = START_SLOT; slot <= END_SLOT; slot++) {
+  for (uint16_t slot = 0; slot <= END_SLOT; slot++) {
+    if (!template_usable(slot)) continue;
     uint8_t load_params[] = {0x02, (uint8_t)(slot >> 8), (uint8_t)(slot & 0xff)};
     confirm = 0xff;
     if (!fp_command(0x07, load_params, sizeof(load_params), &confirm, NULL, NULL, 1000) ||
@@ -294,7 +310,7 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
       if (score > 0) {
         ESP_LOGI(TAG, "fingerprint match: ok slot=%u score=%u", slot, score);
         if (!quiet) show_result(true);
-        return (fingerprint_match_t){.slot = slot, .score = score};
+        return (fingerprint_match_t){.slot = event_slot(slot), .score = score};
       }
     }
     if (!quiet) {
@@ -346,6 +362,7 @@ void fingerprint_init(void) {
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
   fp_mutex = xSemaphoreCreateMutex();
   configASSERT(fp_mutex != NULL);
+  profiles_ready = finger_profiles_load(&profiles);
 
   uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
   bool ok = false;
@@ -359,7 +376,12 @@ void fingerprint_init(void) {
     if (!ok && attempt < 3) vTaskDelay(pdMS_TO_TICKS(250));
   }
   ESP_LOGI(TAG, "sensor verify: %s", ok ? "ok" : "failed");
-  if (ok) fingerprint_led_idle();
+  if (ok) {
+    configASSERT(fp_take(1000));
+    if (profiles_ready) (void)cleanup_pending_locked();
+    fp_give();
+    fingerprint_led_idle();
+  }
 }
 
 bool fingerprint_is_ready(void) {
@@ -435,8 +457,11 @@ static bool wait_capture_template(uint8_t buffer_id, uint32_t timeout_ms) {
   TickType_t start = xTaskGetTickCount();
   TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
   while ((xTaskGetTickCount() - start) < deadline) {
+    if (enrollment_connected && !enrollment_connected()) return false;
     uint8_t confirm = 0xff;
-    if (fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 600) && confirm == 0x00) {
+    bool captured = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 600) && confirm == 0x00;
+    if (!device_config_led_enabled()) set_aura(0);
+    if (captured) {
       uint8_t params[] = {buffer_id};
       if (fp_command(0x02, params, sizeof(params), &confirm, NULL, NULL, 2000) &&
           confirm == 0x00) {
@@ -454,8 +479,10 @@ static bool wait_finger_removed(uint32_t timeout_ms) {
   TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
   unsigned absent_samples = 0;
   while ((xTaskGetTickCount() - start) < deadline) {
+    if (enrollment_connected && !enrollment_connected()) return false;
     uint8_t confirm = 0xff;
     bool answered = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 500);
+    if (!device_config_led_enabled()) set_aura(0);
     if (answered && confirm == 0x02) {
       if (++absent_samples >= 3) return true;
     } else if (answered && confirm == 0x00) {
@@ -470,8 +497,7 @@ static bool wait_finger_removed(uint32_t timeout_ms) {
   return false;
 }
 
-bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
-  if (slot < START_SLOT || slot > END_SLOT || !fp_take(1000)) return false;
+static bool enroll_template_locked(uint16_t slot, void (*prompt)(const char *message)) {
   bool ok = false;
   set_aura(FP_LED_BLUE);
   if (prompt) prompt("TOUCH");
@@ -489,16 +515,6 @@ bool fingerprint_enroll(uint16_t slot, void (*prompt)(const char *message)) {
 
 done:
   show_result(ok);
-  fp_give();
-  return ok;
-}
-
-bool fingerprint_delete(uint16_t slot) {
-  if (slot < START_SLOT || slot > END_SLOT || !fp_take(1000)) return false;
-  uint8_t params[] = {(uint8_t)(slot >> 8), (uint8_t)slot, 0x00, 0x01};
-  uint8_t confirm = 0xff;
-  bool ok = fp_command(0x0c, params, sizeof(params), &confirm, NULL, NULL, 2000) && confirm == 0x00;
-  fp_give();
   return ok;
 }
 
@@ -506,6 +522,135 @@ bool fingerprint_delete_all(void) {
   if (!fp_take(1000)) return false;
   uint8_t confirm = 0xff;
   bool ok = fp_command(0x0d, NULL, 0, &confirm, NULL, NULL, 2000) && confirm == 0x00;
+  if (ok) {
+    finger_profiles_t empty = {.version = 1};
+    ok = finger_profiles_save(&empty);
+    if (ok) { profiles = empty; profiles_ready = true; }
+  }
+  fp_give();
+  return ok;
+}
+
+static bool inventory_locked(fingerprint_inventory_t *inventory) {
+  if (!profiles_ready) return false;
+  uint8_t confirm = 0xff, parameters[16];
+  size_t length = sizeof(parameters);
+  if (!fp_command(0x0f, NULL, 0, &confirm, parameters, &length, 1000) ||
+      confirm != 0 || length != sizeof(parameters)) return false;
+  unsigned capacity = ((unsigned)parameters[4] << 8) | parameters[5];
+  if (capacity == 0 || capacity > 256) return false;
+  uint8_t page = 0, index[32];
+  length = sizeof(index);
+  if (!fp_command(0x1f, &page, 1, &confirm, index, &length, 1000) ||
+      confirm != 0 || length != sizeof(index)) return false;
+  uint64_t occupied = 0;
+  unsigned total = 0;
+  for (unsigned slot = 0; slot < 256; slot++) {
+    if (!(index[slot / 8] & (1u << (slot % 8)))) continue;
+    if (slot >= capacity) return false;
+    total++;
+    if (slot < FINGER_TEMPLATE_LIMIT) occupied |= UINT64_C(1) << slot;
+  }
+  // A mismatched index must never be mistaken for free space.
+  uint8_t count[2]; length = sizeof(count);
+  if (!fp_command(0x1d, NULL, 0, &confirm, count, &length, 1000) ||
+      confirm != 0 || length != sizeof(count) || total != (((unsigned)count[0] << 8) | count[1]))
+    return false;
+  inventory->capacity = capacity < FINGER_TEMPLATE_LIMIT ? capacity : FINGER_TEMPLATE_LIMIT;
+  inventory->occupied = occupied;
+  inventory->profiles = profiles;
+  return true;
+}
+
+bool fingerprint_inventory(fingerprint_inventory_t *inventory) {
+  if (!inventory || !fp_take(1000)) return false;
+  bool ok = inventory_locked(inventory);
+  fp_give();
+  return ok;
+}
+
+static bool save_profiles_locked(const finger_profiles_t *next) {
+  if (!finger_profiles_save(next)) return false;
+  profiles = *next;
+  return true;
+}
+
+static bool delete_mask_locked(uint64_t mask) {
+  fingerprint_inventory_t inventory;
+  if (!inventory_locked(&inventory)) return false;
+  for (unsigned slot = 0; slot < inventory.capacity; slot++) {
+    if (!(mask & inventory.occupied & (UINT64_C(1) << slot))) continue;
+    uint8_t params[] = {0, slot, 0, 1}, confirm = 0xff;
+    if (!fp_command(0x0c, params, sizeof(params), &confirm, NULL, NULL, 1000) || confirm != 0)
+      return false;
+  }
+  return inventory_locked(&inventory) && !(inventory.occupied & mask);
+}
+
+static bool cleanup_pending_locked(void) {
+  if (!profiles.pending) return true;
+  if (!delete_mask_locked(profiles.pending)) return false;
+  finger_profiles_t next = profiles;
+  next.pending = 0;
+  return save_profiles_locked(&next);
+}
+
+bool fingerprint_enroll_finger(unsigned finger, bool replace, void (*prompt)(const char *),
+                               bool (*connected)(void)) {
+  if (!finger || finger > FINGER_PROFILE_COUNT || !fp_take(1000)) return false;
+  bool ok = false;
+  prompted_authorization_active = true;
+  enrollment_connected = connected;
+  if ((connected && !connected()) || !profiles_ready || !cleanup_pending_locked()) goto done;
+  fingerprint_inventory_t inventory;
+  if (!inventory_locked(&inventory)) goto done;
+  uint64_t selected = finger_profiles_block(finger);
+  if (!finger_profiles_block_fits(finger, inventory.capacity) ||
+      (!replace && (inventory.occupied & selected))) goto done;
+  if (connected && !connected()) goto done;
+  finger_profiles_t next = profiles;
+  next.pending = selected;
+  if (!save_profiles_locked(&next)) goto done;
+  if ((inventory.occupied & selected) && !delete_mask_locked(selected)) goto rollback;
+  unsigned view = 0;
+  for (unsigned i = 1; i <= FINGER_TEMPLATE_LIMIT; i++) {
+    unsigned slot = i == FINGER_TEMPLATE_LIMIT ? 0 : i;
+    if (!(selected & (UINT64_C(1) << slot))) continue;
+    if (prompt) prompt("LIFT");
+    if (!wait_finger_removed(10000)) goto rollback;
+    char event[] = "VIEW 1";
+    event[5] += view++;
+    if (prompt) prompt(event);
+    if (!enroll_template_locked(slot, prompt)) goto rollback;
+  }
+  if ((connected && !connected()) || !inventory_locked(&inventory) ||
+      (inventory.occupied & selected) != selected) goto rollback;
+  next.pending = 0;
+  if (!save_profiles_locked(&next)) goto rollback;
+  ok = true;
+  goto done;
+rollback:
+  // The journal remains saved if cleanup fails; those templates cannot match
+  // and the next boot or enrollment will retry deleting only reserved slots.
+  (void)cleanup_pending_locked();
+done:
+  enrollment_connected = NULL;
+  prompted_authorization_active = false;
+  fp_give();
+  return ok;
+}
+
+bool fingerprint_delete_finger(unsigned finger) {
+  if (!finger || finger > FINGER_PROFILE_COUNT || !fp_take(1000)) return false;
+  bool ok = false;
+  if (profiles_ready && cleanup_pending_locked()) {
+    fingerprint_inventory_t inventory;
+    if (inventory_locked(&inventory) && finger_profiles_block_fits(finger, inventory.capacity)) {
+      finger_profiles_t next = profiles;
+      next.pending = finger_profiles_block(finger);
+      ok = save_profiles_locked(&next) && cleanup_pending_locked();
+    }
+  }
   fp_give();
   return ok;
 }

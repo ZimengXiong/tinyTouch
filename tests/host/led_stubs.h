@@ -20,6 +20,7 @@ typedef struct { int baud_rate, data_bits, parity, stop_bits, flow_ctrl, source_
 #define portEXIT_CRITICAL(lock) ((void)(lock))
 #define configASSERT assert
 #define ESP_OK 0
+#define ESP_ERR_NVS_NOT_FOUND -1
 #define ESP_ERROR_CHECK(expr) assert((expr) == ESP_OK)
 #define ESP_LOGW(tag, ...) ((void)(tag))
 #define ESP_LOGI(tag, ...) ((void)(tag))
