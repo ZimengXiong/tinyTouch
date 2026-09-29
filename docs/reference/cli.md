@@ -200,10 +200,3 @@ Without a value, prints status. With a value, writes a protected setting:
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
 
 `STATUS` doesn't return these values. A successful write can still report a verification error.
-
-## Developer commands
-
-| Command | Action |
-|---|---|
-| `tinytouch hid-smoke` | Test HID setup against a simulated device on macOS |
-| `tinytouch enroll-demo` | Preview enrollment in an interactive terminal |
