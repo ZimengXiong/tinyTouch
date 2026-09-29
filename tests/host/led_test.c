@@ -4,7 +4,7 @@
 #include "../../firmware/tiny_touch_unified/main/fingerprint.c"
 
 static TickType_t clock_ticks;
-static int mutexes[32], mutex_count;
+static int mutexes[128], mutex_count;
 static stored_config_t disk_config;
 static bool have_config, have_led, stage_led, fail_save;
 static uint8_t disk_led, pending_led;
@@ -18,7 +18,27 @@ static uint8_t request[64], response[96], last_led[4];
 static size_t request_len, response_len;
 static int led_commands, reject_led;
 static unsigned led_colors[8];
-static bool reject_capture, no_match;
+static bool reject_capture, no_match, reject_verify;
+static esp_reset_reason_t reset_reason = ESP_RST_POWERON;
+static bool have_manual_stage, stage_manual, fail_manual_save;
+static uint8_t disk_manual_stage, pending_manual_stage;
+static bool sensor_manual_saved, sensor_manual_active;
+static uint8_t reject_manual, physical_led;
+static unsigned manual_commands, automatic_lights, capture_commands;
+static int drop_led, drop_manual;
+
+esp_reset_reason_t esp_reset_reason(void) { return reset_reason; }
+static void sensor_power_cycle(void) {
+  reset_reason = ESP_RST_POWERON;
+  sensor_manual_active = sensor_manual_saved;
+  physical_led = sensor_manual_active ? 0 : FP_LED_BLUE;
+}
+
+static void automatic_light(uint8_t color) {
+  if (sensor_manual_active) return;
+  physical_led = color;
+  automatic_lights++;
+}
 
 TickType_t xTaskGetTickCount(void) { return clock_ticks++; }
 void vTaskDelay(TickType_t ticks) { clock_ticks += ticks; }
@@ -28,6 +48,7 @@ int xSemaphoreTake(SemaphoreHandle_t mutex, TickType_t ticks) {
 }
 int xSemaphoreGive(SemaphoreHandle_t mutex) { assert(*mutex); *mutex = 0; return pdTRUE; }
 int nvs_open(const char *name, int mode, nvs_handle_t *handle) {
+  if (strcmp(name, "tt_led") == 0) { *handle = 2; return ESP_OK; }
   assert(strcmp(name, "tt6") == 0); (void)mode; *handle = 1; return ESP_OK;
 }
 int nvs_get_blob(nvs_handle_t handle, const char *key, void *data, size_t *length) {
@@ -52,19 +73,33 @@ int nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, size_t 
   memcpy(&disk_config, data, length); have_config = true; return ESP_OK;
 }
 int nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *value) {
+  if (handle == 2) {
+    assert(strcmp(key, "manual") == 0);
+    if (!have_manual_stage) return ESP_ERR_NVS_NOT_FOUND;
+    *value = disk_manual_stage; return ESP_OK;
+  }
   (void)handle; assert(strcmp(key, "led_enabled") == 0);
   if (!have_led) return -1; *value = disk_led; return ESP_OK;
 }
 int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value) {
+  if (handle == 2) {
+    assert(strcmp(key, "manual") == 0);
+    pending_manual_stage = value; stage_manual = true; return ESP_OK;
+  }
   (void)handle; assert(strcmp(key, "led_enabled") == 0); pending_led = value; stage_led = true; return ESP_OK;
 }
 int nvs_commit(nvs_handle_t handle) {
+  if (handle == 2) {
+    if (fail_manual_save) return -1;
+    if (stage_manual) { disk_manual_stage = pending_manual_stage; have_manual_stage = true; stage_manual = false; }
+    return ESP_OK;
+  }
   (void)handle; if (fail_save) return -1;
   if (stage_profiles) { disk_profiles = staged_profiles; have_profiles = true; stage_profiles = false; }
   if (stage_led) { disk_led = pending_led; have_led = true; stage_led = false; }
   return ESP_OK;
 }
-void nvs_close(nvs_handle_t handle) { (void)handle; }
+void nvs_close(nvs_handle_t handle) { if (handle == 2) stage_manual = false; }
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224) {
   (void)is224; assert(length == 32); memcpy(output, data, 32); return ESP_OK;
 }
@@ -76,9 +111,23 @@ int uart_write_bytes(uart_port_t port, const void *data, size_t size) {
   if (instruction == 0x3c) {
     memcpy(last_led, request + 10, 4); led_commands++;
     assert(last_led[1] < 8); led_colors[last_led[1]]++;
+    if (drop_led > 0) { drop_led--; request_len = 0; return (int)size; }
     if (reject_led > 0) { reject_led--; confirm = 1; }
-  } else if (instruction == 0x01 && reject_capture) confirm = 2;
+    else physical_led = last_led[1];
+  } else if (instruction == 0x60) {
+    assert(request[8] == 4 && request[10] == 0);
+    manual_commands++;
+    if (drop_manual > 0) { drop_manual--; request_len = 0; return (int)size; }
+    confirm = reject_manual;
+    if (!confirm) sensor_manual_saved = true;
+  } else if (instruction == 0x13 && reject_verify) confirm = 0x13;
+  else if (instruction == 0x01) {
+    capture_commands++;
+    if (reject_capture) confirm = 2;
+    else automatic_light(FP_LED_BLUE);
+  }
   else if (instruction == 0x04) {
+    automatic_light(no_match ? FP_LED_RED : FP_LED_GREEN);
     extra = 4; payload[1] = search_slot; payload[3] = no_match ? 0 : 90;
   } else if (instruction == 0x0f) {
     extra = 16; payload[5] = sensor_capacity;
@@ -141,6 +190,7 @@ int main(void) {
   assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
   assert(device_config_mode() == DEVICE_MODE_HID && device_config_typing_delay_ms() == 23);
   // Reboot loads the saved preference before the sensor's first LED command.
+  sensor_power_cycle();
   device_config_init(); fingerprint_init(); expect_led(0);
   assert(device_config_led_mode() == DEVICE_LED_OFF);
   assert(fingerprint_authorize_poll_match().slot == 1); expect_led(0);

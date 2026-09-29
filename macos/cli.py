@@ -447,6 +447,8 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
         return "Update the tinyTouch CLI: enrollment now uses whole fingers instead of individual templates."
     if line == "ERR FINGER inventory_unavailable":
         return "Could not verify the sensor's occupied finger blocks. No enrollment was changed."
+    if line == "ERR SET LED reconnect_required":
+        return "LED preference saved. Unplug tinyTouch and reconnect it to finish applying the lighting setting."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -1155,7 +1157,13 @@ def command_led(args: argparse.Namespace) -> None:
         unlock(port, reason=f"set the sensor LED to {args.state}")
         value = {"off": 0, "on": 1, "only-auth": 2}[args.state]
         serial_command(port, f"SET LED {value}", timeout=5)
-        fresh_status(port, {"led": args.state})
+        updated = fresh_status(port, {"led": args.state})
+        if updated.get("led_control") == "reconnect":
+            say(f"Sensor LED preference saved as {args.state}.")
+            say("Unplug tinyTouch and reconnect it to finish disabling the sensor's automatic lighting.")
+            return
+        if updated.get("led_control") not in (None, "manual") or updated.get("led_sync") == "pending":
+            raise ToolError("LED preference saved, but the sensor has not applied it. Check 'tinytouch status' and retry.")
         say(f"Sensor LED is {args.state}. This setting is saved on tinyTouch.")
 
 
@@ -1499,6 +1507,8 @@ def command_update(args: argparse.Namespace) -> None:
     notify("tinyTouch update staged", "Unplug tinyTouch, reconnect it, then run tinytouch status.")
     say("OTA firmware is staged in the inactive slot.")
     say("Unplug tinyTouch and reconnect it once to boot the new firmware.")
+    if device.get("led") in ("off", "only-auth") and device.get("led_control") != "manual":
+        say(f"After it boots, run 'tinytouch led {device['led']}' and follow any additional reconnect prompt to finish the lighting update.")
 
 
 def command_rom(args: argparse.Namespace) -> None:

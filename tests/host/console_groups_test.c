@@ -30,6 +30,10 @@ int main(void) {
   set_value(locked_led); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
   assert(device_config_led_mode() == DEVICE_LED_ON);
   authorized_until = INT64_MAX;
+  char reconnect_led[] = "LED 0";
+  set_value(reconnect_led); assert(strcmp(last_reply, "ERR SET LED reconnect_required") == 0);
+  assert(device_config_led_mode() == DEVICE_LED_OFF);
+  sensor_power_cycle(); fingerprint_init();
   for (unsigned mode = 0; mode <= 2; mode++) {
     char value[16]; snprintf(value, sizeof(value), "LED %u", mode);
     set_value(value); assert(strcmp(last_reply, "OK SET") == 0);

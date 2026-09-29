@@ -419,6 +419,10 @@ static void touch_hid_task(void *arg) {
       }
     }
     bool present = fingerprint_present_hint();
+    // Prioritize a fresh touch, but keep retrying failed lighting cleanup while
+    // idle or waiting for lift, including after a foreground AUTH finishes.
+    if (runtime.state != AUTH_STATE_IDLE || !present || !runtime.presence_armed)
+      fingerprint_led_service();
 
     // Require an observed release before accepting the next asserted level.
     // This turns the touch signal into an edge, rather than continuously
@@ -434,8 +438,8 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    // Presence is the sole trigger for a capture. Idle operation never sends
-    // sensor commands and therefore never flashes a failure indication.
+    // Presence is the sole trigger for a capture. Idle lighting maintenance
+    // never captures or matches a fingerprint.
     if (!fingerprint_is_ready()) {
       // Recover in the background after a transient UART error. Throttle this
       // path so a disconnected sensor cannot monopolize the task.

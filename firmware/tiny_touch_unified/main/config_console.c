@@ -144,7 +144,7 @@ static void clear_ota(void) {
 }
 
 static void status(void) {
-  char line[320];
+  char line[384];
   int count = fingerprint_count();
   // fingerprint_count probes the UART and can update the live health state.
   // Read health after that probe so one STATUS line cannot say ready with an
@@ -152,12 +152,13 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1",
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 led_control=%s led_sync=%s",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
-           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name());
+           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name(),
+           fingerprint_led_control_status(), fingerprint_led_update_pending() ? "pending" : "synced");
   reply(line);
 }
 
@@ -177,8 +178,15 @@ static void set_value(char *arguments) {
   if (ok && strcmp(arguments, "TYPE_DELAY") == 0) ok = device_config_set_typing_delay_ms(number);
   else if (ok && strcmp(arguments, "SUBMIT_ENTER") == 0 && number <= 1) ok = device_config_set_submit_enter(number);
   else if (ok && strcmp(arguments, "COOLDOWN") == 0) ok = device_config_set_touch_cooldown_ms(number);
-  else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH)
+  else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH) {
     ok = fingerprint_set_led_mode((device_led_mode_t)number);
+    if (ok && strcmp(fingerprint_led_control_status(), "reconnect") == 0) {
+      // Older CLIs ignore new STATUS fields. Do not let them report that the
+      // light is off while the sensor still owns automatic feedback.
+      reply("ERR SET LED reconnect_required");
+      return;
+    }
+  }
   else ok = false;
   reply(ok ? "OK SET" : "ERR SET");
 }

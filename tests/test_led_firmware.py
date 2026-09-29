@@ -12,6 +12,9 @@ class LedFirmwareTests(unittest.TestCase):
     def test_saved_led_control_and_fingerprint_results(self):
         self.run_firmware_case("led_test.c")
 
+    def test_sensor_lighting_migration_and_failed_updates(self):
+        self.run_firmware_case("led_faults_test.c")
+
     def test_fixed_finger_blocks_and_interrupted_enrollment(self):
         self.run_firmware_case("finger_groups_test.c")
 
@@ -23,7 +26,7 @@ class LedFirmwareTests(unittest.TestCase):
             build = Path(directory)
             for name in (
                 "freertos/FreeRTOS.h", "freertos/semphr.h", "freertos/task.h",
-                "driver/uart.h", "driver/gpio.h", "esp_log.h", "nvs.h", "mbedtls/sha256.h",
+                "driver/uart.h", "driver/gpio.h", "esp_log.h", "esp_system.h", "nvs.h", "mbedtls/sha256.h",
             ):
                 header = build / name
                 header.parent.mkdir(parents=True, exist_ok=True)

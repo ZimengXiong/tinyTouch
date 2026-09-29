@@ -10,6 +10,8 @@ typedef int portMUX_TYPE;
 typedef int uart_port_t;
 typedef int esp_err_t;
 typedef int nvs_handle_t;
+typedef enum { ESP_RST_POWERON, ESP_RST_SW, ESP_RST_WDT, ESP_RST_BROWNOUT } esp_reset_reason_t;
+esp_reset_reason_t esp_reset_reason(void);
 typedef struct { uint64_t pin_bit_mask; int mode, pull_up_en, pull_down_en, intr_type; } gpio_config_t;
 typedef struct { int baud_rate, data_bits, parity, stop_bits, flow_ctrl, source_clk; } uart_config_t;
 #define pdTRUE 1
