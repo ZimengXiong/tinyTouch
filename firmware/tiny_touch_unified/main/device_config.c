@@ -26,6 +26,7 @@ typedef struct {
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
 static bool led_enabled = true;
+static bool piv_touch_enabled;
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -90,6 +91,12 @@ void device_config_init(void) {
   led_enabled = true;
   if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK && stored_led <= 1)
     led_enabled = stored_led != 0;
+  // A separate optional key preserves the protocol-6 configuration blob and
+  // existing pairings. Older firmware has no key and retains always-on PIV.
+  uint8_t stored_piv_touch = 0;
+  piv_touch_enabled = loaded_ok &&
+      nvs_get_u8(handle, "piv_touch", &stored_piv_touch) == ESP_OK &&
+      stored_piv_touch == 1;
   if (opened) nvs_close(handle);
   lock();
   if (loaded_ok) config = loaded;
@@ -186,5 +193,24 @@ bool device_config_set_led_enabled(bool value) {
 
 bool device_config_factory_reset(void) {
   if (!device_config_set_led_enabled(true)) return false;
+  if (!device_config_set_piv_touch_enabled(false)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
+}
+
+bool device_config_piv_touch_enabled(void) {
+  lock(); bool value = piv_touch_enabled; unlock(); return value;
+}
+
+bool device_config_set_piv_touch_enabled(bool value) {
+  lock();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, "piv_touch", value ? 1 : 0);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) piv_touch_enabled = value;
+  unlock();
+  return result == ESP_OK;
 }

@@ -1,6 +1,7 @@
 #include "tusb.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_mac.h"
 
@@ -44,9 +45,7 @@ const tusb_desc_device_t tiny_touch_device_descriptor = {
   .bNumConfigurations = 0x01,
 };
 
-// The USB topology is deliberately stable for the full power session. Mode is
-// a live policy decision, not a descriptor-selection or reboot decision.
-const uint8_t tiny_touch_configuration_descriptor[] = {
+static const uint8_t piv_configuration[] = {
   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN,
                         TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
 
@@ -82,6 +81,30 @@ const uint8_t tiny_touch_configuration_descriptor[] = {
   TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 0, EPNUM_CDC_NOTIF, 8,
                      EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
 };
+
+// Reserve interface 0 so HID and CDC keep their interface numbers across a
+// reconnect. This empty vendor interface advertises no smart-card capability.
+static const uint8_t idle_configuration[] = {
+  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0,
+      TUD_CONFIG_DESC_LEN + 9 + TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN,
+      TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+  9, TUSB_DESC_INTERFACE, ITF_NUM_CCID, 0, 0, TUSB_CLASS_VENDOR_SPECIFIC, 0, 0, 0,
+  TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD,
+      sizeof(tiny_touch_hid_report_descriptor), EPNUM_HID, 8, 10),
+  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 0, EPNUM_CDC_NOTIF, 8,
+      EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
+};
+
+// esp_tinyusb retains this pointer. Replace its contents only while detached,
+// on the USB task, so a descriptor transfer cannot race the change.
+uint8_t tiny_touch_configuration_descriptor[CONFIG_TOTAL_LEN];
+
+void tiny_touch_set_piv_descriptor(bool exposed) {
+  memset(tiny_touch_configuration_descriptor, 0, CONFIG_TOTAL_LEN);
+  memcpy(tiny_touch_configuration_descriptor,
+         exposed ? piv_configuration : idle_configuration,
+         exposed ? sizeof(piv_configuration) : sizeof(idle_configuration));
+}
 
 static char tiny_touch_serial[20] = "TT-PIV-PROTOTYPE";
 

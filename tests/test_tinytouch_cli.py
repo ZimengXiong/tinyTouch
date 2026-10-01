@@ -376,6 +376,7 @@ class ProtocolSixTests(unittest.TestCase):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         calls = []
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]),
             mock.patch.object(cli, "authorize_macos", side_effect=lambda: calls.append("sudo")),
@@ -394,6 +395,7 @@ class ProtocolSixTests(unittest.TestCase):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -422,6 +424,7 @@ class ProtocolSixTests(unittest.TestCase):
             stderr="",
         )
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -440,6 +443,7 @@ class ProtocolSixTests(unittest.TestCase):
         identities = ["A" * 40, "B" * 40]
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], identities)

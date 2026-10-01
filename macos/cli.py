@@ -1100,6 +1100,26 @@ def command_led(args: argparse.Namespace) -> None:
         say(f"Sensor LED is {args.state}. This setting is saved on tinyTouch.")
 
 
+def command_piv_touch(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        if "piv_touch" not in device:
+            raise ToolError(
+                "This firmware does not support touch-activated PIV. Run 'tinytouch update', "
+                "then unplug and reconnect tinyTouch before trying again."
+            )
+        unlock(port, reason=f"turn touch-activated PIV {args.state}")
+        serial_command(port, f"SET PIV_TOUCH {int(args.state == 'on')}", timeout=5)
+        fresh_status(port, {"piv_touch": args.state})
+    say(f"Touch-activated PIV is saved as {args.state}.")
+    say("Unplug and reconnect tinyTouch to apply this setting.")
+    if args.state == "on":
+        say("PIV stays hidden until touch, allowing password entry while idle. "
+            "Fingerprint login takes slightly longer while macOS discovers the card.")
+
+
 def command_config(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
@@ -1539,6 +1559,8 @@ def command_pair(
     separate_identity_list: bool = False,
 ) -> None:
     require_macos()
+    port = choose_port(args.port)
+    prepare_piv_discovery(port)
     paired, available = identities or wait_for_piv_identities()
     if paired:
         say("PIV is already paired with this Mac.")
@@ -1563,13 +1585,23 @@ def command_pair(
     # Obtain sudo first, then grant fresh device presence. Enrollment and a
     # terminal password prompt can outlive firmware's short PIV authorization.
     authorize_macos()
-    port = choose_port(args.port)
+    # Selecting an identity or entering the macOS password can outlast the
+    # discovery window. Reopen first, then grant presence after the USB reset.
+    reopened = prepare_piv_discovery(port, refresh=True)
+    if reopened:
+        _, available_now = wait_for_piv_identities()
+        if identity not in available_now and identity not in paired_piv_identities():
+            raise ToolError("The selected PIV identity is no longer available. Try pairing again.")
     say("")
-    unlock(
-        port,
-        explain_pin=True,
-        reason="pair PIV with this Mac",
-    )
+    if reopened is not False:
+        unlock(
+            port,
+            explain_pin=True,
+            reason="pair PIV with this Mac",
+        )
+    else:
+        # Refresh authorized a card that was already visible, without a reset.
+        explain_piv_pin()
     keychain_warning = False
     try:
         result = run(
@@ -1613,6 +1645,29 @@ def command_pair(
     say("PIV is paired with this Mac.")
 
 
+def prepare_piv_discovery(port: str, *, refresh: bool = False) -> bool | None:
+    """Expose for pairing; return whether USB resets, or None for legacy mode."""
+    with foreground_session(port):
+        device = status(port)
+        if device.get("piv_touch_active") != "on":
+            return None
+        if device.get("mode") != "piv" or device.get("piv") != "ready":
+            raise ToolError("Select PIV mode and create a PIV identity before pairing.")
+        visible = device.get("piv_visible") == "yes"
+        if visible and not refresh:
+            return False
+        unlock(port, reason="make the PIV identity available for pairing")
+        response = serial_command(port, "PIV OPEN", timeout=5)
+    # Visibility may have expired while AUTH waited for the user's finger.
+    # Use the device's decision at OPEN, not the earlier STATUS snapshot.
+    if not any("reconnect=required" in line for line in response):
+        return False
+    # The device deliberately drains its reply before disconnecting CDC.
+    time.sleep(1)
+    fresh_status(port, {"piv_visible": "yes"})
+    return True
+
+
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tinytouch")
     parser.add_argument("--verbose", action="store_true")
@@ -1632,6 +1687,11 @@ def parser() -> argparse.ArgumentParser:
     led.add_argument("state", choices=("on", "off"))
     led.add_argument("--port")
     led.set_defaults(func=command_led)
+
+    piv_touch = sub.add_parser("piv-touch", help="allow password entry in PIV mode by hiding the card until touch")
+    piv_touch.add_argument("state", choices=("on", "off"))
+    piv_touch.add_argument("--port")
+    piv_touch.set_defaults(func=command_piv_touch)
     config = sub.add_parser("config")
     config.add_argument("name")
     config.add_argument("value", nargs="?")

@@ -16,6 +16,7 @@
 #include "mbedtls/md.h"
 #include "piv.h"
 #include "usb_descriptors.h"
+#include "usb_ccid.h"
 
 static const char *TAG = "touch_hid";
 static const uint8_t ascii_to_keycode[128][2] = {HID_ASCII_TO_KEYCODE};
@@ -369,7 +370,14 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     // The PIV applet accepts this PIN. Emit it only after a verified background
     // fingerprint match, so the macOS smart-card PIN field can complete login.
     static const uint8_t piv_pin[] = {'1', '1', '1', '1', '1', '1'};
+    if (!usb_ccid_wait_for_piv()) {
+      usb_ccid_touch_cancel();
+      touch_pin_hid_log_event("piv_discovery_timeout", match.slot);
+      return;
+    }
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
+    // Re-enumeration resets transport authorization. Grant presence only
+    // after enumeration and discovery have completed.
     piv_note_user_presence();
     bool typed = type_ascii(piv_pin, sizeof(piv_pin));
     touch_pin_hid_log_event(typed ? "piv_pin_typed" : "piv_pin_failed", match.slot);
@@ -458,8 +466,10 @@ static void touch_hid_task(void *arg) {
 
     runtime.presence_armed = false;
     touch_pin_hid_log_event("touch_detected", 0);
+    usb_ccid_touch_begin();
     fingerprint_match_t match = fingerprint_authorize_poll_match();
     if (match.slot == 0) {
+      usb_ccid_touch_cancel();
       touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(350));

@@ -7,6 +7,9 @@ static int mutexes[32], mutex_count;
 static stored_config_t disk_config;
 static bool have_config, have_led, fail_save;
 static uint8_t disk_led, pending_led;
+static bool have_piv_touch;
+static uint8_t disk_piv_touch, pending_piv_touch;
+static bool write_piv_touch, write_led;
 static uint8_t request[64], response[32], last_led[4];
 static size_t request_len, response_len;
 static int led_commands, reject_led;
@@ -33,15 +36,25 @@ int nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, size_t 
   memcpy(&disk_config, data, length); have_config = true; return ESP_OK;
 }
 int nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *value) {
-  (void)handle; assert(strcmp(key, "led_enabled") == 0);
+  (void)handle;
+  if (strcmp(key, "piv_touch") == 0) {
+    if (!have_piv_touch) return -1; *value = disk_piv_touch; return ESP_OK;
+  }
+  assert(strcmp(key, "led_enabled") == 0);
   if (!have_led) return -1; *value = disk_led; return ESP_OK;
 }
 int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value) {
-  (void)handle; assert(strcmp(key, "led_enabled") == 0); pending_led = value; return ESP_OK;
+  (void)handle;
+  if (strcmp(key, "piv_touch") == 0) { pending_piv_touch = value; write_piv_touch = true; return ESP_OK; }
+  assert(strcmp(key, "led_enabled") == 0); pending_led = value; write_led = true; return ESP_OK;
 }
 int nvs_commit(nvs_handle_t handle) {
   (void)handle; if (fail_save) return -1;
-  disk_led = pending_led; have_led = true; return ESP_OK;
+  if (write_piv_touch) {
+    disk_piv_touch = pending_piv_touch; have_piv_touch = true; write_piv_touch = false;
+  }
+  if (write_led) { disk_led = pending_led; have_led = true; write_led = false; }
+  return ESP_OK;
 }
 void nvs_close(nvs_handle_t handle) { (void)handle; }
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224) {
@@ -94,6 +107,15 @@ int main(void) {
   disk_config.typing_delay_ms = 23; have_config = true;
   stored_config_t before = disk_config;
   device_config_init(); assert(device_config_led_enabled());
+  assert(!device_config_piv_touch_enabled());
+  assert(device_config_set_piv_touch_enabled(true));
+  assert(device_config_piv_touch_enabled());
+  device_config_init(); assert(device_config_piv_touch_enabled());
+  assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
+  fail_save = true;
+  assert(!device_config_set_piv_touch_enabled(false));
+  assert(device_config_piv_touch_enabled());
+  fail_save = false; write_piv_touch = false;
   fingerprint_init(); expect_led(FP_LED_BLUE);
   assert(fingerprint_set_led_enabled(false)); expect_led(0);
   assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
@@ -119,6 +141,9 @@ int main(void) {
   assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
   fingerprint_led_idle(); expect_led(FP_LED_BLUE);
   assert(device_config_factory_reset()); assert(device_config_led_enabled());
+  assert(!device_config_piv_touch_enabled());
+  device_config_init(); assert(!device_config_piv_touch_enabled());
+  disk_piv_touch = 99; device_config_init(); assert(!device_config_piv_touch_enabled());
   assert(device_config_mode() == DEVICE_MODE_PIV && device_config_hid_host_count() == 0);
   return 0;
 }

@@ -61,6 +61,24 @@ To upgrade from an older release, run `tinytouch update`, unplug and reconnect
 once when prompted, then run `tinytouch led off`. Use `tinytouch led on` to restore
 the default lighting.
 
+## `piv-touch`
+
+```text
+tinytouch piv-touch {on,off} [--port PATH]
+```
+
+Enables or disables touch activation for PIV mode. Requires firmware 0.1.30 or
+later and fingerprint approval on an enrolled device. Unplug and reconnect to
+apply the saved setting.
+
+When enabled, the smart-card interface stays hidden until touch, keeping
+password entry available while idle. A fingerprint match still authorizes PIV
+authentication. Discovery adds a short login delay; the card hides again after
+20 seconds, or after a failed match. The default is `off`.
+
+See [Device configuration](/reference/configuration#password-entry-in-piv-mode)
+for setup behavior and visibility windows.
+
 ## `status`
 
 ```text
@@ -77,6 +95,9 @@ Prints JSON containing:
 | `mode` | `piv` or `hid` |
 | `piv` | `ready` or `unconfigured` |
 | `led` | Saved sensor LED setting: `on` or `off` (firmware 0.1.29+) |
+| `piv_touch` | Saved touch activation preference: `on` or `off` (firmware 0.1.30+) |
+| `piv_touch_active` | Touch activation setting applied at boot: `on` or `off` |
+| `piv_visible` | Whether USB currently exposes the smart-card interface: `yes` or `no` |
 | `sensor` | `ready` or `offline` after a live UART probe |
 | `fingerprints` | Number of occupied sensor slots |
 | `hosts` | Number of registered HID computers |
@@ -147,6 +168,8 @@ tinytouch pair [--port PATH]
 ```
 
 Pairs the PIV identity with the current macOS user. Requires administrator and fingerprint approval.
+When touch activation is enabled, this command temporarily exposes the PIV
+identity for discovery and renews the setup window before pairing.
 
 ## `update`
 

@@ -38,3 +38,5 @@ bool device_config_factory_reset(void);
 
 bool device_config_led_enabled(void);
 bool device_config_set_led_enabled(bool value);
+bool device_config_piv_touch_enabled(void);
+bool device_config_set_piv_touch_enabled(bool value);
