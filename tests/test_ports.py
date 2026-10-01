@@ -107,6 +107,7 @@ class HelperDiscoveryTests(unittest.TestCase):
 
 
 class NativeMemoryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires native macOS IOKit")
     def test_repeated_scans_have_bounded_native_memory(self):
         # Use a fresh process so earlier tests cannot hide growth behind their
         # peak RSS. Python allocation tracking cannot detect CF/IOKit leaks.

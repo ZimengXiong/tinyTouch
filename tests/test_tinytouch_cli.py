@@ -20,6 +20,26 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_chime_is_nonblocking_and_does_not_overlap(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        with (mock.patch.object(cli.sys, "platform", "darwin"),
+              mock.patch.dict(cli.os.environ, {}, clear=True),
+              mock.patch.object(cli.Path, "is_file", return_value=True),
+              mock.patch.object(cli, "_sound_process", None),
+              mock.patch.object(cli.subprocess, "Popen", return_value=process) as start):
+            cli.chime("Tink")
+            cli.chime("Pop")
+        start.assert_called_once()
+        process.wait.assert_not_called()
+
+    def test_sound_preference_disables_afplay(self):
+        with (mock.patch.object(cli.sys, "platform", "darwin"),
+              mock.patch.dict(cli.os.environ, {"TINYTOUCH_NO_SOUND": "1"}),
+              mock.patch.object(cli.subprocess, "Popen") as start):
+            cli.chime("Glass")
+        start.assert_not_called()
+
     def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
         for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
             with (
