@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_integrity import checked_version
+
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -78,6 +80,7 @@ def main() -> None:
     parser.add_argument("--build-id")
     args = parser.parse_args()
 
+    checked_version(VERSION)
     output = args.output.resolve()
     if output.exists():
         shutil.rmtree(output)
