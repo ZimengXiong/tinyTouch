@@ -100,6 +100,7 @@ COMMAND_TITLES = {
     "menu": "tinyTouch",
     "setup": "Setup",
     "mode": "Mode",
+    "piv-touch": "Touch-activated PIV",
     "led": "Lighting",
     "config": "Settings",
     "settings": "Settings",
@@ -1564,9 +1565,6 @@ def command_piv_touch(args: argparse.Namespace) -> None:
         fresh_status(port, {"piv_touch": args.state})
     say(f"Touch-activated PIV is saved as {args.state}.")
     say("Unplug and reconnect tinyTouch to apply this setting.")
-    if args.state == "on":
-        say("PIV stays hidden until touch, allowing password entry while idle. "
-            "Fingerprint login takes slightly longer while macOS discovers the card.")
 
 
 def command_config(args: argparse.Namespace) -> None:
@@ -2351,14 +2349,14 @@ def interactive_config() -> list[str] | None:
     return prompt_setting(name)
 
 
-def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
+def interactive_command(args: argparse.Namespace, command: list[str]) -> bool:
     """Resolve interactive parameters, then use the regular CLI parser and handler."""
     global _sudo_session_ready, _setup_password
     command = list(command)
     if command[0] in {"setup", "mode"} and len(command) == 1:
         mode = select_option("Mode", list(MODE_OPTIONS))
         if mode is None:
-            return
+            return False
         command.extend(["--mode", mode] if command[0] == "setup" else [mode])
     elif command == ["led"]:
         state = select_option(
@@ -2370,37 +2368,37 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
             ],
         )
         if state is None:
-            return
+            return False
         command.append(state)
     elif command == ["piv-touch"]:
         state = select_option(
             "Touch-activated PIV", [("on", "Enable"), ("off", "Disable")]
         )
         if state is None:
-            return
+            return False
         command.append(state)
     elif command == ["led", "preset"]:
         preset = select_option("LED preset", [(key, key.capitalize()) for key in LED_PRESETS])
         if preset is None:
-            return
+            return False
         command.append(preset)
     elif command == ["led", "preview"]:
         color = select_option("Preview color", [(key, key.capitalize()) for key in LED_COLORS])
         if color is None:
-            return
+            return False
         effect = select_option("Preview effect", [(key, key.capitalize()) for key in LED_EFFECTS])
         if effect is None:
-            return
+            return False
         command.extend([color, "--effect", effect])
     elif command[0] in {"enroll", "delete"}:
         selected = interactive_finger(args, command[0])
         if selected is None:
-            return
+            return False
         command = selected
     elif command == ["computers", "remove"]:
         selected = interactive_computer(args)
         if selected is None:
-            return
+            return False
         command = selected
     elif command[0] == "config":
         if len(command) > 1 and command[1] in {"show", "list"}:
@@ -2408,7 +2406,7 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
         else:
             selected = prompt_setting(command[1]) if len(command) > 1 else interactive_config()
         if selected is None:
-            return
+            return False
         command = selected
     global_options = ["--verbose"] if args.verbose else []
     if args.port:
@@ -2428,6 +2426,7 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
             _setup_password[:] = b"\x00" * len(_setup_password)
             _setup_password = None
 
+    return True
 
 INTERACTIVE_MENUS = {
     "home": (
@@ -2523,33 +2522,23 @@ INTERACTIVE_MENUS = {
 }
 
 
-def interactive_menu(args: argparse.Namespace, name: str = "home") -> None:
+def interactive_menu(args: argparse.Namespace, name: str = "home") -> bool:
+    """Return True after an action, or False when the user goes back."""
     title, entries = INTERACTIVE_MENUS[name]
     while True:
-        try:
-            selected = select_option(
-                title,
-                [(key, label) for key, label, _target in entries],
-                back="Exit" if name == "home" else "Back",
-            )
-        except KeyboardInterrupt:
-            say("\nCancelled.")
-            return
+        selected = select_option(
+            title,
+            [(key, label) for key, label, _target in entries],
+            back="Exit" if name == "home" else "Back",
+        )
         if selected is None:
-            return
-        try:
-            target = next(target for key, _label, target in entries if key == selected)
-            if isinstance(target, str):
-                interactive_menu(args, target)
-            else:
-                interactive_command(args, target)
-        except KeyboardInterrupt:
-            say("\nCancelled.")
-        except ToolError as exc:
-            # EOF closes the entire menu session, including nested menus.
-            if isinstance(exc.__cause__, EOFError):
-                raise
-            say(f"Error: {exc}")
+            return False
+        target = next(target for key, _label, target in entries if key == selected)
+        if isinstance(target, str):
+            if interactive_menu(args, target):
+                return True
+        elif interactive_command(args, target):
+            return True
 
 
 def command_menu(args: argparse.Namespace) -> None:
@@ -2810,7 +2799,7 @@ def parser() -> argparse.ArgumentParser:
     help_cmd.add_argument("topic", nargs="?", help="Select a command to explain.")
     help_cmd.set_defaults(func=command_help)
     examples = {
-        "menu": ("Open the interactive menu. Select an option by number or name. Select 0 to return or exit.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
+        "menu": ("Choose an action with the arrow keys and Enter. The CLI exits after the action finishes.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
         "setup": ("Configure this Mac. Enroll a fingerprint if the sensor is empty. Keep any existing fingerprint enrollment.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
         "mode": ("Change the device mode after fingerprint approval. Reconnect when prompted. The command checks the active mode.", "tinytouch mode hid\ntinytouch mode piv"),
         "enroll": ("Enroll the left, right, top, and center views of the same finger. Confirm replacement before using an occupied fingerprint block.", "tinytouch enroll 2\ntinytouch enroll 2 --replace"),
@@ -2864,7 +2853,7 @@ def main() -> int:
         say("Cancelled.")
         return 130
     except ToolError as exc:
-        print(f"Error: {exc}", file=sys.stderr, flush=True)
+        print(terminal_style(f"Error: {exc}", "31"), file=sys.stderr, flush=True)
         return 1
     return 0
 

@@ -95,45 +95,35 @@ class InteractiveCliTests(unittest.TestCase):
         with (
             mock.patch(
                 "builtins.input",
-                side_effect=["5", "fingers", "list", "back", "0", "4", "q"],
+                side_effect=["5", "fingers", "back", "0", "4"],
             ),
             mock.patch.object(cli, "command_fingers") as fingers,
             mock.patch.object(cli, "command_status") as status,
         ):
             cli.interactive_menu(self.args)
-        fingers.assert_called_once()
+        fingers.assert_not_called()
         status.assert_called_once()
 
-    def test_advanced_navigation_keeps_piv_and_recovery_commands_available(self):
-        with (
-            mock.patch(
-                "builtins.input",
-                side_effect=[
-                    "advanced",
-                    "piv",
-                    "pair",
-                    "0",
-                    "diagnostics",
-                    "repair",
-                    "0",
-                    "0",
-                    "0",
-                ],
-            ),
-            mock.patch.object(cli, "command_pair") as pair,
-            mock.patch.object(cli, "command_repair") as repair,
+    def test_advanced_actions_exit_from_nested_menus(self):
+        for path, handler_name in (
+            (["advanced", "piv", "pair"], "command_pair"),
+            (["advanced", "diagnostics", "repair"], "command_repair"),
         ):
-            cli.interactive_menu(self.args)
-        pair.assert_called_once()
-        repair.assert_called_once()
+            with (
+                self.subTest(path=path),
+                mock.patch("builtins.input", side_effect=path) as prompt,
+                mock.patch.object(cli, handler_name) as handler,
+            ):
+                self.assertTrue(cli.interactive_menu(self.args))
+                handler.assert_called_once()
+                self.assertEqual(prompt.call_count, len(path))
 
     def test_home_status_uses_summary_and_advanced_status_keeps_details(self):
         with (
-            mock.patch(
-                "builtins.input", side_effect=["4", "5", "full status", "0", "0"]
-            ),
+            mock.patch("builtins.input", side_effect=["4", "5", "full status"]),
             mock.patch.object(cli, "command_status") as status,
         ):
+            cli.interactive_menu(self.args)
             cli.interactive_menu(self.args)
         self.assertEqual(
             [call.args[0].summary for call in status.call_args_list], [True, False]
@@ -219,35 +209,54 @@ class InteractiveCliTests(unittest.TestCase):
             cli.interactive_command(self.args, ["mode"])
         handler.assert_not_called()
 
-    def test_device_error_keeps_menu_available(self):
+    def test_failed_action_exits_without_redrawing_menu(self):
         with (
-            mock.patch("builtins.input", side_effect=["status", "advanced", "test", "0", "0"]),
-            mock.patch.object(cli, "command_status", side_effect=cli.ToolError("Device disconnected")),
-            mock.patch.object(cli, "command_test") as test,
+            mock.patch("builtins.input", return_value="status") as prompt,
+            mock.patch.object(
+                cli, "command_status", side_effect=cli.ToolError("Device disconnected")
+            ),
+            self.assertRaisesRegex(cli.ToolError, "Device disconnected"),
         ):
             cli.interactive_menu(self.args)
-        test.assert_called_once()
-        self.assertIn("Error: Device disconnected", self.output.getvalue())
+        prompt.assert_called_once()
 
-    def test_action_interrupt_keeps_menu_available(self):
+    def test_action_interrupt_exits_without_redrawing_menu(self):
         with (
-            mock.patch("builtins.input", side_effect=["status", "advanced", "test", "0", "0"]),
+            mock.patch("builtins.input", return_value="status") as prompt,
             mock.patch.object(cli, "command_status", side_effect=KeyboardInterrupt),
-            mock.patch.object(cli, "command_test") as test,
+            self.assertRaises(KeyboardInterrupt),
         ):
             cli.interactive_menu(self.args)
-        test.assert_called_once()
-        self.assertIn("Cancelled.", self.output.getvalue())
+        prompt.assert_called_once()
 
     def test_eof_in_submenu_closes_session(self):
         self.terminal()
-        with mock.patch("builtins.input", side_effect=["advanced", "fingers", EOFError]):
+        with mock.patch(
+            "builtins.input", side_effect=["advanced", "fingers", EOFError]
+        ):
             cli.command_menu(self.args)
 
-    def test_prompt_interrupt_returns_from_submenu(self):
-        with mock.patch("builtins.input", side_effect=["advanced", "fingers", KeyboardInterrupt, "0", "0"]):
+    def test_prompt_interrupt_exits_nested_menus(self):
+        with (
+            mock.patch(
+                "builtins.input", side_effect=["advanced", "fingers", KeyboardInterrupt]
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
             cli.interactive_menu(self.args)
-        self.assertIn("Cancelled.", self.output.getvalue())
+
+    def test_cancelled_parameter_returns_to_menu_without_running_action(self):
+        with (
+            mock.patch(
+                "builtins.input", side_effect=["setup", "0", "status"]
+            ) as prompt,
+            mock.patch.object(cli, "command_setup") as setup,
+            mock.patch.object(cli, "command_status") as status,
+        ):
+            self.assertTrue(cli.interactive_menu(self.args))
+        setup.assert_not_called()
+        status.assert_called_once()
+        self.assertEqual(prompt.call_count, 3)
 
     def inventory(self, groups, available):
         self.enterContext(mock.patch.object(cli, "choose_port", return_value="selected"))
