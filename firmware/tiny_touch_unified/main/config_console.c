@@ -12,7 +12,6 @@
 #include "mbedtls/base64.h"
 #include "nvs_flash.h"
 #include "tusb.h"
-#include "tinyusb_cdc_acm.h"
 
 #include "device_config.h"
 #include "fingerprint.h"
@@ -494,10 +493,10 @@ static void handle_command(void) {
   else reply("ERR COMMAND");
 }
 
-static void console_rx(int interface, cdcacm_event_t *event) {
-  (void)interface;
-  (void)event;
-  xSemaphoreGive(rx_signal);
+void tud_cdc_rx_cb(uint8_t interface) {
+  // Use the same native TinyUSB callback layer as enrollment's DTR handling.
+  // The esp_tinyusb CDC adapter defines its own DTR callback when linked.
+  if (interface == 0 && rx_signal) xSemaphoreGive(rx_signal);
 }
 
 static void console_task(void *arg) {
@@ -540,11 +539,6 @@ void config_console_start(void) {
   configASSERT(write_lock);
   rx_signal = xSemaphoreCreateBinary();
   configASSERT(rx_signal);
-  const tinyusb_config_cdcacm_t cdc = {
-    .cdc_port = TINYUSB_CDC_ACM_0,
-    .callback_rx = console_rx,
-  };
-  ESP_ERROR_CHECK(tinyusb_cdcacm_init(&cdc));
   BaseType_t created = xTaskCreate(console_task, "console", 6144, NULL, 3, NULL);
   configASSERT(created == pdPASS);
 }
