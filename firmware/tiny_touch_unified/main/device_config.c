@@ -58,7 +58,7 @@ static void defaults(stored_config_t *value) {
   value->version = CONFIG_VERSION;
   value->mode = DEVICE_MODE_PIV;
   value->submit_enter = 1;
-  value->typing_delay_ms = 7;
+  value->typing_delay_ms = 1;
   value->touch_cooldown_ms = 800;
 }
 

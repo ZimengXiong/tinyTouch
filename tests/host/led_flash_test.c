@@ -13,7 +13,7 @@ int main(void) {
   // Reproduce the reported flash. A final off command hides the transient
   // animation from tests that inspect only the last physical LED state.
   unsigned green = visible_green;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert(physical_led == 0 && visible_green > green);
   assert(strcmp(fingerprint_led_control_status(), "reconnect") == 0);
 
@@ -25,11 +25,11 @@ int main(void) {
   for (unsigned mode = DEVICE_MODE_PIV; mode <= DEVICE_MODE_HID; mode++) {
     assert(device_config_set_mode((device_mode_t)mode));
     for (unsigned attempt = 0; attempt < 3; attempt++) {
-      assert(fingerprint_authorize_poll_match().slot == 1);
+      assert(poll_match_with_led().slot == 1);
       fingerprint_led_idle();
       assert(fingerprint_authorize_prompted(NULL));
       no_match = true;
-      assert(!fingerprint_authorize_poll_match().slot);
+      assert(!poll_match_with_led().slot);
       no_match = false;
     }
   }
@@ -41,12 +41,12 @@ int main(void) {
 
   // Authentication-only remains a distinct setting with intentional feedback.
   assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH));
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert(visible_green > green);
   fingerprint_led_idle(); assert(physical_led == 0);
   assert(fingerprint_set_led_mode(DEVICE_LED_OFF));
   green = visible_green;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert(visible_green == green && physical_led == 0);
   return 0;
 }

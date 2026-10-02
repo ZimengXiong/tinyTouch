@@ -29,6 +29,16 @@ class LeaseProtocolError(RuntimeError):
     """The helper did not acknowledge a valid foreground lease."""
 
 
+def read_available(ser) -> bytes:
+    """Wait for one serial byte or drain a bounded batch already available.
+
+    read(256) waits for 256 bytes or the serial timeout even when a complete
+    shorter event has arrived. Preserve the timeout for idle/disconnect checks
+    without making complete frames wait for it.
+    """
+    return ser.read(min(256, ser.in_waiting or 1))
+
+
 def atomic_write_bytes(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     """Replace a file durably without exposing partial content."""
     path.parent.mkdir(parents=True, exist_ok=True)

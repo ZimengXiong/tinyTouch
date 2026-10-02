@@ -63,3 +63,20 @@ int nvs_set_u16(nvs_handle_t handle, const char *key, uint16_t value);
 int nvs_commit(nvs_handle_t handle);
 void nvs_close(nvs_handle_t handle);
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224);
+
+typedef void *TaskHandle_t;
+typedef int BaseType_t;
+#define pdFALSE 0
+#define pdPASS 1
+#define GPIO_INTR_ANYEDGE 3
+#define portYIELD_FROM_ISR() ((void)0)
+static inline SemaphoreHandle_t xSemaphoreCreateBinary(void) { return xSemaphoreCreateMutex(); }
+static inline int xSemaphoreGiveFromISR(SemaphoreHandle_t signal, BaseType_t *wake) { (void)signal; *wake = 0; return pdTRUE; }
+static inline unsigned ulTaskNotifyTake(int clear, TickType_t wait) { (void)clear; (void)wait; return 0; }
+static inline void xTaskNotifyGive(TaskHandle_t task) { assert(task); }
+static inline int xTaskCreate(void (*task)(void *), const char *name, int stack, void *arg, int priority, TaskHandle_t *handle) {
+  (void)task; (void)name; (void)stack; (void)arg; (void)priority; *handle = (void *)1; return pdPASS;
+}
+static inline int gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
+static inline int gpio_isr_handler_add(int pin, void (*handler)(void *), void *arg) { (void)pin; (void)handler; (void)arg; return ESP_OK; }
+static inline int uart_set_rx_timeout(int port, int symbols) { (void)port; assert(symbols == 2); return ESP_OK; }

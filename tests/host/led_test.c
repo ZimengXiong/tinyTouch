@@ -3,6 +3,13 @@
 #include "../../firmware/tiny_touch_unified/main/finger_profiles.c"
 #include "../../firmware/tiny_touch_unified/main/fingerprint.c"
 
+// Run the queued LED task explicitly; production capture returns first.
+static fingerprint_match_t poll_match_with_led(void) {
+  fingerprint_match_t match = fingerprint_authorize_poll_match();
+  (void)service_result_led();
+  return match;
+}
+
 static TickType_t clock_ticks;
 static int mutexes[128], mutex_count;
 static stored_config_t disk_config;
@@ -258,10 +265,10 @@ int main(void) {
   sensor_power_cycle();
   device_config_init(); fingerprint_init(); expect_led(0);
   assert(device_config_led_mode() == DEVICE_LED_OFF);
-  assert(fingerprint_authorize_poll_match().slot == 1); expect_led(0);
-  no_match = true; assert(fingerprint_authorize_poll_match().slot == 0); expect_led(0);
+  assert(poll_match_with_led().slot == 1); expect_led(0);
+  no_match = true; assert(poll_match_with_led().slot == 0); expect_led(0);
   no_match = false; reject_capture = true;
-  assert(fingerprint_authorize_poll_match().slot == 0); expect_led(0); reject_capture = false;
+  assert(poll_match_with_led().slot == 0); expect_led(0); reject_capture = false;
   show_result(true); expect_led(0); show_result(false); expect_led(0);
   assert(fingerprint_recover()); expect_led(0);
   // A failed commit must not change the live preference or claim success.
@@ -273,7 +280,7 @@ int main(void) {
   assert(led_commands == previous + 3);
   reject_led = 3; assert(!fingerprint_set_led_mode(DEVICE_LED_OFF)); assert(device_config_led_mode() == DEVICE_LED_OFF);
   assert(fingerprint_set_led_mode(DEVICE_LED_ON));
-  assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
+  assert(poll_match_with_led().slot == 1); expect_led(FP_LED_GREEN);
   fingerprint_led_idle(); expect_led(FP_LED_BLUE);
   // The third mode suppresses blue while keeping both authentication results.
   assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH)); expect_led(0);
@@ -281,13 +288,13 @@ int main(void) {
   assert(disk_led == 2);
   unsigned green = led_colors[FP_LED_GREEN], red = led_colors[FP_LED_RED];
   unsigned blue = led_colors[FP_LED_BLUE];
-  assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
+  assert(poll_match_with_led().slot == 1); expect_led(FP_LED_GREEN);
   fingerprint_led_idle(); expect_led(0);
   no_match = true;
-  assert(fingerprint_authorize_poll_match().slot == 0); expect_led(FP_LED_RED);
+  assert(poll_match_with_led().slot == 0); expect_led(FP_LED_RED);
   fingerprint_led_idle(); expect_led(0); no_match = false;
   reject_capture = true;
-  assert(fingerprint_authorize_poll_match().slot == 0); expect_led(0);
+  assert(poll_match_with_led().slot == 0); expect_led(0);
   assert(led_colors[FP_LED_RED] == red + 1); reject_capture = false;
   show_result(true); expect_led(0); show_result(false); expect_led(0);
   assert(led_colors[FP_LED_GREEN] == green + 2 && led_colors[FP_LED_RED] == red + 2);

@@ -211,3 +211,5 @@ int main(void) {
   update_usb_policy(); check_descriptor(true);
   return 0;
 }
+
+void touch_pin_hid_usb_detached(void) {}

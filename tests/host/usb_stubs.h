@@ -91,3 +91,5 @@ bool usbd_edpt_open(uint8_t, const tusb_desc_endpoint_t *);
 void usbd_defer_func(void (*fn)(void *), void *, bool);
 int tinyusb_driver_install(const tinyusb_config_t *);
 int esp_read_mac(uint8_t *, int);
+
+#define TINYUSB_EVENT_DETACHED 3

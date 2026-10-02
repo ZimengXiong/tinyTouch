@@ -122,7 +122,7 @@ SETTINGS = {
     "mode": SettingSpec("MODE", "Device mode", "Select HID password entry or PIV smart card authentication. Reconnect the device after changing the mode.", "piv", choices={"piv": 0, "hid": 1}),
     "led": SettingSpec("LED", "Sensor lighting", "Enable all sensor lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
     "piv_delay_ms": SettingSpec("PIV_DELAY", "PIV PIN delay (ms)", "Delay before automatic PIN entry after the smart card is ready.", "25", 0, 5000),
-    "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Set the delay after each HID key press and release.", "7", 1, 100),
+    "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Set the delay after each HID key press and release.", "1", 1, 100),
     "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after typing the password or the automatic PIV PIN.", "on", choices={"off": 0, "on": 1}),
     "touch_cooldown_ms": SettingSpec("COOLDOWN", "Touch cooldown (ms)", "Minimum interval between touch actions.", "800", 100, 5000),
     "led_idle_color": SettingSpec("LED_IDLE_COLOR", "Idle color", "Set the sensor ring color for idle operation and enrollment.", "blue", choices=LED_COLORS, capability="custom_config"),
@@ -131,7 +131,7 @@ SETTINGS = {
     "led_idle_end_color": SettingSpec("LED_IDLE_END_COLOR", "Breathing end color", "Set the end color for the breathing effect. Other effects use the idle color.", "blue", choices=LED_COLORS, capability="custom_config"),
     "led_idle_effect": SettingSpec("LED_IDLE_EFFECT", "Idle effect", "Set the animation while the idle sensor ring is enabled.", "steady", choices=LED_EFFECTS, capability="custom_config"),
     "led_idle_cycles": SettingSpec("LED_IDLE_CYCLES", "Animation repeats", "Set 0 for continuous animation or 1–255 for a limited number of repeats. Steady lighting ignores this setting.", "0", 0, 255, capability="custom_config"),
-    "led_feedback_ms": SettingSpec("LED_FEEDBACK_MS", "Result feedback (ms)", "Set the duration of success and failure feedback. Longer durations delay touch processing.", "350", 50, 2000, capability="custom_config"),
+    "led_feedback_ms": SettingSpec("LED_FEEDBACK_MS", "Result feedback (ms)", "Set the duration of success and failure feedback. Authentication continues while feedback is displayed.", "350", 50, 2000, capability="custom_config"),
     "piv_auto_type": SettingSpec("PIV_AUTO_TYPE", "Automatic PIV PIN entry", "Type the PIV PIN after a fingerprint match. When off, a match still grants smart card presence.", "on", choices={"off": 0, "on": 1}, capability="custom_config"),
 }
 
@@ -1525,7 +1525,7 @@ def require_setting_support(device: dict[str, str], name: str) -> None:
         raise ToolError("This firmware does not support configurable PIV delay. Update its firmware first.")
     capability = SETTINGS[name].capability
     if capability and device.get(capability) != "1":
-        raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update' to install firmware 0.1.34 or later. Then unplug and reconnect tinyTouch.")
+        raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update' to install firmware 0.1.34-dev.1 or later. Then unplug and reconnect tinyTouch.")
 
 
 def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
@@ -2434,7 +2434,7 @@ def parser() -> argparse.ArgumentParser:
         prog="tinytouch",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Configure tinyTouch. Run 'tinytouch' without a command to open the interactive menu.",
-        epilog=("Examples:\n  tinytouch                         Open the interactive menu\n  tinytouch config                  Show saved settings\n  tinytouch config list             List values and limits\n  tinytouch led preset ocean        Apply an LED theme\n  tinytouch led color idle purple   Set the idle ring color\n  tinytouch enroll 2                 Enroll one complete finger\n  tinytouch --verbose test           Diagnose a connection\n\nRun 'tinytouch COMMAND --help' for syntax and command examples.\nAfter enrollment, changes require fingerprint approval. The new lighting controls require firmware 0.1.34 or later."),
+        epilog=("Examples:\n  tinytouch                         Open the interactive menu\n  tinytouch config                  Show saved settings\n  tinytouch config list             List values and limits\n  tinytouch led preset ocean        Apply an LED theme\n  tinytouch led color idle purple   Set the idle ring color\n  tinytouch enroll 2                 Enroll one complete finger\n  tinytouch --verbose test           Diagnose a connection\n\nRun 'tinytouch COMMAND --help' for syntax and command examples.\nAfter enrollment, changes require fingerprint approval. The new lighting controls require firmware 0.1.34-dev.1 or later."),
     )
     parser.add_argument("--verbose", action="store_true", help="Show command and device diagnostics.")
     parser.add_argument("--port", help="Use this USB serial device for commands and the interactive menu.")

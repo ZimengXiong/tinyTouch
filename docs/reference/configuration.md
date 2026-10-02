@@ -17,7 +17,8 @@ points. `tinytouch config` displays saved values beside defaults.
 |---|---|---|---|
 | `mode` | `piv` | `piv`, `hid` | Smart card authentication or password entry; requires reconnect |
 | `led` | `on` | `on`, `off`, `only-auth` | All lighting, no lighting, or authentication feedback only |
-| `typing_delay_ms` | `7` | 1–100 ms | Delay after each HID key press and release |
+| `piv_delay_ms` | `25` | 0–5000 ms | Delay before automatic PIV PIN entry |
+| `typing_delay_ms` | `1` | 1–100 ms | Delay after each HID key press and release |
 | `submit_enter` | `on` | `on`/`off`, `1`/`0` | Press Enter after typing the password or automatic PIV PIN |
 | `touch_cooldown_ms` | `800` | 100–5000 ms | Minimum interval between touch actions |
 | `led_idle_color` | `blue` | Palette below | Idle and enrollment color |
@@ -26,7 +27,7 @@ points. `tinytouch config` displays saved values beside defaults.
 | `led_idle_end_color` | `blue` | Palette below | End color for the breathing effect |
 | `led_idle_effect` | `steady` | `steady`, `breathe`, `flash`, `fade-in`, `fade-out` | Idle animation |
 | `led_idle_cycles` | `0` | 0–255 | 0 repeats continuously; other values limit animation repeats |
-| `led_feedback_ms` | `350` | 50–2000 ms | Success and failure feedback duration; longer values delay touch processing |
+| `led_feedback_ms` | `350` | 50–2000 ms | Success and failure feedback duration; authentication continues during feedback |
 | `piv_auto_type` | `on` | `on`/`off`, `1`/`0` | Automatically type the PIV PIN after a fingerprint match |
 
 Colors and effects use the ordinary RGB `PS_ControlBLN` command documented in
@@ -34,11 +35,11 @@ the [Hi-Link sensor manual, section 3.5.7](https://r0.hlktech.com/download/HLK-Z
 The palette is `off`, `blue`, `green`, `cyan`, `red`, `purple`, `yellow`, `white`.
 `magenta` is accepted as an alias for `purple` by `config`.
 
-Custom LED preferences and `piv_auto_type` require firmware 0.1.34+ with
+Custom LED preferences and `piv_auto_type` require firmware 0.1.34-dev.1+ with
 `custom_config=1`. With automatic PIV entry off, a matching fingerprint still
 grants smart card presence. Enter `111111` manually if macOS requests the PIN.
 
-Preferences apply immediately except device mode. Factory reset restores all
+Preferences apply immediately except device mode and touch-activated PIV, which require reconnecting. Factory reset restores all
 defaults. The original credential blob, host keys and fingerprint journal retain
 their existing storage formats. New preferences use a separate, versioned NVS
 blob; missing or invalid extra preferences use defaults without rewriting credentials.
@@ -52,12 +53,17 @@ blob; missing or invalid extra preferences use defaults without rewriting creden
 | Touch-activated PIV | Off | Off or on |
 | PIV delay before PIN entry | 25 ms | 0–5000 ms |
 | Submit Enter after HID password | On | Off or on |
-| HID typing delay | 7 ms | 1–100 ms |
+| HID typing delay | 1 ms | 1–100 ms |
 | Touch cooldown | 800 ms | 100–5000 ms |
 | HID computers | 0 | Up to 8 |
 | Fingerprint blocks | 0 | Up to 10 fixed blocks, four templates per finger |
 
 After enrollment, protected changes require a matching fingerprint.
+
+Existing devices retain their saved typing delay. Select faster pacing with
+`tinytouch config typing_delay_ms 1`. USB completion and a millisecond timer pace
+both key presses and releases; increase the delay if a field drops characters.
+See [Unlock latency](/reference/performance) for testing and measurements.
 
 ## Sensor lighting
 

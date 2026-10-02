@@ -28,7 +28,7 @@ int main(void) {
   assert(manual_commands == 1 && disk_manual_stage == 1);
   assert(sensor_manual_saved && !sensor_manual_active && physical_led == 0);
   unsigned flashes = automatic_lights;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert(automatic_lights > flashes); // Accepted command alone is NOT darkness.
   assert(physical_led == 0);
 
@@ -49,9 +49,9 @@ int main(void) {
   // must also remain dark throughout, not just at the last host LED command.
   for (unsigned mode = DEVICE_MODE_PIV; mode <= DEVICE_MODE_HID; mode++) {
     assert(device_config_set_mode((device_mode_t)mode));
-    assert(fingerprint_authorize_poll_match().slot == 1 && physical_led == 0);
+    assert(poll_match_with_led().slot == 1 && physical_led == 0);
     no_match = true;
-    assert(!fingerprint_authorize_poll_match().slot && physical_led == 0);
+    assert(!poll_match_with_led().slot && physical_led == 0);
     no_match = false;
   }
   assert(fingerprint_authorize_prompted(NULL) && physical_led == 0);
@@ -71,10 +71,10 @@ int main(void) {
       assert(fingerprint_set_led_mode((device_led_mode_t)from));
       assert(fingerprint_set_led_mode((device_led_mode_t)to));
       assert(physical_led == (to == DEVICE_LED_ON ? FP_LED_BLUE : 0));
-      assert(fingerprint_authorize_poll_match().slot == 1);
+      assert(poll_match_with_led().slot == 1);
       assert(physical_led == (to == DEVICE_LED_OFF ? 0 : FP_LED_GREEN));
       fingerprint_led_idle();
-      no_match = true; assert(!fingerprint_authorize_poll_match().slot); no_match = false;
+      no_match = true; assert(!poll_match_with_led().slot); no_match = false;
       assert(physical_led == (to == DEVICE_LED_OFF ? 0 : FP_LED_RED));
       fingerprint_led_idle();
       assert(fingerprint_authorize_prompted(NULL));
@@ -86,7 +86,7 @@ int main(void) {
   // A negative ACK must not masquerade as physical success. Retry idle
   // cleanup without another touch, but never capture during that maintenance.
   assert(fingerprint_set_led_mode(DEVICE_LED_ON));
-  assert(fingerprint_authorize_poll_match().slot == 1 && physical_led == FP_LED_GREEN);
+  assert(poll_match_with_led().slot == 1 && physical_led == FP_LED_GREEN);
   reject_led = 3;
   assert(!fingerprint_set_led_mode(DEVICE_LED_OFF));
   assert(device_config_led_mode() == DEVICE_LED_OFF && physical_led == FP_LED_GREEN);
@@ -101,7 +101,7 @@ int main(void) {
   // Reproduce the old background double rejection and foreground single
   // rejection. Both now retain cleanup work even after the caller returns.
   physical_led = FP_LED_GREEN; reject_led = 2;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   vTaskDelay(350); fingerprint_led_idle();
   assert(physical_led == FP_LED_GREEN && fingerprint_led_update_pending());
   service_after(100); assert(physical_led == 0);
@@ -114,7 +114,7 @@ int main(void) {
   // and do not delay a successful match behind repeated synchronous retries.
   physical_led = FP_LED_GREEN; drop_led = 1;
   TickType_t started = clock_ticks;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert((TickType_t)(clock_ticks - started) < 300);
   assert(fingerprint_is_ready() && fingerprint_led_update_pending());
   service_after(100); assert(physical_led == 0);
@@ -131,7 +131,7 @@ int main(void) {
 
   // Pending old green must never be replayed after the user selects off.
   assert(fingerprint_set_led_mode(DEVICE_LED_ON)); reject_led = 1;
-  assert(fingerprint_authorize_poll_match().slot == 1);
+  assert(poll_match_with_led().slot == 1);
   assert(fingerprint_led_update_pending());
   assert(fingerprint_set_led_mode(DEVICE_LED_OFF));
   service_after(2000); assert(physical_led == 0);
@@ -163,7 +163,7 @@ int main(void) {
   for (unsigned i = 0; i < 10; i++) service_after(2000);
   assert(manual_commands == writes);
   assert(!fingerprint_set_led_mode(DEVICE_LED_OFF));
-  assert(fingerprint_authorize_poll_match().slot == 1 && fingerprint_is_ready());
+  assert(poll_match_with_led().slot == 1 && fingerprint_is_ready());
   reject_manual = 0; assert(fingerprint_set_led_mode(DEVICE_LED_OFF));
   expect_control("reconnect");
 
@@ -200,7 +200,7 @@ int main(void) {
   expect_control("storage-error"); writes = manual_commands;
   fail_manual_save = false; service_after(2000);
   expect_control("manual"); assert(manual_commands == writes);
-  assert(fingerprint_authorize_poll_match().slot == 1 && physical_led == 0);
+  assert(poll_match_with_led().slot == 1 && physical_led == 0);
   assert(disk_config.typing_delay_ms == original.typing_delay_ms);
   assert(sensor_templates == ((UINT64_C(1) << 1) | finger_profiles_block(2)));
   return 0;

@@ -14,6 +14,7 @@ void fingerprint_init(void);
 bool fingerprint_is_ready(void);
 bool fingerprint_recover(void);
 bool fingerprint_present_hint(void);
+void fingerprint_wait_for_touch(void);
 void fingerprint_led_idle(void);
 void fingerprint_led_service(void);
 const char *fingerprint_led_control_status(void);

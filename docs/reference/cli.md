@@ -367,7 +367,7 @@ use the device's `SET` acknowledgement. Unavailable reads display `not reported`
 or an update instruction. The CLI does not substitute defaults for missing values.
 | Name | Range | Default | Effect |
 |---|---:|---:|---|
-| `typing_delay_ms` | 1–100 | 7 | Delay after HID key press and release |
+| `typing_delay_ms` | 1–100 | 1 | Delay after HID key press and release |
 | `piv_delay_ms` | 0–5000 | 25 | Delay before touch-login PIN entry after PIV selection and USB/HID readiness |
 | `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |

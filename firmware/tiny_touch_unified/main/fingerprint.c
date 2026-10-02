@@ -27,6 +27,13 @@ static const uint8_t FP_LED_RED = 0x04;
 static const uint8_t FP_LED_FUNC_STEADY = 3;
 
 static SemaphoreHandle_t fp_mutex;
+static TaskHandle_t result_led_task;
+static SemaphoreHandle_t touch_signal;
+// Protected by fp_mutex, including cancellation by foreground LED commands.
+static bool result_led_pending;
+static bool result_led_visible;
+static uint8_t result_led_color;
+static TickType_t result_led_until;
 static volatile bool prompted_authorization_active;
 static bool sensor_ready;
 static finger_profiles_t profiles;
@@ -88,7 +95,7 @@ static uint16_t fp_checksum(uint8_t packet_id, const uint8_t *payload, size_t pa
 static bool fp_response_checksum_valid(const uint8_t *packet, size_t packet_len) {
   if (packet_len < 11) return false;
   uint16_t response_len = ((uint16_t)packet[7] << 8) | packet[8];
-  if (response_len < 2 || packet_len != 9 + response_len) return false;
+  if (response_len < 2 || packet_len != 9u + response_len) return false;
   size_t payload_len = response_len - 2;
   uint16_t expected = fp_checksum(packet[6], packet + 9, payload_len);
   uint16_t received = ((uint16_t)packet[packet_len - 2] << 8) |
@@ -116,7 +123,7 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
   };
 
   if (uart_write_bytes(FP_UART, header, sizeof(header)) != sizeof(header) ||
-      uart_write_bytes(FP_UART, payload, payload_len) != payload_len) {
+      uart_write_bytes(FP_UART, payload, payload_len) != (int)payload_len) {
     note_transport_failure();
     return false;
   }
@@ -206,9 +213,14 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
 
     if (saw_ack && post_ack_until && xTaskGetTickCount() > post_ack_until) return true;
 
-    int n = uart_read_bytes(FP_UART, response + pos, sizeof(response) - pos,
-                            pdMS_TO_TICKS(10));
-    if (n > 0) pos += (size_t)n;
+    // Waiting to fill the entire scratch buffer adds a timeout to every short
+    // ACK. Block for one byte, then drain only what has actually arrived.
+    int n = uart_read_bytes(FP_UART, response + pos, 1, pdMS_TO_TICKS(10));
+    if (n > 0) {
+      pos += (size_t)n;
+      n = uart_read_bytes(FP_UART, response + pos, sizeof(response) - pos, 0);
+      if (n > 0) pos += (size_t)n;
+    }
   }
 
   if (!saw_ack) note_transport_failure();
@@ -306,6 +318,8 @@ static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cyc
 static bool apply_aura(void);
 
 static bool set_aura(uint8_t color) {
+  result_led_pending = false;
+  result_led_visible = false;
   led_requested_color = color;
   return apply_aura();
 }
@@ -358,6 +372,47 @@ static bool apply_aura(void) {
   return aura_command(FP_LED_FUNC_STEADY, color, color, 0);
 }
 
+static TickType_t service_result_led(void) {
+  // Enrollment may own the UART for several seconds. Never interrupt it or
+  // restore a stale result over the foreground operation's own feedback.
+  if (!fp_take(0)) return 1;
+  if (result_led_pending) {
+    set_aura(result_led_color);
+    result_led_visible = true;
+    result_led_until = xTaskGetTickCount() + pdMS_TO_TICKS(device_config_options().led_feedback_ms);
+  }
+  TickType_t wait = portMAX_DELAY;
+  if (result_led_visible) {
+    TickType_t remaining = result_led_until - xTaskGetTickCount();
+    if (remaining == 0 || remaining > pdMS_TO_TICKS(device_config_options().led_feedback_ms)) {
+      set_aura(FP_LED_BLUE);
+    } else {
+      wait = remaining;
+    }
+  }
+  fp_give();
+  return wait;
+}
+
+static void result_led_worker(void *arg) {
+  (void)arg;
+  TickType_t wait = portMAX_DELAY;
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, wait);
+    wait = service_result_led();
+  }
+}
+
+static void schedule_result_led(bool ok) {
+  if (device_config_led_mode() == DEVICE_LED_OFF) {
+    set_aura(0);
+    return;
+  }
+  result_led_color = ok ? FP_LED_GREEN : FP_LED_RED;
+  result_led_pending = true;
+  xTaskNotifyGive(result_led_task);
+}
+
 static void show_result(bool ok) {
   set_aura(ok ? FP_LED_GREEN : FP_LED_RED);
   vTaskDelay(pdMS_TO_TICKS(device_config_options().led_feedback_ms));
@@ -407,6 +462,7 @@ bool fingerprint_preview_led(uint8_t color, uint8_t effect, uint16_t duration_ms
       duration_ms < 100 || duration_ms > 5000 || !fp_take(1000)) return false;
   // Explicit preview can illuminate an otherwise disabled ring. It never saves
   // preferences and always restores the configured idle state before returning.
+  result_led_pending = result_led_visible = false;
   bool ok = aura_command(effect, color, color, 0);
   if (ok) vTaskDelay(pdMS_TO_TICKS(duration_ms));
   bool restored = set_aura(FP_LED_BLUE);
@@ -419,6 +475,19 @@ static bool finger_present(void) {
 
 bool fingerprint_present_hint(void) {
   return finger_present();
+}
+
+static void touch_changed(void *arg) {
+  (void)arg;
+  BaseType_t wake = pdFALSE;
+  xSemaphoreGiveFromISR(touch_signal, &wake);
+  if (wake) portYIELD_FROM_ISR();
+}
+
+void fingerprint_wait_for_touch(void) {
+  // The level is still checked by the caller. The interrupt is only a wakeup,
+  // so a spurious edge can never authorize a capture by itself.
+  xSemaphoreTake(touch_signal, pdMS_TO_TICKS(100));
 }
 
 static fingerprint_match_t fingerprint_match_captured(bool quiet) {
@@ -502,13 +571,7 @@ fingerprint_match_t fingerprint_authorize_poll_match(void) {
     return no_match;
   }
   fingerprint_match_t match = fingerprint_match_captured(true);
-  device_led_mode_t mode = device_config_led_mode();
-  if (mode != DEVICE_LED_OFF && prompted_authorization_active) {
-    // Foreground AUTH has no HID result timer to restore the idle light.
-    show_result(match.slot != 0);
-  } else if (match.slot) set_aura(FP_LED_GREEN);
-  else if (mode != DEVICE_LED_OFF) set_aura(FP_LED_RED);
-  else if (mode == DEVICE_LED_OFF) set_aura(0);
+  schedule_result_led(match.slot != 0);
   fp_give();
   return match;
 }
@@ -519,9 +582,13 @@ void fingerprint_init(void) {
     .mode = GPIO_MODE_INPUT,
     .pull_up_en = GPIO_PULLUP_DISABLE,
     .pull_down_en = GPIO_PULLDOWN_ENABLE,
-    .intr_type = GPIO_INTR_DISABLE,
+    .intr_type = GPIO_INTR_ANYEDGE,
   };
   ESP_ERROR_CHECK(gpio_config(&io));
+  touch_signal = xSemaphoreCreateBinary();
+  configASSERT(touch_signal != NULL);
+  ESP_ERROR_CHECK(gpio_install_isr_service(0));
+  ESP_ERROR_CHECK(gpio_isr_handler_add(FP_INT_PIN, touch_changed, NULL));
 
   uart_config_t cfg = {
     .baud_rate = 57600,
@@ -533,10 +600,13 @@ void fingerprint_init(void) {
   };
   ESP_ERROR_CHECK(uart_driver_install(FP_UART, 1024, 0, 0, NULL, 0));
   ESP_ERROR_CHECK(uart_param_config(FP_UART, &cfg));
+  // Short ACKs do not fill the FIFO; deliver them after two idle symbols.
+  ESP_ERROR_CHECK(uart_set_rx_timeout(FP_UART, 2));
   ESP_ERROR_CHECK(uart_set_pin(FP_UART, FP_TX_PIN, FP_RX_PIN,
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
   fp_mutex = xSemaphoreCreateMutex();
   configASSERT(fp_mutex != NULL);
+  result_led_pending = result_led_visible = false;
   profiles_ready = finger_profiles_load(&profiles);
   led_manual_stage = 0;
   led_stage_loaded = led_stage_saved = led_control_attempted = false;
@@ -548,6 +618,9 @@ void fingerprint_init(void) {
   led_update_pending = true;
   led_attempt_at = xTaskGetTickCount();
   led_failures = 0;
+  BaseType_t created = xTaskCreate(result_led_worker, "fp_led", 2048, NULL, 2,
+                                 &result_led_task);
+  configASSERT(created == pdPASS);
 
   uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
   bool ok = false;
