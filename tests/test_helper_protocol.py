@@ -404,6 +404,18 @@ class HelperProtocolTests(unittest.TestCase):
         self.assertFalse(any(secret))
         self.assertFalse(any(key))
 
+    def test_password_overrides_cover_all_forty_template_ids(self):
+        identity = "TT-123456ABCDEF"
+        secret = bytearray(b"password")
+        with (
+            mock.patch.object(helper, "has_password", side_effect=lambda service, account: account.endswith(":40")) as exists,
+            mock.patch.object(helper, "keychain_get", return_value=secret) as get,
+        ):
+            passwords = helper.load_passwords(identity)
+        self.assertEqual(set(passwords), {0, 40})
+        self.assertEqual(exists.call_count, 40)
+        get.assert_any_call(identity + ":fingerprint:40")
+
     def test_partial_password_load_failure_wipes_previous_slots(self):
         secret = bytearray(b"password")
         with (

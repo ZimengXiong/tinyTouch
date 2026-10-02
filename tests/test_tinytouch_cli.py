@@ -1292,7 +1292,7 @@ class ProtocolSixTests(unittest.TestCase):
         keychain = mock.Mock()
         keychain.can_read_password.side_effect = [False, True] * 7
         keychain.has_password.side_effect = (
-            lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
+            lambda service, name: ":fingerprint:" not in name or name.endswith(":40")
         )
         activity = []
         keychain.authorize_executable.side_effect = (
@@ -1317,7 +1317,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(
             [event[0] for event in activity], ["authorize"] * 3 + ["install"]
         )
-        self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:2")
+        self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:40")
         self.assertTrue(
             all(event[1][-1] == cli.sys.executable for event in activity[:3])
         )
