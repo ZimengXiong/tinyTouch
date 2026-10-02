@@ -59,6 +59,7 @@ HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_menu import select_menu, supports_arrows  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
@@ -229,10 +230,9 @@ def panel_width() -> int:
     return max(24, min(64, shutil.get_terminal_size((80, 24)).columns))
 
 
-def show_divider(title: str = "") -> None:
-    """Use the same boundary for menus and command results."""
-    prefix = f"── {title} " if title else ""
-    say(terminal_style(prefix + "─" * max(2, panel_width() - len(prefix)), "2"))
+def show_section(title: str) -> None:
+    """Distinguish command results from menu choices without borders."""
+    say(terminal_style(title, "1;32"))
 
 
 def show_fields(rows: list[tuple[str, str]]) -> None:
@@ -401,7 +401,7 @@ def show_startup_mark(command: str) -> None:
     if command != "menu":
         say("")
         title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
-        show_divider(title)
+        show_section(title)
 
 
 def verbose(message: str) -> None:
@@ -2239,18 +2239,27 @@ def select_option(
     back: str = "Back",
 ) -> str | None:
     """Select an option by number or name; return None to leave this menu."""
+    if supports_arrows():
+        try:
+            return select_menu(title, options, back=back, width=panel_width(), style=terminal_style)
+        except EOFError as exc:
+            raise ToolError("This action requires input from an interactive terminal.") from exc
     while True:
         say("")
-        show_divider(title)
+        if title:
+            say(terminal_style(title, "1;36"))
         for index, (_key, label) in enumerate(options, 1):
             prefix = f"  {index}. "
-            say(textwrap.fill(
-                label.removesuffix("."), width=panel_width(),
-                initial_indent=prefix, subsequent_indent=" " * len(prefix),
-            ))
+            say(
+                textwrap.fill(
+                    label.removesuffix("."),
+                    width=panel_width(),
+                    initial_indent=prefix,
+                    subsequent_indent=" " * len(prefix),
+                )
+            )
         say("")
         say(f"  0. {back}")
-        show_divider()
         answer = ask("Select: ").lower()
         if answer in {"0", "b", "back", "q", "quit", "exit"}:
             return None
@@ -2409,7 +2418,7 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
     title = COMMAND_TITLES.get(selected_args.command, selected_args.command.replace("-", " ").capitalize())
     if selected_args.command == "status" and selected_args.details:
         title = "Full status"
-    show_divider(title)
+    show_section(title)
     # Each menu action gets the same credential lifetime as a standalone command.
     _sudo_session_ready = False
     try:
