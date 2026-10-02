@@ -40,7 +40,8 @@ class ConfigurationTests(unittest.TestCase):
             self.invoke(["config", "list"])
             for name in cli.SETTINGS:
                 self.assertIn(name, self.output.getvalue())
-            self.output.seek(0); self.output.truncate()
+            self.output.seek(0)
+            self.output.truncate()
             self.invoke(["config", "list", "--json"])
             metadata = json.loads(self.output.getvalue())
             self.assertEqual(metadata["led_idle_color"]["default"], "blue")
@@ -122,7 +123,8 @@ class ConfigurationTests(unittest.TestCase):
         self.mock_device()
         self.invoke(["led", "color", "success", "blue"])
         self.command.assert_called_once_with("port", "SET LED_SUCCESS_COLOR 1", timeout=5)
-        self.command.reset_mock(); self.verify.reset_mock()
+        self.command.reset_mock()
+        self.verify.reset_mock()
         self.invoke(["led", "effect", "flash"])
         self.command.assert_called_once_with("port", "SET LED_IDLE_EFFECT 2", timeout=5)
 
@@ -202,10 +204,12 @@ class ConfigurationTests(unittest.TestCase):
                 handler.assert_called_once()
 
     def test_auth_and_storage_failures_have_next_actions(self):
-        self.assertIn("expired", cli.human_error("ERR AUTH no_match", touch_prompted=True))
-        self.assertIn("test", cli.human_error("ERR AUTH sensor=offline"))
-        self.assertIn("command again", cli.human_error("ERR LOCKED run=AUTH"))
-        self.assertIn("config", cli.human_error("ERR SET"))
+        self.assertIn(
+            "timed out", cli.human_error("ERR AUTH no_match", touch_prompted=True)
+        )
+        self.assertIn("reconnect", cli.human_error("ERR AUTH sensor=offline"))
+        self.assertIn("try again", cli.human_error("ERR LOCKED run=AUTH"))
+        self.assertIn("try again", cli.human_error("ERR SET"))
         self.assertIn("update", cli.human_error("ERR COMMAND"))
 
     def test_general_device_errors_terminate_the_exchange(self):
