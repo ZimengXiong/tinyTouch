@@ -572,16 +572,12 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
     """Turn compact device failures into the next useful user action."""
     if line in {"ERR AUTH", "ERR AUTH no_match", "ERR AUTH sensor=offline"}:
         if line.endswith("sensor=offline"):
-            return "The fingerprint sensor is offline. Run 'tinytouch test' to check communication. Then reconnect the device and try again."
+            return "Fingerprint sensor unavailable. Please reconnect tinyTouch."
         if touch_prompted:
-            return (
-                "Fingerprint approval expired without a match. Wait for the touch prompt with your finger off the sensor. Then touch once and hold your finger still. If the sensor turns red before you touch, run 'tinytouch status'. Check that it reports sensor=ready."
-            )
+            return "Fingerprint authentication timed out. Please try again."
         if line.endswith("no_match"):
-            return "No enrolled fingerprint matched. Run the command again. Wait for the touch prompt. Then hold an enrolled finger still on the sensor."
-        return (
-            "Fingerprint approval did not start. The sensor was busy or unavailable. Run 'tinytouch status' and check that it reports sensor=ready before trying again."
-        )
+            return "Fingerprint not recognized. Please try again."
+        return "Fingerprint authentication could not start. Please try again."
     if line == "ERR FINGER update_cli":
         return "Update the tinyTouch CLI. Enrollment now uses complete fingerprint blocks instead of individual templates."
     if line == "ERR FINGER inventory_unavailable":
@@ -589,13 +585,13 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
     if line == "ERR SET LED reconnect_required":
         return "LED preference saved. Unplug tinyTouch and reconnect it to finish applying the lighting setting."
     if line.startswith("ERR LOCKED"):
-        return "Fingerprint approval expired. Run the command again. Touch an enrolled finger when prompted."
+        return "Fingerprint authentication expired. Please try again."
     if line.startswith("ERR SET"):
-        return "The device could not save or apply this setting. Run 'tinytouch config' to check the value. If the sensor is unavailable, reconnect and try again."
+        return "Could not apply this setting. Please try again."
     if line == "ERR COMMAND":
         return "The firmware does not support this command. Run 'tinytouch update'. Then reconnect the device."
     if line.startswith("ERR LED"):
-        return "The LED preview or lighting restore failed. Reconnect the device. Run 'tinytouch led' to check the saved lighting settings before trying again."
+        return "Could not apply sensor lighting. Please reconnect tinyTouch."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -704,7 +700,7 @@ def install_helper(*, check_saved: bool = False) -> None:
     if candidate.returncode != 0:
         raise ToolError(
             "The replacement HID helper failed its credential check. "
-            "The existing service is unchanged. Check the helper log before retrying."
+            "The existing service is unchanged. Please try again."
         )
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -924,7 +920,7 @@ def foreground_session(port: str):
     if device is None:
         if "Device not configured" in str(last_error):
             raise ToolError(
-                "The tinyTouch USB serial port is not ready. Wait two seconds and run the command again. Unplug the device only if 'tinytouch status' cannot find it."
+                "tinyTouch is reconnecting. Please try again in a moment."
             ) from last_error
         raise ToolError(f'Could not communicate with tinyTouch on {port}. Error: {last_error}') from last_error
     _active_serial = device
@@ -968,7 +964,7 @@ def serial_command(
     except Exception as exc:
         if "Device not configured" in str(exc):
             raise ToolError(
-                "The tinyTouch USB serial port became unavailable when this command started. No fingerprint result was recorded. Wait two seconds and run the command again. Unplug the device only if 'tinytouch status' cannot find it."
+                "The tinyTouch USB serial port became unavailable when this command started. Please try again in a moment."
             ) from exc
         raise
 
@@ -1004,13 +1000,16 @@ def protocol6(device: dict[str, str]) -> None:
 
 def sensor_ready(device: dict[str, str]) -> None:
     if device.get("sensor") not in {"ready", "ok"}:
-        raise ToolError("The fingerprint sensor is not ready. Run 'tinytouch test' to check communication before setup.")
+        raise ToolError("Fingerprint sensor unavailable. Please reconnect tinyTouch.")
 
 
 def unlock(
-    port: str, *, explain_pin: bool = False,
+    port: str,
+    *,
+    explain_pin: bool = False,
     reason: str = "unlock configuration",
 ) -> None:
+    verbose(f"Authorizing: {reason}.")
     deadline = time.monotonic() + 6.0
     while True:
         try:
@@ -1018,13 +1017,16 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt=f"Touch to {reason}.",
+                touch_prompt="Authenticate with a registered finger to unlock configuration.",
             )
             if explain_pin:
                 explain_piv_pin()
             return
         except ToolError as exc:
-            if "The USB serial port became unavailable when this command started." not in str(exc):
+            if (
+                "The USB serial port became unavailable when this command started."
+                not in str(exc)
+            ):
                 raise
             if time.monotonic() >= deadline:
                 raise
@@ -1486,7 +1488,7 @@ def command_led(args: argparse.Namespace) -> None:
             say("Unplug tinyTouch and reconnect it to finish disabling the sensor's automatic lighting.")
             return
         if updated.get("led_control") not in (None, "manual") or updated.get("led_sync") == "pending":
-            raise ToolError("LED preference saved, but the sensor has not applied it. Check 'tinytouch status' and retry.")
+            raise ToolError("LED preference saved, but the sensor has not applied it. Please reconnect tinyTouch.")
         say(f'Sensor lighting mode: {args.state}. This setting is saved on tinyTouch.')
 
 
@@ -1575,7 +1577,7 @@ def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
                 fresh_status(port, normalized)
         except ToolError:
             if applied:
-                say("Settings acknowledged before the error: " + ", ".join(applied) + ". Run 'tinytouch config' to check the saved values.")
+                say("Settings acknowledged before the error: " + ", ".join(applied) + ".")
             raise
 
 
@@ -1729,7 +1731,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
         port,
         "AUTH",
         timeout=15,
-        touch_prompt="Touch the fingerprint sensor to approve the firmware update.",
+        touch_prompt="Authenticate with a registered finger to approve the firmware update.",
     )
     token = secrets.token_hex(16)
     was_loaded = unload_helper()

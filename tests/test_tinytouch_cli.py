@@ -685,11 +685,21 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertFalse(cli.is_terminal("SET MODE HID", "OK STATUS mode=hid"))
 
     def test_auth_failure_explains_whether_touch_started(self):
-        self.assertIn("expired", cli.human_error("ERR AUTH", touch_prompted=True))
-        self.assertIn("did not start", cli.human_error("ERR AUTH"))
+        self.assertEqual(
+            cli.human_error("ERR AUTH", touch_prompted=True),
+            "Fingerprint authentication timed out. Please try again.",
+        )
+        self.assertEqual(
+            cli.human_error("ERR AUTH"),
+            "Fingerprint authentication could not start. Please try again.",
+        )
 
     def test_status_requires_a_terminal_status_line(self):
-        with mock.patch.object(cli, "serial_command", return_value=["OK STATUS protocol=6 mode=hid sensor=ready hosts=1"]):
+        with mock.patch.object(
+            cli,
+            "serial_command",
+            return_value=["OK STATUS protocol=6 mode=hid sensor=ready hosts=1"],
+        ):
             result = cli.status("/dev/cu.TT-1234")
         self.assertEqual(result["protocol"], "6")
         self.assertEqual(result["hosts"], "1")
@@ -960,7 +970,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch to pair PIV with this Mac.",
+            "Authenticate with a registered finger to unlock configuration.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
