@@ -138,6 +138,7 @@ class InteractiveCliTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0].summary for call in status.call_args_list], [True, False]
         )
+        self.assertTrue(status.call_args_list[1].args[0].details)
 
     def test_invalid_menu_input_reprompts(self):
         with mock.patch("builtins.input", side_effect=["", "-1", "99", "status"]):

@@ -22,6 +22,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import textwrap
 import tty
 import time
 import urllib.request
@@ -92,15 +93,15 @@ LED_COLORS = {
 LED_EFFECTS = {"breathe": 1, "flash": 2, "steady": 3, "fade-in": 5, "fade-out": 6}
 MODE_OPTIONS = (
     ("hid", "HID — types your password; works with most apps"),
-    ("piv", "PIV — smart card; no password typing in supported Mac prompts"),
+    ("piv", "PIV — smart card; PIN login for supported Mac prompts"),
 )
 COMMAND_TITLES = {
     "menu": "tinyTouch",
     "setup": "Setup",
     "mode": "Mode",
-    "led": "Sensor lighting",
-    "config": "Device settings",
-    "settings": "Device settings",
+    "led": "Lighting",
+    "config": "Settings",
+    "settings": "Settings",
     "enroll": "Enroll",
     "enroll-demo": "Fingerprint enrollment demo",
     "fingers": "Fingerprints",
@@ -111,7 +112,7 @@ COMMAND_TITLES = {
     "rom": "ROM bootloader",
     "bootloader": "ROM bootloader",
     "status": "Status",
-    "logs": "Device event log",
+    "logs": "Logs",
     "test": "Connection test",
     "keys": "PIV identity",
     "pair": "PIV pairing",
@@ -221,6 +222,31 @@ def terminal_style(text: str, code: str) -> str:
     ):
         return text
     return f"\033[{code}m{text}\033[0m"
+
+
+def panel_width() -> int:
+    return max(24, min(64, shutil.get_terminal_size((80, 24)).columns))
+
+
+def show_divider(title: str = "") -> None:
+    """Use the same boundary for menus and command results."""
+    prefix = f"── {title} " if title else ""
+    say(terminal_style(prefix + "─" * max(2, panel_width() - len(prefix)), "2"))
+
+
+def show_fields(rows: list[tuple[str, str]]) -> None:
+    """Align readable labels and wrap values within the terminal width."""
+    label_width = max((len(label) for label, _value in rows), default=0)
+    for label, value in rows:
+        prefix = f"  {label + ':':<{label_width + 2}}"
+        say(
+            textwrap.fill(
+                value,
+                width=max(panel_width(), len(prefix) + 12),
+                initial_indent=prefix,
+                subsequent_indent=" " * len(prefix),
+            )
+        )
 
 
 ENROLLMENT_VIEWS = (
@@ -371,11 +397,10 @@ def show_startup_mark(command: str) -> None:
     for line in mark:
         say(terminal_style(line, "36"))
     say(f"          tinyTouch {terminal_style(CLI_VERSION, '2')}")
-    say("")
     if command != "menu":
-        title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
-        say(terminal_style(f"── {title} ────────────────────", "2"))
         say("")
+        title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
+        show_divider(title)
 
 
 def verbose(message: str) -> None:
@@ -1591,12 +1616,9 @@ def show_settings(args: argparse.Namespace, *, led_only: bool = False) -> None:
     if getattr(args, "json", False):
         say(json.dumps(values, indent=2, sort_keys=True))
         return
-    say(f"{'Setting':<24} {'Current':<16} Default")
-    for name, spec in specs.items():
-        say(f"{name:<24} {values.get(name, 'not reported'):<16} {spec.default}")
-    if any(name not in values for name in specs):
-        say("Some settings require newer firmware. Run 'tinytouch update'. Then reconnect the device.")
-    say("Run 'tinytouch config list' to list allowed values and effects. Run 'tinytouch config NAME VALUE' to change a setting.")
+    show_fields(
+        [(spec.label, values.get(name, "Unavailable")) for name, spec in specs.items()]
+    )
 
 
 def command_enroll(args: argparse.Namespace) -> None:
@@ -1947,7 +1969,23 @@ def command_rom(args: argparse.Namespace) -> None:
 def command_status(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     if not getattr(args, "summary", False):
-        say(json.dumps(status(port), indent=2, sort_keys=True))
+        data = status(port)
+        if getattr(args, "details", False):
+            show_fields(
+                [
+                    (
+                        (
+                            SETTINGS[key].label
+                            if key in SETTINGS
+                            else key.replace("_", " ").capitalize()
+                        ),
+                        SETTINGS[key].decode(value) if key in SETTINGS else value,
+                    )
+                    for key, value in sorted(data.items())
+                ]
+            )
+        else:
+            say(json.dumps(data, indent=2, sort_keys=True))
         return
     with foreground_session(port):
         data = status(port)
@@ -1977,8 +2015,7 @@ def command_status(args: argparse.Namespace) -> None:
         rows.append(
             ("Smart card", "Ready" if data.get("piv") == "ready" else "Not configured")
         )
-    for label, value in rows:
-        say(f"{label}: {value}")
+    show_fields(rows)
 
 
 def command_logs(args: argparse.Namespace) -> None:
@@ -2157,11 +2194,16 @@ def select_option(
     """Select an option by number or name; return None to leave this menu."""
     while True:
         say("")
-        if title:
-            say(terminal_style(title, "1"))
+        show_divider(title)
         for index, (_key, label) in enumerate(options, 1):
-            say(f"  {index}. {label.removesuffix('.')}")
+            prefix = f"  {index}. "
+            say(textwrap.fill(
+                label.removesuffix("."), width=panel_width(),
+                initial_indent=prefix, subsequent_indent=" " * len(prefix),
+            ))
+        say("")
         say(f"  0. {back}")
+        show_divider()
         answer = ask("Select: ").lower()
         if answer in {"0", "b", "back", "q", "quit", "exit"}:
             return None
@@ -2258,7 +2300,7 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
     global _sudo_session_ready, _setup_password
     command = list(command)
     if command[0] in {"setup", "mode"} and len(command) == 1:
-        mode = select_option("Device mode", list(MODE_OPTIONS))
+        mode = select_option("Mode", list(MODE_OPTIONS))
         if mode is None:
             return
         command.extend(["--mode", mode] if command[0] == "setup" else [mode])
@@ -2318,7 +2360,9 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
     selected_args = parser().parse_args([*global_options, *command])
     say("")
     title = COMMAND_TITLES.get(selected_args.command, selected_args.command.replace("-", " ").capitalize())
-    say(terminal_style(f"── {title} ──", "2"))
+    if selected_args.command == "status" and selected_args.details:
+        title = "Full status"
+    show_divider(title)
     # Each menu action gets the same credential lifetime as a standalone command.
     _sudo_session_ready = False
     try:
@@ -2398,7 +2442,7 @@ INTERACTIVE_MENUS = {
             ("test", "Test connection", ["test"]),
             ("piv", "PIV", "piv"),
             ("diagnostics", "Diagnostics", "diagnostics"),
-            ("status", "Full status", ["status"]),
+            ("status", "Full status", ["status", "--details"]),
         ),
     ),
     "piv": (
@@ -2664,8 +2708,14 @@ def parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Use this USB serial path instead of the global --port value.",
     )
-    status_cmd.add_argument(
+    status_view = status_cmd.add_mutually_exclusive_group()
+    status_view.add_argument(
         "--summary", action="store_true", help="Show a short, readable summary."
+    )
+    status_view.add_argument(
+        "--details",
+        action="store_true",
+        help="Show all status fields with readable labels.",
     )
     status_cmd.set_defaults(func=command_status)
     logs = sub.add_parser(

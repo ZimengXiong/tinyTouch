@@ -217,7 +217,7 @@ class ProtocolSixTests(unittest.TestCase):
             self.assertEqual(cli.choose_mode(None), "hid")
         text = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("HID — types your password; works with most apps", text)
-        self.assertIn("PIV — smart card; no password typing in supported Mac prompts", text)
+        self.assertIn("PIV — smart card; PIN login for supported Mac prompts", text)
 
     def test_enrollment_runs_all_views_for_one_finger(self):
         responses = [
@@ -722,8 +722,19 @@ class ProtocolSixTests(unittest.TestCase):
             args = cli.parser().parse_args(["status", "--summary"])
             args.func(args)
         lines = [call.args[0] for call in output.call_args_list]
-        self.assertIn("Fingerprints: 1 enrolled (1 incomplete)", lines)
-        self.assertIn("Sensor: Ready", lines)
+        self.assertTrue(
+            any(
+                line.strip().startswith("Fingerprints:")
+                and line.endswith("1 enrolled (1 incomplete)")
+                for line in lines
+            )
+        )
+        self.assertTrue(
+            any(
+                line.strip().startswith("Sensor:") and line.endswith("Ready")
+                for line in lines
+            )
+        )
         self.assertEqual(len(lines), 5)
 
     def test_full_status_preserves_all_fields_as_json(self):
