@@ -31,7 +31,7 @@ int main(void) {
   assert(device_config_led_mode() == DEVICE_LED_ON);
   char locked_delay[] = "PIV_DELAY 100";
   set_value(locked_delay); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
-  assert(device_config_piv_delay_ms() == 50);
+  assert(device_config_piv_delay_ms() == 25);
   authorized_until = INT64_MAX;
   char valid_delay[] = "PIV_DELAY 100";
   set_value(valid_delay); assert(strcmp(last_reply, "OK SET") == 0);

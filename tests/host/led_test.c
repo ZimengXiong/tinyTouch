@@ -212,7 +212,7 @@ int main(void) {
   disk_config.typing_delay_ms = 23; have_config = true;
   stored_config_t before = disk_config;
   device_config_init(); assert(device_config_led_mode() == DEVICE_LED_ON);
-  assert(device_config_piv_delay_ms() == 50); // Missing optional key uses 50 ms.
+  assert(device_config_piv_delay_ms() == 25); // Missing optional key uses 25 ms.
   assert(device_config_set_piv_delay_ms(100));
   device_config_init(); assert(device_config_piv_delay_ms() == 100);
   assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
@@ -227,7 +227,7 @@ int main(void) {
   assert(device_config_set_piv_delay_ms(5000));
   device_config_init(); assert(device_config_piv_delay_ms() == 5000);
   disk_piv_delay = 6000;
-  device_config_init(); assert(device_config_piv_delay_ms() == 50);
+  device_config_init(); assert(device_config_piv_delay_ms() == 25);
   assert(!device_config_piv_touch_enabled());
   assert(device_config_set_piv_touch_enabled(true));
   assert(device_config_piv_touch_enabled());
@@ -300,7 +300,7 @@ int main(void) {
   disk_led = 255; device_config_init(); assert(device_config_led_mode() == DEVICE_LED_ON);
   assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH));
   assert(device_config_factory_reset()); assert(device_config_led_mode() == DEVICE_LED_ON);
-  assert(device_config_piv_delay_ms() == 50 && disk_piv_delay == 50);
+  assert(device_config_piv_delay_ms() == 25 && disk_piv_delay == 25);
   assert(!device_config_piv_touch_enabled());
   device_config_init(); assert(!device_config_piv_touch_enabled());
   disk_piv_touch = 99; device_config_init(); assert(!device_config_piv_touch_enabled());

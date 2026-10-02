@@ -65,7 +65,7 @@ typedef struct {
 #define ESP_OK 0
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_ERROR_CHECK(e) assert((e) == 0)
-#define pdMS_TO_TICKS(ms) (ms)
+#define pdMS_TO_TICKS(ms) ((ms) / 10)
 #define pdPASS 1
 #define pdTRUE 1
 #define portMAX_DELAY UINT32_MAX
@@ -76,7 +76,7 @@ typedef int *SemaphoreHandle_t;
 #define taskENTER_CRITICAL(lock) ((void)(lock))
 #define taskEXIT_CRITICAL(lock) ((void)(lock))
 int64_t esp_timer_get_time(void);
-void vTaskDelay(uint32_t ms);
+void vTaskDelay(uint32_t ticks);
 int xTaskCreate(void (*fn)(void *), const char *, int, void *, int, void *);
 SemaphoreHandle_t xSemaphoreCreateBinary(void);
 SemaphoreHandle_t xSemaphoreCreateMutex(void);

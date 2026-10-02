@@ -387,7 +387,9 @@ bool usb_ccid_wait_for_piv(void) {
       // Wait for the login UI to switch fields after PIV selection. This
       // saved delay does not replace enumeration and HID readiness checks.
       uint16_t delay_ms = device_config_piv_delay_ms();
-      if (delay_ms) vTaskDelay(pdMS_TO_TICKS(delay_ms));
+      // Use elapsed time so the scheduler cannot round 25 ms down to 20 ms.
+      int64_t pin_deadline = esp_timer_get_time() + (int64_t)delay_ms * 1000;
+      while (esp_timer_get_time() < pin_deadline) vTaskDelay(1);
       taskENTER_CRITICAL(&policy_lock);
       ready = piv_exposed && piv_selected && esp_timer_get_time() < touch_until;
       taskEXIT_CRITICAL(&policy_lock);

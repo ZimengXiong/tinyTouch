@@ -11,10 +11,10 @@ static bool deferred;
 static bool ota_active;
 static bool complete_login;
 static bool transfer_queued = true;
-static uint16_t delay_ms = 50;
+static uint16_t delay_ms = 25;
 
 int64_t esp_timer_get_time(void) { return now_us; }
-void vTaskDelay(uint32_t ms) { now_us += (int64_t)ms * 1000; }
+void vTaskDelay(uint32_t ticks) { now_us += (int64_t)ticks * 10000; }
 int xTaskCreate(void (*fn)(void *), const char *n, int s, void *a, int p, void *t) {
   (void)fn; (void)n; (void)s; (void)a; (void)p; (void)t; return pdPASS;
 }
@@ -102,6 +102,10 @@ int main(void) {
   in_busy = false; handle_message(select, sizeof(select));
   assert(apdus == 1 && piv_selected);
   int64_t started = now_us;
+  assert(usb_ccid_wait_for_piv());
+  assert(now_us - started >= 25000 && now_us - started < 35000);
+  delay_ms = 50;
+  started = now_us;
   assert(usb_ccid_wait_for_piv() && now_us - started == 50000);
   delay_ms = 100;
   started = now_us;
@@ -109,7 +113,7 @@ int main(void) {
   delay_ms = 0;
   started = now_us;
   assert(usb_ccid_wait_for_piv() && now_us == started);
-  delay_ms = 50;
+  delay_ms = 25;
   // Host traffic and a held finger cannot prolong the touch lease.
   now_us = touch_until;
   usb_ccid_begin_console_command();

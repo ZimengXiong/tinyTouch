@@ -10,7 +10,7 @@ class PivDelayCliTests(unittest.TestCase):
         return {"firmware": "0.1.31", "protocol": "6", "piv_delay_ms": "50"}
 
     def test_saved_values_are_authorized_and_verified(self):
-        for value, expected in (("0", "0"), ("50", "50"), ("0100", "100"), ("5000", "5000")):
+        for value, expected in (("0", "0"), ("25", "25"), ("50", "50"), ("0100", "100"), ("5000", "5000")):
             with (
                 self.subTest(value=value),
                 mock.patch.object(cli, "choose_port", return_value="TT"),
