@@ -613,13 +613,9 @@ def command_repair(args: argparse.Namespace) -> None:
     if args.port:
         device_ids = {device_account(choose_port(args.port))}
     else:
-        from tinytouch_helper import connected_device_ids
+        from tinytouch_helper import known_device_ids
 
-        device_ids = connected_device_ids()
-    if not device_ids:
-        raise ToolError(
-            "Connect the tinyTouch you want to repair, then run repair again."
-        )
+        device_ids = known_device_ids()
     keychain = _keychain()
     accounts = []
     for account in sorted(device_ids):
@@ -637,14 +633,31 @@ def command_repair(args: argparse.Namespace) -> None:
             "This Mac has no complete HID pairing. Run 'tinytouch setup --mode hid'."
         )
     say(
-        "Repairing access for the current CLI. Approve macOS Keychain authorization if prompted."
+        "Checking saved HID credentials. Approve macOS Keychain authorization if prompted."
     )
+    owner_password = None
+
+    def password_provider():
+        nonlocal owner_password
+        if owner_password is None:
+            owner_password = keychain.prompt_keychain_password()
+        return bytearray(owner_password)
+
     try:
         for service, name in accounts:
             if not keychain.can_read_password(service, name):
-                keychain.authorize_executable(service, name, sys.executable)
+                keychain.authorize_executable(
+                    service, name, sys.executable, password_provider=password_provider
+                )
+                if not keychain.can_read_password(service, name):
+                    raise ToolError(
+                        "The current CLI still cannot read the credential. The helper was not replaced."
+                    )
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        raise ToolError(f"Keychain repair did not finish: {exc}") from exc
+        raise ToolError(f"Keychain repair did not finish for {name}: {exc}") from exc
+    finally:
+        if owner_password is not None:
+            owner_password[:] = b"\x00" * len(owner_password)
     install_helper()
     say(
         "Current HID helper reinstalled. Saved passwords and pairing keys are unchanged."

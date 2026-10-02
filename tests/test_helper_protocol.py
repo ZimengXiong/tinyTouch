@@ -76,6 +76,23 @@ class CredentialPreflightTests(unittest.TestCase):
         self.assertEqual(key, bytearray(32))
         serial.assert_not_called()
 
+    def test_offline_repair_can_find_saved_identities_without_usb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "state-TT-123456ABCDEF.json").write_text("{}")
+            (root / "settings-TT-000011112222.json").write_text("{}")
+            (root / "state-TT-invalid.json").write_text("{}")
+            with (
+                mock.patch.object(helper, "STATE_DIR", root),
+                mock.patch.object(helper, "device_endpoints", return_value=[]),
+                mock.patch.object(helper, "load_passwords") as load,
+            ):
+                self.assertEqual(
+                    helper.known_device_ids(), {"TT-123456ABCDEF", "TT-000011112222"}
+                )
+                helper.check_credentials()
+            load.assert_not_called()
+
     def test_pairing_denial_wipes_password_and_blocks_preflight(self):
         password = bytearray(b"test password")
         with (

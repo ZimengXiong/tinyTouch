@@ -707,6 +707,17 @@ def connected_device_ids() -> set[str]:
     return {endpoint.device_id for endpoint in device_endpoints()}
 
 
+def known_device_ids() -> set[str]:
+    """List attached devices and identities saved by the helper."""
+    device_ids = connected_device_ids()
+    for prefix in ("state-", "settings-"):
+        for path in STATE_DIR.glob(f"{prefix}TT-*.json"):
+            device_id = path.stem[len(prefix) :]
+            if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", device_id):
+                device_ids.add(normalize_serial(device_id))
+    return device_ids
+
+
 def check_credentials() -> None:
     """Check unattended access without opening a device or typing a password."""
     for device_id in sorted(connected_device_ids()):
