@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>tinyTouch · CLI copy review</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <aside class="sidebar" aria-label="Review navigation">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">tt</span> tinyTouch <span class="brand-label">COPY DESK</span></a>
+    <p class="sidebar-note">One line at a time.<br>Your words, your comments.</p>
+    <nav id="groups" aria-label="Text categories"></nav>
+    <div class="sidebar-footer"><span class="dot" aria-hidden="true"></span><span id="save-state" role="status">Loading catalog…</span><p>Drafts stay in this browser.<br>Copy feedback to send it in chat.</p></div>
+  </aside>
+  <main id="top">
+    <header class="page-header">
+      <div><p class="eyebrow">CLI / EDITORIAL REVIEW</p><h1>Make every line yours.</h1><p class="intro">Edit the proposed text, leave a comment, or mark a line reviewed. When ready, copy your feedback and paste it into our chat.</p></div>
+      <div class="header-actions"><button id="copy-feedback" class="primary" disabled>Copy feedback <span aria-hidden="true">↗</span></button><button id="download-feedback" disabled>Download feedback</button></div>
+    </header>
+    <div class="summary" aria-label="Review progress"><div><strong id="copy-count">—</strong><span>primary copy lines</span></div><div><strong id="route-count">—</strong><span>command & menu paths</span></div><div><strong id="feedback-count">0</strong><span>lines with feedback</span></div><div><strong id="reviewed-count">0</strong><span>lines reviewed</span></div></div>
+    <details class="scope"><summary>What’s included <span id="version"></span></summary><p>Prompts, menus, notifications, errors, settings, enrollment instructions, installer output and generated help for every command. Each nonblank line is editable, including repeated occurrences in different contexts.</p><p><code>{value}</code> marks a Python template value; <code>%s</code> and <code>%d</code> mark firmware values. Keep placeholders unless you want to change what the message includes. Some rows are pieces of a composed message; use comments to describe a change to the whole message.</p><p>The technical appendix contains the remaining runtime string literals from the CLI, helper, native support modules and tracked firmware C files. It includes command tokens, JSON keys and formatting strings that may appear in diagnostics. These are available for review but many also control behavior.</p><p>Operating-system prompts, external tool errors and changing device values are generated at runtime. Their output boundaries appear in “External and dynamic output”; their exact values cannot be enumerated here. Blank layout lines and code docstrings are omitted.</p><p>This is a manual review page. Edits do not change the CLI, and drafts are not shared across browsers. “Copy feedback” includes all edited or commented lines, regardless of the current filter.</p><details><summary>Source coverage and command paths</summary><div id="coverage"></div><ul id="routes" class="route-list"></ul></details></details>
+    <details class="general"><summary>Leave a general comment</summary><label for="general-comment">Overall voice, terminology, or changes that span several lines</label><textarea id="general-comment" rows="3" placeholder="For example: use ‘fingerprint’ consistently instead of ‘finger’ in confirmations."></textarea></details>
+    <section class="toolbar" aria-label="Filter copy">
+      <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search text, commands, or context…" aria-label="Search text and context"></label>
+      <label class="filter-label">Show<select id="status-filter"><option value="all">All lines</option><option value="feedback">With feedback</option><option value="unreviewed">Not reviewed</option><option value="reviewed">Reviewed</option></select></label>
+      <label class="appendix-toggle"><input id="include-technical" type="checkbox"> Include technical appendix</label>
+    </section>
+    <div class="results-header"><div><h2 id="group-title">All copy</h2><p id="result-count" aria-live="polite">Loading…</p></div><button id="reset-filters">Reset filters</button></div>
+    <div id="fatal" class="notice" role="alert" hidden></div>
+    <section id="entries" aria-label="Editable CLI text"></section>
+    <div id="empty" class="empty" hidden><h3>No matching lines.</h3><p>Change the search or filters to continue reviewing.</p></div>
+    <div class="pagination"><button id="previous" disabled>← Previous</button><span id="page-info" aria-live="polite"></span><button id="next" disabled>Next →</button></div>
+    <footer class="page-footer"><p id="snapshot"></p><p>Copy feedback → paste into chat → we make the changes.</p></footer>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="copy-dialog"><h2>Your feedback is ready.</h2><p>Clipboard access is unavailable here. Select and copy the text below, or download the feedback file.</p><textarea id="copy-fallback" rows="14" aria-label="Feedback to copy" readonly></textarea><button id="close-dialog">Done</button></dialog>
+</body>
+</html>
