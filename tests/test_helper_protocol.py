@@ -32,10 +32,15 @@ class SerialFramingTests(unittest.TestCase):
 
 class CredentialPreflightTests(unittest.TestCase):
     def test_preflight_distinguishes_access_denial_from_corrupt_credentials(self):
-        for error, exit_code in ((helper.KeychainError("read", -25293), 1), (ValueError("invalid key"), 2)):
+        for error, exit_code in (
+            (helper.KeychainError("read", -25293), 1),
+            (ValueError("invalid key"), 2),
+        ):
             with (
                 self.subTest(error=type(error).__name__),
-                mock.patch.object(helper.sys, "argv", ["helper", "--check-credentials"]),
+                mock.patch.object(
+                    helper.sys, "argv", ["helper", "--check-credentials"]
+                ),
                 mock.patch.object(helper, "set_background_mode"),
                 mock.patch.object(helper, "check_credentials", side_effect=error),
                 mock.patch.object(helper, "diagnostic"),
@@ -54,7 +59,9 @@ class CredentialPreflightTests(unittest.TestCase):
                 mock.patch.object(helper, "STATE_DIR", root),
                 mock.patch.object(helper, "device_endpoints", return_value=[]),
                 mock.patch.object(helper, "credentials_exist", return_value=True),
-                mock.patch.object(helper, "load_passwords", return_value={0: password}) as load,
+                mock.patch.object(
+                    helper, "load_passwords", return_value={0: password}
+                ) as load,
                 mock.patch.object(helper, "pairing_keychain_get", return_value=key),
                 mock.patch.object(helper.serial, "Serial") as serial,
             ):
@@ -69,11 +76,20 @@ class CredentialPreflightTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             mock.patch.object(helper, "STATE_DIR", Path(directory)),
-            mock.patch.object(helper, "device_endpoints", return_value=[
-                helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")]),
+            mock.patch.object(
+                helper,
+                "device_endpoints",
+                return_value=[
+                    helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")
+                ],
+            ),
             mock.patch.object(helper, "credentials_exist", return_value=True),
             mock.patch.object(helper, "load_passwords", return_value={0: password}),
-            mock.patch.object(helper, "pairing_keychain_get", side_effect=helper.KeychainError("read", -25293)),
+            mock.patch.object(
+                helper,
+                "pairing_keychain_get",
+                side_effect=helper.KeychainError("read", -25293),
+            ),
         ):
             with self.assertRaises(helper.KeychainError):
                 helper.check_credentials()
@@ -83,8 +99,13 @@ class CredentialPreflightTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             mock.patch.object(helper, "STATE_DIR", Path(directory)),
-            mock.patch.object(helper, "device_endpoints", return_value=[
-                helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")]),
+            mock.patch.object(
+                helper,
+                "device_endpoints",
+                return_value=[
+                    helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")
+                ],
+            ),
             mock.patch.object(helper, "credentials_exist", return_value=False),
             mock.patch.object(helper, "load_passwords") as load,
         ):

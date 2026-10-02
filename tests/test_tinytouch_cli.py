@@ -394,12 +394,16 @@ class ProtocolSixTests(unittest.TestCase):
         launch_agent = mock.MagicMock()
         launch_agent.exists.return_value = True
         with (
-            mock.patch.object(cli, "update_release", return_value=("https://release", manifest)),
+            mock.patch.object(
+                cli, "update_release", return_value=("https://release", manifest)
+            ),
             mock.patch.object(cli, "LAUNCH_AGENT", launch_agent),
             mock.patch.object(cli, "install_helper") as install_helper,
             mock.patch.object(cli, "command_repair") as repair,
             mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT-1234"),
-            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "x"}),
+            mock.patch.object(
+                cli, "status", return_value={"protocol": "6", "firmware": "x"}
+            ),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "download", return_value=image),
             mock.patch.object(cli, "stage_ota"),
@@ -412,18 +416,35 @@ class ProtocolSixTests(unittest.TestCase):
     def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
         image = b"firmware"
         digest = hashlib.sha256(image).hexdigest()
-        manifest = {"version": cli.CLI_VERSION, "ota": {"file": "app.bin", "sha256": digest}}
+        manifest = {
+            "version": cli.CLI_VERSION,
+            "ota": {"file": "app.bin", "sha256": digest},
+        }
         args = SimpleNamespace(port=None, firmware_only=True)
         activity = []
         with (
-            mock.patch.object(cli, "update_release", return_value=("https://release", manifest)),
+            mock.patch.object(
+                cli, "update_release", return_value=("https://release", manifest)
+            ),
             mock.patch.object(cli, "LAUNCH_AGENT") as agent,
-            mock.patch.object(cli, "install_helper", side_effect=cli.HelperCredentialAccessError("denied")),
-            mock.patch.object(cli, "command_repair", side_effect=lambda args: activity.append("repair")) as repair,
+            mock.patch.object(
+                cli,
+                "install_helper",
+                side_effect=cli.HelperCredentialAccessError("denied"),
+            ),
+            mock.patch.object(
+                cli,
+                "command_repair",
+                side_effect=lambda args: activity.append("repair"),
+            ) as repair,
             mock.patch.object(cli, "choose_port", return_value="/dev/test"),
-            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "x"}),
+            mock.patch.object(
+                cli, "status", return_value={"protocol": "6", "firmware": "x"}
+            ),
             mock.patch.object(cli, "download", return_value=image),
-            mock.patch.object(cli, "stage_ota", side_effect=lambda *args: activity.append("ota")),
+            mock.patch.object(
+                cli, "stage_ota", side_effect=lambda *args: activity.append("ota")
+            ),
             mock.patch.object(cli, "notify"),
             mock.patch.object(cli, "say"),
         ):
@@ -434,10 +455,20 @@ class ProtocolSixTests(unittest.TestCase):
 
     def test_upgrade_denied_repair_does_not_stage_firmware(self):
         with (
-            mock.patch.object(cli, "update_release", return_value=("https://release", {"version": cli.CLI_VERSION})),
+            mock.patch.object(
+                cli,
+                "update_release",
+                return_value=("https://release", {"version": cli.CLI_VERSION}),
+            ),
             mock.patch.object(cli, "LAUNCH_AGENT") as agent,
-            mock.patch.object(cli, "install_helper", side_effect=cli.HelperCredentialAccessError("denied")),
-            mock.patch.object(cli, "command_repair", side_effect=cli.ToolError("authorization denied")),
+            mock.patch.object(
+                cli,
+                "install_helper",
+                side_effect=cli.HelperCredentialAccessError("denied"),
+            ),
+            mock.patch.object(
+                cli, "command_repair", side_effect=cli.ToolError("authorization denied")
+            ),
             mock.patch.object(cli, "stage_ota") as ota,
             mock.patch.object(cli, "unload_helper") as unload,
             mock.patch.object(cli, "say"),
@@ -451,7 +482,9 @@ class ProtocolSixTests(unittest.TestCase):
     def test_upgrade_does_not_repair_an_unrelated_helper_failure(self):
         with (
             mock.patch.object(cli, "LAUNCH_AGENT") as agent,
-            mock.patch.object(cli, "install_helper", side_effect=cli.ToolError("check failed")),
+            mock.patch.object(
+                cli, "install_helper", side_effect=cli.ToolError("check failed")
+            ),
             mock.patch.object(cli, "command_repair") as repair,
             mock.patch.object(cli, "say"),
         ):
@@ -573,11 +606,17 @@ class ProtocolSixTests(unittest.TestCase):
         calls = []
         with (
             mock.patch.object(cli, "require_macos"),
-            mock.patch.object(cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]),
-            mock.patch.object(cli, "authorize_macos", side_effect=lambda: calls.append("sudo")),
+            mock.patch.object(
+                cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]
+            ),
+            mock.patch.object(
+                cli, "authorize_macos", side_effect=lambda: calls.append("sudo")
+            ),
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(
-                cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("touch")
+                cli,
+                "unlock",
+                side_effect=lambda _port, **_kwargs: calls.append("touch"),
             ) as unlock,
             mock.patch.object(cli, "run", side_effect=cli.ToolError("sc_auth failed")),
             mock.patch.object(cli, "say"),
@@ -1023,11 +1062,15 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "SUPPORT_DIR", root / "support"),
                 mock.patch.object(cli, "LOG_DIR", root / "logs"),
                 mock.patch.object(cli, "LAUNCH_AGENT", root / "agent.plist"),
-                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/cli")),
+                mock.patch.object(
+                    cli, "ensure_helper_environment", return_value=Path("/cli")
+                ),
                 mock.patch.object(cli, "unload_helper"),
                 mock.patch.object(cli, "load_helper"),
                 mock.patch.object(cli, "helper_loaded", return_value=True),
-                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+                mock.patch.object(
+                    cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)
+                ),
                 mock.patch.object(cli, "atomic_write_bytes") as write,
                 mock.patch.object(cli, "FROZEN", True),
                 mock.patch.object(cli.sys, "executable", "/cli"),
@@ -1038,23 +1081,31 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(launch_agent["ProcessType"], "Interactive")
         self.assertEqual(launch_agent["ThrottleInterval"], 1)
 
-
     def test_helper_denied_credentials_preserves_existing_service(self):
         with tempfile.TemporaryDirectory() as directory:
             agent = Path(directory) / "agent.plist"
             agent.write_bytes(b"existing service")
             with (
                 mock.patch.object(cli, "LAUNCH_AGENT", agent),
-                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/python")),
+                mock.patch.object(
+                    cli, "ensure_helper_environment", return_value=Path("/new/python")
+                ),
                 mock.patch.object(cli, "FROZEN", False),
-                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as run,
+                mock.patch.object(
+                    cli.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+                ) as run,
                 mock.patch.object(cli, "unload_helper") as unload,
                 mock.patch.object(cli, "load_helper") as load,
             ):
-                with self.assertRaisesRegex(cli.ToolError, "existing service is unchanged"):
+                with self.assertRaisesRegex(
+                    cli.ToolError, "existing service is unchanged"
+                ):
                     cli.install_helper()
             self.assertEqual(agent.read_bytes(), b"existing service")
-            self.assertEqual(run.call_args.args[0], ["/new/python", str(cli.HELPER), "--check-credentials"])
+            self.assertEqual(
+                run.call_args.args[0],
+                ["/new/python", str(cli.HELPER), "--check-credentials"],
+            )
             unload.assert_not_called()
             load.assert_not_called()
 
@@ -1068,21 +1119,37 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "SUPPORT_DIR", root / "support"),
                 mock.patch.object(cli, "LOG_DIR", root / "logs"),
                 mock.patch.object(cli, "LAUNCH_AGENT", agent),
-                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
-                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+                mock.patch.object(
+                    cli, "ensure_helper_environment", return_value=Path("/new/cli")
+                ),
+                mock.patch.object(
+                    cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)
+                ),
                 mock.patch.object(cli, "unload_helper"),
-                mock.patch.object(cli, "load_helper", side_effect=[cli.ToolError("startup failed"), None]) as load,
+                mock.patch.object(
+                    cli,
+                    "load_helper",
+                    side_effect=[cli.ToolError("startup failed"), None],
+                ) as load,
                 mock.patch.object(cli, "helper_loaded", return_value=True),
             ):
-                with self.assertRaisesRegex(cli.ToolError, "previous service was restored"):
+                with self.assertRaisesRegex(
+                    cli.ToolError, "previous service was restored"
+                ):
                     cli.install_helper()
             self.assertEqual(agent.read_bytes(), previous)
             self.assertEqual(load.call_count, 2)
 
     def test_helper_check_timeout_does_not_stop_working_service(self):
         with (
-            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
-            mock.patch.object(cli.subprocess, "run", side_effect=cli.subprocess.TimeoutExpired("check", 15)),
+            mock.patch.object(
+                cli, "ensure_helper_environment", return_value=Path("/new/cli")
+            ),
+            mock.patch.object(
+                cli.subprocess,
+                "run",
+                side_effect=cli.subprocess.TimeoutExpired("check", 15),
+            ),
             mock.patch.object(cli, "unload_helper") as unload,
         ):
             with self.assertRaisesRegex(cli.ToolError, "existing service is unchanged"):
@@ -1091,22 +1158,36 @@ class ProtocolSixTests(unittest.TestCase):
 
     def test_repair_authorizes_current_cli_then_reinstalls_its_helper(self):
         keychain = mock.Mock()
-        keychain.has_password.side_effect = lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
+        keychain.has_password.side_effect = (
+            lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
+        )
         activity = []
-        keychain.authorize_executable.side_effect = lambda *args, **kwargs: activity.append(("authorize", args))
+        keychain.authorize_executable.side_effect = (
+            lambda *args, **kwargs: activity.append(("authorize", args))
+        )
         with (
             mock.patch.object(cli, "FROZEN", True),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "choose_port", return_value="/dev/test"),
             mock.patch.object(cli, "device_account", return_value="TT-123456ABCDEF"),
             mock.patch.object(cli, "_keychain", return_value=keychain),
-            mock.patch.object(cli, "install_helper", side_effect=lambda: activity.append(("install", ()))),
+            mock.patch.object(
+                cli,
+                "install_helper",
+                side_effect=lambda: activity.append(("install", ())),
+            ),
             mock.patch.object(cli, "say"),
         ):
-            cli.command_repair(cli.parser().parse_args(["repair", "--port", "/dev/test"]))
-        self.assertEqual([event[0] for event in activity], ["authorize"] * 3 + ["install"])
+            cli.command_repair(
+                cli.parser().parse_args(["repair", "--port", "/dev/test"])
+            )
+        self.assertEqual(
+            [event[0] for event in activity], ["authorize"] * 3 + ["install"]
+        )
         self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:2")
-        self.assertTrue(all(event[1][-1] == cli.sys.executable for event in activity[:3]))
+        self.assertTrue(
+            all(event[1][-1] == cli.sys.executable for event in activity[:3])
+        )
         keychain.set_password.assert_not_called()
         keychain.delete_password.assert_not_called()
 
@@ -1124,14 +1205,18 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "say"),
         ):
             with self.assertRaisesRegex(cli.ToolError, "authorization denied"):
-                cli.command_repair(cli.parser().parse_args(["repair", "--port", "/dev/test"]))
+                cli.command_repair(
+                    cli.parser().parse_args(["repair", "--port", "/dev/test"])
+                )
         install.assert_not_called()
         keychain.set_password.assert_not_called()
         keychain.delete_password.assert_not_called()
 
     def test_upgrade_repair_includes_multiple_disconnected_devices(self):
         keychain = mock.Mock()
-        keychain.has_password.side_effect = lambda service, name: ":fingerprint:" not in name
+        keychain.has_password.side_effect = (
+            lambda service, name: ":fingerprint:" not in name
+        )
         devices = {"TT-123456ABCDEF", "TT-000011112222"}
         with (
             mock.patch.object(cli, "FROZEN", True),
@@ -1144,9 +1229,13 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_repair(SimpleNamespace(port=None))
         self.assertEqual(keychain.authorize_executable.call_count, 4)
-        self.assertEqual({call.args[1] for call in keychain.authorize_executable.call_args_list}, devices)
+        self.assertEqual(
+            {call.args[1] for call in keychain.authorize_executable.call_args_list},
+            devices,
+        )
         choose.assert_not_called()
         install.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
