@@ -30,6 +30,89 @@ class SerialFramingTests(unittest.TestCase):
         self.assertEqual(helper.resynchronize_event(f"EV partial{intact}"), intact)
 
 
+class CredentialPreflightTests(unittest.TestCase):
+    def test_preflight_distinguishes_access_denial_from_corrupt_credentials(self):
+        for error, exit_code in (
+            (helper.KeychainError("read", -25293), 1),
+            (ValueError("invalid key"), 2),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(
+                    helper.sys, "argv", ["helper", "--check-credentials"]
+                ),
+                mock.patch.object(helper, "set_background_mode"),
+                mock.patch.object(helper, "check_credentials", side_effect=error),
+                mock.patch.object(helper, "diagnostic"),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    helper.main()
+                self.assertEqual(raised.exception.code, exit_code)
+
+    def test_disconnected_device_is_checked_and_buffers_are_wiped(self):
+        password, key = bytearray(b"test password"), bytearray(b"k" * 32)
+        device_id = "TT-123456ABCDEF"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / f"state-{device_id}.json").write_text("{}")
+            with (
+                mock.patch.object(helper, "STATE_DIR", root),
+                mock.patch.object(helper, "device_endpoints", return_value=[]),
+                mock.patch.object(helper, "credentials_exist", return_value=True),
+                mock.patch.object(
+                    helper, "load_passwords", return_value={0: password}
+                ) as load,
+                mock.patch.object(helper, "pairing_keychain_get", return_value=key),
+                mock.patch.object(helper.serial, "Serial") as serial,
+            ):
+                helper.check_credentials()
+        load.assert_called_once_with(device_id)
+        self.assertEqual(password, bytearray(len(password)))
+        self.assertEqual(key, bytearray(32))
+        serial.assert_not_called()
+
+    def test_pairing_denial_wipes_password_and_blocks_preflight(self):
+        password = bytearray(b"test password")
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(helper, "STATE_DIR", Path(directory)),
+            mock.patch.object(
+                helper,
+                "device_endpoints",
+                return_value=[
+                    helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")
+                ],
+            ),
+            mock.patch.object(helper, "credentials_exist", return_value=True),
+            mock.patch.object(helper, "load_passwords", return_value={0: password}),
+            mock.patch.object(
+                helper,
+                "pairing_keychain_get",
+                side_effect=helper.KeychainError("read", -25293),
+            ),
+        ):
+            with self.assertRaises(helper.KeychainError):
+                helper.check_credentials()
+        self.assertEqual(password, bytearray(len(password)))
+
+    def test_unconfigured_device_does_not_block_first_setup(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(helper, "STATE_DIR", Path(directory)),
+            mock.patch.object(
+                helper,
+                "device_endpoints",
+                return_value=[
+                    helper.DeviceEndpoint("TT-123456ABCDEF", "/dev/test", "")
+                ],
+            ),
+            mock.patch.object(helper, "credentials_exist", return_value=False),
+            mock.patch.object(helper, "load_passwords") as load,
+        ):
+            helper.check_credentials()
+        load.assert_not_called()
+
+
 class WorkerStateMachineTests(unittest.TestCase):
     def test_manager_failure_drains_workers_before_restart(self):
         endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.fake", "1-1")

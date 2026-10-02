@@ -101,6 +101,12 @@ if ! "$bundle/tinytouch" --version; then
   exit 1
 fi
 
+# Keep the current CLI and helper until credential access has been verified.
+if ! "$bundle/tinytouch" _upgrade-helper; then
+  echo 'HID service upgrade did not finish. The CLI command was not replaced.' >&2
+  exit 1
+fi
+
 if { [ -d "$install_dir" ] && [ -w "$install_dir" ]; } || \
    { [ ! -e "$install_dir" ] && [ -w "${install_dir%/*}" ]; }; then
   mkdir -p "$install_dir"

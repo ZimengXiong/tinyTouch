@@ -21,6 +21,22 @@ tinytouch status
 
 The `ota` field returns to `idle` after a successful boot.
 
+## Upgrade an older CLI
+
+CLIs such as `0.1.25-prod` and `0.1.26-prod` expect the old `-prod` release format.
+If `tinytouch update` reports an invalid production version, install the current CLI:
+
+```sh
+curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/install.sh | sh
+```
+
+The installer checks the new helper's access to saved Keychain credentials.
+If access is denied, it starts repair and prompts for macOS Keychain authorization.
+Approve the dialogs; macOS can require your Login Keychain password.
+Repair preserves passwords and pairing keys and installs the current helper.
+If you cancel, the existing CLI command and helper stay in place.
+The installer does not update firmware. Run `tinytouch update` afterward to update firmware.
+
 ## If an update is interrupted
 
 Reconnect the device and run `tinytouch update` again.
