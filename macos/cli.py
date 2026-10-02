@@ -655,7 +655,8 @@ def command_upgrade_helper(args: argparse.Namespace) -> None:
         install_helper()
     except HelperCredentialAccessError:
         say("The new CLI needs Keychain authorization. Starting repair...")
-        command_repair(args)
+        # One helper serves every paired device, even when OTA targets one port.
+        command_repair(argparse.Namespace(port=None))
 
 
 def exchange_serial(

@@ -450,8 +450,25 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             agent.exists.return_value = True
             cli.command_update(args)
-        repair.assert_called_once_with(args)
+        repair.assert_called_once()
+        self.assertIsNone(repair.call_args.args[0].port)
         self.assertEqual(activity, ["repair", "ota"])
+
+    def test_upgrade_of_one_device_repairs_access_for_the_shared_helper(self):
+        with (
+            mock.patch.object(cli, "LAUNCH_AGENT") as agent,
+            mock.patch.object(
+                cli,
+                "install_helper",
+                side_effect=cli.HelperCredentialAccessError("denied"),
+            ),
+            mock.patch.object(cli, "command_repair") as repair,
+            mock.patch.object(cli, "say"),
+        ):
+            agent.exists.return_value = True
+            cli.command_upgrade_helper(SimpleNamespace(port="/dev/selected"))
+        repair.assert_called_once()
+        self.assertIsNone(repair.call_args.args[0].port)
 
     def test_upgrade_denied_repair_does_not_stage_firmware(self):
         with (
