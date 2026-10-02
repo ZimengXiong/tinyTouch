@@ -1971,13 +1971,28 @@ def command_status(args: argparse.Namespace) -> None:
     if not getattr(args, "summary", False):
         data = status(port)
         if getattr(args, "details", False):
+            labels = {
+                "fingerprints": "Saved scans",
+                "finger_groups": "Grouped enrollment",
+                "hosts": "Registered computers",
+                "config_values": "Setting readback",
+                "custom_config": "Custom settings",
+                "led_control": "Lighting control",
+                "led_sync": "Lighting sync",
+                "led_only_auth": "Auth lighting support",
+                "ota": "Firmware update",
+                "piv": "Smart card",
+                "piv_touch": "Touch-activated PIV",
+                "piv_touch_active": "PIV touch active",
+                "piv_visible": "Smart card visible",
+            }
             show_fields(
                 [
                     (
                         (
                             SETTINGS[key].label
                             if key in SETTINGS
-                            else key.replace("_", " ").capitalize()
+                            else labels.get(key, key.replace("_", " ").capitalize())
                         ),
                         SETTINGS[key].decode(value) if key in SETTINGS else value,
                     )
