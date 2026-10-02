@@ -167,7 +167,9 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
     """Authorize a stable signed CLI without replacing its saved credential."""
     metadata = subprocess.run(
         ["codesign", "-d", "--verbose=2", executable],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", metadata.stderr, re.MULTILINE)
     if team is None:
@@ -178,7 +180,9 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
     )
     subprocess.run(
         ["codesign", "--verify", "--strict", "-R", "=" + requirement, executable],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     status, item, _, _ = _find(service, account, include_secret=False)
     if status != 0:
@@ -189,10 +193,22 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
     for name, arguments, result in (
         ("SecKeychainItemCopyAccess", [pointer, output], ctypes.c_int32),
         ("SecKeychainItemSetAccess", [pointer, pointer], ctypes.c_int32),
-        ("SecTrustedApplicationCreateFromPath", [ctypes.c_char_p, output], ctypes.c_int32),
+        (
+            "SecTrustedApplicationCreateFromPath",
+            [ctypes.c_char_p, output],
+            ctypes.c_int32,
+        ),
         ("SecAccessCopyMatchingACLList", [pointer, pointer], pointer),
-        ("SecACLCopyContents", [pointer, output, output, ctypes.POINTER(ctypes.c_uint16)], ctypes.c_int32),
-        ("SecACLSetContents", [pointer, pointer, pointer, ctypes.c_uint16], ctypes.c_int32),
+        (
+            "SecACLCopyContents",
+            [pointer, output, output, ctypes.POINTER(ctypes.c_uint16)],
+            ctypes.c_int32,
+        ),
+        (
+            "SecACLSetContents",
+            [pointer, pointer, pointer, ctypes.c_uint16],
+            ctypes.c_int32,
+        ),
     ):
         function = getattr(_SECURITY, name)
         function.argtypes, function.restype = arguments, result
@@ -202,8 +218,16 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
         ("CFArrayCreateMutableCopy", [pointer, ctypes.c_ssize_t, pointer], pointer),
         ("CFArrayAppendValue", [pointer, pointer], None),
         ("CFStringGetLength", [pointer], ctypes.c_ssize_t),
-        ("CFStringGetCString", [pointer, pointer, ctypes.c_ssize_t, ctypes.c_uint32], ctypes.c_bool),
-        ("CFStringCreateWithCString", [pointer, ctypes.c_char_p, ctypes.c_uint32], pointer),
+        (
+            "CFStringGetCString",
+            [pointer, pointer, ctypes.c_ssize_t, ctypes.c_uint32],
+            ctypes.c_bool,
+        ),
+        (
+            "CFStringCreateWithCString",
+            [pointer, ctypes.c_char_p, ctypes.c_uint32],
+            pointer,
+        ),
     ):
         function = getattr(_CORE_FOUNDATION, name)
         function.argtypes, function.restype = arguments, result
@@ -214,8 +238,15 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
 
     try:
         check(_SECURITY.SecKeychainItemCopyAccess(item, ctypes.byref(access)))
-        check(_SECURITY.SecTrustedApplicationCreateFromPath(executable.encode(), ctypes.byref(trusted)))
-        for authorization in ("kSecACLAuthorizationDecrypt", "kSecACLAuthorizationPartitionID"):
+        check(
+            _SECURITY.SecTrustedApplicationCreateFromPath(
+                executable.encode(), ctypes.byref(trusted)
+            )
+        )
+        for authorization in (
+            "kSecACLAuthorizationDecrypt",
+            "kSecACLAuthorizationPartitionID",
+        ):
             tag = pointer.in_dll(_SECURITY, authorization)
             acls = _SECURITY.SecAccessCopyMatchingACLList(access, tag)
             if not acls:
@@ -229,32 +260,63 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
                     selector = ctypes.c_uint16()
                     updated_apps = updated_description = None
                     try:
-                        check(_SECURITY.SecACLCopyContents(
-                            acl, ctypes.byref(applications), ctypes.byref(description), ctypes.byref(selector)
-                        ))
+                        check(
+                            _SECURITY.SecACLCopyContents(
+                                acl,
+                                ctypes.byref(applications),
+                                ctypes.byref(description),
+                                ctypes.byref(selector),
+                            )
+                        )
                         if authorization == "kSecACLAuthorizationDecrypt":
                             # Preserve all existing restrictions and trusted applications.
                             if not applications:
                                 continue
-                            updated_apps = _CORE_FOUNDATION.CFArrayCreateMutableCopy(None, 0, applications)
+                            updated_apps = _CORE_FOUNDATION.CFArrayCreateMutableCopy(
+                                None, 0, applications
+                            )
                             _CORE_FOUNDATION.CFArrayAppendValue(updated_apps, trusted)
                         else:
-                            size = _CORE_FOUNDATION.CFStringGetLength(description) * 4 + 1
+                            size = (
+                                _CORE_FOUNDATION.CFStringGetLength(description) * 4 + 1
+                            )
                             buffer = ctypes.create_string_buffer(size)
-                            if not _CORE_FOUNDATION.CFStringGetCString(description, buffer, size, 0x08000100):
+                            if not _CORE_FOUNDATION.CFStringGetCString(
+                                description, buffer, size, 0x08000100
+                            ):
                                 raise KeychainError("read credential partition ACL", -1)
-                            partitions = plistlib.loads(bytes.fromhex(buffer.value.decode()))
+                            partitions = plistlib.loads(
+                                bytes.fromhex(buffer.value.decode())
+                            )
                             values = partitions["Partitions"]
                             team_partition = "teamid:" + team[1]
                             if team_partition not in values:
                                 values.append(team_partition)
-                            encoded = plistlib.dumps(partitions, fmt=plistlib.FMT_XML).hex().encode()
-                            updated_description = _CORE_FOUNDATION.CFStringCreateWithCString(None, encoded, 0x08000100)
-                        check(_SECURITY.SecACLSetContents(
-                            acl, updated_apps or applications, updated_description or description, selector
-                        ))
+                            encoded = (
+                                plistlib.dumps(partitions, fmt=plistlib.FMT_XML)
+                                .hex()
+                                .encode()
+                            )
+                            updated_description = (
+                                _CORE_FOUNDATION.CFStringCreateWithCString(
+                                    None, encoded, 0x08000100
+                                )
+                            )
+                        check(
+                            _SECURITY.SecACLSetContents(
+                                acl,
+                                updated_apps or applications,
+                                updated_description or description,
+                                selector,
+                            )
+                        )
                     finally:
-                        for reference in (updated_apps, updated_description, applications, description):
+                        for reference in (
+                            updated_apps,
+                            updated_description,
+                            applications,
+                            description,
+                        ):
                             if reference:
                                 _CORE_FOUNDATION.CFRelease(reference)
             finally:

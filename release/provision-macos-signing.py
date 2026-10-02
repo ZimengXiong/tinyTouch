@@ -11,8 +11,14 @@ import subprocess
 
 class ExportParameters(c.Structure):
     _fields_ = [("version", c.c_uint32), ("flags", c.c_uint32)] + [
-        (name, c.c_void_p) for name in (
-            "passphrase", "alertTitle", "alertPrompt", "accessRef", "keyUsage", "keyAttributes"
+        (name, c.c_void_p)
+        for name in (
+            "passphrase",
+            "alertTitle",
+            "alertPrompt",
+            "accessRef",
+            "keyUsage",
+            "keyAttributes",
         )
     ]
 
@@ -20,14 +26,27 @@ class ExportParameters(c.Structure):
 def export_identity(fingerprint: str, password: str) -> bytearray:
     """Export only the requested certificate and its private key as PKCS#12."""
     security = c.CDLL("/System/Library/Frameworks/Security.framework/Security")
-    foundation = c.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    foundation = c.CDLL(
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
     signatures = {
-        "SecIdentitySearchCreate": ([c.c_void_p, c.c_uint32, c.POINTER(c.c_void_p)], c.c_int32),
+        "SecIdentitySearchCreate": (
+            [c.c_void_p, c.c_uint32, c.POINTER(c.c_void_p)],
+            c.c_int32,
+        ),
         "SecIdentitySearchCopyNext": ([c.c_void_p, c.POINTER(c.c_void_p)], c.c_int32),
         "SecIdentityCopyCertificate": ([c.c_void_p, c.POINTER(c.c_void_p)], c.c_int32),
         "SecCertificateCopyData": ([c.c_void_p], c.c_void_p),
-        "SecItemExport": ([c.c_void_p, c.c_uint32, c.c_uint32,
-                           c.POINTER(ExportParameters), c.POINTER(c.c_void_p)], c.c_int32),
+        "SecItemExport": (
+            [
+                c.c_void_p,
+                c.c_uint32,
+                c.c_uint32,
+                c.POINTER(ExportParameters),
+                c.POINTER(c.c_void_p),
+            ],
+            c.c_int32,
+        ),
     }
     for name, (arguments, result) in signatures.items():
         function = getattr(security, name)
@@ -55,19 +74,32 @@ def export_identity(fingerprint: str, password: str) -> bytearray:
             check(status)
             data = passphrase = exported = None
             try:
-                check(security.SecIdentityCopyCertificate(identity, c.byref(certificate)))
+                check(
+                    security.SecIdentityCopyCertificate(identity, c.byref(certificate))
+                )
                 data = security.SecCertificateCopyData(certificate)
-                raw = c.string_at(foundation.CFDataGetBytePtr(data), foundation.CFDataGetLength(data))
+                raw = c.string_at(
+                    foundation.CFDataGetBytePtr(data), foundation.CFDataGetLength(data)
+                )
                 if hashlib.sha1(raw).hexdigest().upper() != fingerprint.upper():
                     continue
-                passphrase = foundation.CFStringCreateWithCString(None, password.encode(), 0x08000100)
+                passphrase = foundation.CFStringCreateWithCString(
+                    None, password.encode(), 0x08000100
+                )
                 parameters = ExportParameters(passphrase=passphrase)
                 exported = c.c_void_p()
                 # kSecFormatPKCS12 = 12. Native Keychain approval may be required.
-                check(security.SecItemExport(identity, 12, 0, c.byref(parameters), c.byref(exported)))
-                return bytearray(c.string_at(
-                    foundation.CFDataGetBytePtr(exported), foundation.CFDataGetLength(exported)
-                ))
+                check(
+                    security.SecItemExport(
+                        identity, 12, 0, c.byref(parameters), c.byref(exported)
+                    )
+                )
+                return bytearray(
+                    c.string_at(
+                        foundation.CFDataGetBytePtr(exported),
+                        foundation.CFDataGetLength(exported),
+                    )
+                )
             finally:
                 for reference in (exported, passphrase, data, certificate, identity):
                     if reference:
@@ -87,12 +119,17 @@ def main():
     print("macOS may ask to approve export of the selected signing key.", flush=True)
     exported = export_identity(args.certificate_sha1, password)
     try:
-        from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+        from cryptography.hazmat.primitives.serialization.pkcs12 import (
+            load_key_and_certificates,
+        )
         from cryptography.x509.oid import NameOID
+
         key, certificate, _ = load_key_and_certificates(exported, password.encode())
         if key is None or certificate is None:
             raise RuntimeError("The exported identity has no usable signing key")
-        teams = certificate.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)
+        teams = certificate.subject.get_attributes_for_oid(
+            NameOID.ORGANIZATIONAL_UNIT_NAME
+        )
         if not teams or teams[0].value != args.team_id:
             raise RuntimeError("The certificate does not match the pinned release team")
         for name, value in (
@@ -100,13 +137,35 @@ def main():
             ("TINYTOUCH_MACOS_CERTIFICATE_B64", base64.b64encode(exported)),
         ):
             subprocess.run(
-                ["gh", "secret", "set", name, "--repo", args.repo, "--env", args.environment],
-                input=value, check=True, stdout=subprocess.DEVNULL,
+                [
+                    "gh",
+                    "secret",
+                    "set",
+                    name,
+                    "--repo",
+                    args.repo,
+                    "--env",
+                    args.environment,
+                ],
+                input=value,
+                check=True,
+                stdout=subprocess.DEVNULL,
             )
-        subprocess.run([
-            "gh", "variable", "set", "TINYTOUCH_MACOS_TEAM_ID", "--repo", args.repo,
-            "--env", args.environment, "--body", args.team_id,
-        ], check=True)
+        subprocess.run(
+            [
+                "gh",
+                "variable",
+                "set",
+                "TINYTOUCH_MACOS_TEAM_ID",
+                "--repo",
+                args.repo,
+                "--env",
+                args.environment,
+                "--body",
+                args.team_id,
+            ],
+            check=True,
+        )
         print("GitHub release signing certificate, password, and team pin configured.")
     finally:
         exported[:] = b"\x00" * len(exported)

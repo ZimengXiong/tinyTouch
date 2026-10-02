@@ -527,13 +527,21 @@ def ensure_helper_environment() -> Path:
 def install_helper() -> None:
     global _helper_suppressed
     python = ensure_helper_environment()
-    arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
+    arguments = (
+        [str(python), str(HELPER)]
+        if not FROZEN
+        else [str(Path(sys.executable)), "_helper"]
+    )
     # Keychain access depends on the executable's identity. Check the exact
     # replacement process before stopping a helper that can still read secrets.
     try:
         candidate = subprocess.run(
-            [*arguments, "--check-credentials"], check=False, timeout=15,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [*arguments, "--check-credentials"],
+            check=False,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ToolError(
@@ -567,7 +575,9 @@ def install_helper() -> None:
     _helper_suppressed = False
     try:
         unload_helper()
-        atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
+        atomic_write_bytes(
+            LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644
+        )
         load_helper()
         if not helper_loaded():
             raise ToolError("The HID helper did not load.")
@@ -619,15 +629,21 @@ def command_repair(args: argparse.Namespace) -> None:
             if keychain.has_password(PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
         )
     if not accounts:
-        raise ToolError("This Mac has no complete HID pairing. Run 'tinytouch setup --mode hid'.")
-    say("Repairing access for the current CLI. Approve macOS Keychain authorization if prompted.")
+        raise ToolError(
+            "This Mac has no complete HID pairing. Run 'tinytouch setup --mode hid'."
+        )
+    say(
+        "Repairing access for the current CLI. Approve macOS Keychain authorization if prompted."
+    )
     try:
         for service, name in accounts:
             keychain.authorize_executable(service, name, sys.executable)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         raise ToolError(f"Keychain repair did not finish: {exc}") from exc
     install_helper()
-    say("Current HID helper reinstalled. Saved passwords and pairing keys are unchanged.")
+    say(
+        "Current HID helper reinstalled. Saved passwords and pairing keys are unchanged."
+    )
 
 
 def command_upgrade_helper(args: argparse.Namespace) -> None:
@@ -1781,7 +1797,9 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--skip-enroll", action="store_true")
     setup.add_argument("--no-pair", action="store_true", help="do not run macOS PIV pairing")
     setup.set_defaults(func=command_setup)
-    repair = sub.add_parser("repair", help="repair Keychain access and reinstall the current HID helper")
+    repair = sub.add_parser(
+        "repair", help="repair Keychain access and reinstall the current HID helper"
+    )
     repair.add_argument("--port")
     repair.set_defaults(func=command_repair)
     upgrade_helper = sub.add_parser("_upgrade-helper", help=argparse.SUPPRESS)

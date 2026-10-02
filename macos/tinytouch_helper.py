@@ -706,7 +706,7 @@ def known_device_ids() -> set[str]:
     # Include previously used devices while they are disconnected.
     for prefix in ("state-", "settings-"):
         for path in STATE_DIR.glob(f"{prefix}TT-*.json"):
-            device_id = path.stem[len(prefix):]
+            device_id = path.stem[len(prefix) :]
             if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", device_id):
                 device_ids.add(normalize_serial(device_id))
     return device_ids
@@ -997,9 +997,14 @@ def main() -> None:
             check_credentials()
         except Exception as exc:
             # Never include credential values or arbitrary exception messages.
-            diagnostic("credentials.failed", level="error", error_type=type(exc).__name__)
+            diagnostic(
+                "credentials.failed", level="error", error_type=type(exc).__name__
+            )
             access_denied = isinstance(exc, KeychainError) and exc.status in {
-                -25293, -25308, -25315, -25320,
+                -25293,
+                -25308,
+                -25315,
+                -25320,
             }
             raise SystemExit(1 if access_denied else 2) from None
         return
