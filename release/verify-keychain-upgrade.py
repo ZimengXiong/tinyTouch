@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -42,11 +43,13 @@ def main() -> None:
         if hashlib.sha256(probes[0].read_bytes()).digest() == hashlib.sha256(probes[1].read_bytes()).digest():
             raise RuntimeError("The upgrade probe must use two different binaries")
         account = "upgrade-" + uuid.uuid4().hex
-        subprocess.run([str(probes[0]), "store", account], check=True)
+        keychain = os.environ.get("TINYTOUCH_SIGNING_KEYCHAIN")
+        keychain_arguments = [keychain] if keychain else []
+        subprocess.run([str(probes[0]), "store", account, *keychain_arguments], check=True)
         try:
-            subprocess.run([str(probes[1]), "read", account], check=True)
+            subprocess.run([str(probes[1]), "read", account, *keychain_arguments], check=True)
         finally:
-            subprocess.run([str(probes[0]), "delete", account], check=True)
+            subprocess.run([str(probes[0]), "delete", account, *keychain_arguments], check=True)
     print("Different release builds share unattended Keychain access.")
 
 
