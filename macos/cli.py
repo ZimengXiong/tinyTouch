@@ -1120,14 +1120,31 @@ def device_account(port: str) -> str:
     try:
         from tinytouch_ports import comports
     except ImportError as exc:
-        raise ToolError("The pyserial package is required to identify this tinyTouch device.") from exc
-    for candidate in comports():
-        if candidate.device != port:
-            continue
-        serial_number = re.sub(r"[^A-Za-z0-9_.-]", "", candidate.serial_number or "").upper()
-        if serial_number:
-            return serial_number
-    raise ToolError("tinyTouch did not report a stable USB serial identity.")
+        raise ToolError(
+            "The pyserial package is required to identify this tinyTouch device."
+        ) from exc
+    # Reconnecting can change the port opened by the foreground session.
+    active_port = getattr(_active_serial, "port", None)
+    if isinstance(active_port, str):
+        port = active_port
+    deadline = time.monotonic() + 6.0
+    while True:
+        try:
+            candidates = comports()
+        except OSError:
+            candidates = []
+        for candidate in candidates:
+            if candidate.device != port:
+                continue
+            serial_number = re.sub(
+                r"[^A-Za-z0-9_.-]", "", candidate.serial_number or ""
+            ).upper()
+            if serial_number:
+                return serial_number
+        # The CDC port can appear before its USB serial metadata is available.
+        if time.monotonic() >= deadline:
+            raise ToolError("tinyTouch did not report a stable USB serial identity.")
+        time.sleep(0.1)
 
 
 def host_id(key: bytes) -> str:
@@ -1158,8 +1175,8 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
-    prepare_hid_password()
     account = device_account(port)
+    prepare_hid_password()
     key = hashlib.sha256(
         f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
     ).digest()
