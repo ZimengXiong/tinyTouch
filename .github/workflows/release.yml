@@ -121,6 +121,7 @@ jobs:
             expected_arch: x86_64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
+    environment: release-signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -130,9 +131,30 @@ jobs:
         with:
           python-version: "3.13"
           architecture: ${{ matrix.architecture }}
+      - name: Load macOS release signing identity
+        env:
+          CERTIFICATE_B64: ${{ secrets.TINYTOUCH_MACOS_CERTIFICATE_B64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.TINYTOUCH_MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_B64" || { echo 'Missing macOS release signing certificate.' >&2; exit 1; }
+          certificate="$RUNNER_TEMP/tinytouch-signing.p12"
+          keychain="$RUNNER_TEMP/tinytouch-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$keychain_password"
+          umask 077
+          printf '%s' "$CERTIFICATE_B64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          rm -f "$certificate"
+          echo "TINYTOUCH_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
       - name: Test and build CLI
         env:
-          TINYTOUCH_SIGNING_IDENTITY: "-"
+          TINYTOUCH_REQUIRE_STABLE_IDENTITY: "1"
+          TINYTOUCH_SIGNING_TEAM_ID: ${{ vars.TINYTOUCH_MACOS_TEAM_ID }}
         run: |
           python -m pip install --require-hashes -r macos/requirements-bootstrap.txt
           python -m pip install --no-build-isolation --require-hashes \
@@ -147,6 +169,11 @@ jobs:
           "$cli" _package_test | grep -q "package ok (${{ matrix.expected_arch }})"
           codesign --verify --strict --verbose=2 "$cli"
           file "$cli" | grep -q "${{ matrix.expected_arch }}"
+      - name: Remove macOS signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/tinytouch-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/tinytouch-signing.p12"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-cli-${{ matrix.expected_arch }}

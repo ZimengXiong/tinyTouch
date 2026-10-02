@@ -9,7 +9,6 @@ venv_python="$venv_dir/bin/python"
 bootstrap_python="${TINYTOUCH_PYTHON:-python3.13}"
 version="${TINYTOUCH_VERSION:-$(tr -d '[:space:]' < "$project_dir/VERSION")}"
 output="${TINYTOUCH_OUTPUT:-$dist_dir/tinytouch.tar.gz}"
-signing_identity="${TINYTOUCH_SIGNING_IDENTITY:-}"
 
 if [[ ! -x "$venv_python" ]]; then
   "$bootstrap_python" -m venv "$venv_dir"
@@ -48,31 +47,15 @@ mkdir -p "$build_dir" "$dist_dir"
   --add-data "$project_dir/VERSION:." \
   "$project_dir/macos/cli.py"
 
-if [[ -z "$signing_identity" ]]; then
-  signing_identity="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)"
-fi
-if [[ -z "$signing_identity" ]]; then
-  signing_identity="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)"
-fi
-if [[ -z "$signing_identity" ]]; then
-  signing_identity="-"
-fi
-
 bundle="$build_dir/bin/tinytouch"
 executable="$bundle/tinytouch"
 "$venv_python" "$project_dir/release/check-python-runtime.py" "$bundle"
 "$executable" _package_test
-# A PyInstaller one-file binary extracts its bundled Python dylib at runtime.
-# Hardened runtime library validation rejects that extracted ad-hoc-signed dylib
-# because it does not share the outer Apple Development signature's Team ID.
-# Keep this non-notarized pre-production executable signed without hardened
-# runtime; production distribution should sign nested components in an app
-# bundle before enabling hardened runtime and notarization.
-codesign --force --timestamp=none --sign "$signing_identity" "$executable"
-codesign --verify --strict --verbose=2 "$executable"
+# Keep this CLI certificate-signed without hardened runtime or notarization.
+# Bundled Python libraries retain their PyInstaller signatures.
+zsh "$project_dir/release/sign-macos-cli.sh" "$executable"
 rm -f "$output"
 tar -C "$build_dir/bin" -czf "$output" tinytouch
 codesign --verify --strict --verbose=2 "$executable"
 
 print "Built $output ($version)"
-print "Signed executable with: $signing_identity"

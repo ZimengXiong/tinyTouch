@@ -146,6 +146,7 @@ jobs:
       - name: Build macOS executable
         env:
           TINYTOUCH_SIGNING_IDENTITY: "-"
+          TINYTOUCH_ALLOW_ADHOC: "1"
         run: release/build-standalone-macos.sh
       - name: Verify executable
         run: |
