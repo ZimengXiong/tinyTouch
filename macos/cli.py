@@ -109,6 +109,7 @@ COMMAND_TITLES = {
     "computers": "Registered computers",
     "factory-reset": "Factory reset",
     "update": "Update",
+    "uninstall": "Uninstall service",
     "rom": "ROM bootloader",
     "bootloader": "ROM bootloader",
     "status": "Status",
@@ -676,6 +677,37 @@ def remove_helper() -> None:
         LAUNCH_AGENT.unlink(missing_ok=True)
     HELPER_SUSPEND.unlink(missing_ok=True)
     HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+
+
+def command_uninstall(args: argparse.Namespace) -> None:
+    """Remove the background service without changing device or credential data."""
+    global _helper_suppressed
+    require_macos()
+    service = f"gui/{os.getuid()}/com.tinytouch.helper"
+    try:
+        subprocess.run(
+            ["launchctl", "bootout", service],
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(
+            "Could not stop the background service. Please try again."
+        ) from exc
+    if helper_loaded():
+        raise ToolError("Could not stop the background service. Please try again.")
+    _helper_suppressed = True
+    try:
+        LAUNCH_AGENT.unlink(missing_ok=True)
+        HELPER_SUSPEND.unlink(missing_ok=True)
+        HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ToolError(
+            "Could not remove the background service. Please try again."
+        ) from exc
+    say("Background service uninstalled.")
 
 
 def ensure_helper_environment() -> Path:
@@ -2458,6 +2490,7 @@ INTERACTIVE_MENUS = {
             ("piv", "PIV", "piv"),
             ("diagnostics", "Diagnostics", "diagnostics"),
             ("status", "Full status", ["status", "--details"]),
+            ("uninstall", "Uninstall service", ["uninstall"]),
         ),
     ),
     "piv": (
@@ -2620,6 +2653,8 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--skip-enroll", action="store_true", help="Skip initial enrollment and keep the existing fingerprints.")
     setup.add_argument("--no-pair", action="store_true", help="Skip the macOS PIV pairing step during setup.")
     setup.set_defaults(func=command_setup)
+    uninstall = sub.add_parser("uninstall", help="Remove the background service.")
+    uninstall.set_defaults(func=command_uninstall)
     repair = sub.add_parser(
         "repair", help="repair Keychain access and reinstall the current HID helper"
     )
@@ -2775,6 +2810,7 @@ def parser() -> argparse.ArgumentParser:
         "computers": ("List or remove registered HID computers. Use HID setup to add this Mac. Removing the last computer selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
         "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and local pairing. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
         "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
+        "uninstall": ("Stop and remove the background service. Saved credentials and the CLI stay installed.", "tinytouch uninstall"),
         "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),
         "status": ("Show full device status as JSON, or use --summary for a short overview.", "tinytouch status --summary\ntinytouch status"),
         "test": ("Check USB serial communication and device status. Use --verbose to show protocol diagnostics.", "tinytouch test\ntinytouch --verbose test\ntinytouch ports"),

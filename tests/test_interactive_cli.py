@@ -140,6 +140,16 @@ class InteractiveCliTests(unittest.TestCase):
         )
         self.assertTrue(status.call_args_list[1].args[0].details)
 
+    def test_advanced_uninstall_uses_regular_handler(self):
+        with (
+            mock.patch(
+                "builtins.input", side_effect=["5", "uninstall service", "0", "0"]
+            ),
+            mock.patch.object(cli, "command_uninstall") as uninstall,
+        ):
+            cli.interactive_menu(self.args)
+        uninstall.assert_called_once()
+
     def test_invalid_menu_input_reprompts(self):
         with mock.patch("builtins.input", side_effect=["", "-1", "99", "status"]):
             self.assertEqual(
