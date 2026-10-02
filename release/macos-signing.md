@@ -71,3 +71,23 @@ signed build with different contents and the same requirement.
 
 Existing items created by ad hoc builds still require a one-time repair. A new
 signature cannot silently inherit permission assigned to an old binary hash.
+
+## Repair an existing HID installation
+
+Run the current certificate-signed CLI with the device connected:
+
+```sh
+tinytouch repair
+```
+
+Approve the native macOS Keychain dialogs for the saved pairing key, password,
+and any fingerprint password overrides. macOS can require the Login Keychain
+password to change these access rules. The command keeps credential values and
+existing trusted applications. It adds the current signed executable and its
+team partition, checks unattended access in a separate helper process, then
+reinstalls the service from the current CLI.
+
+If authorization is denied, the command leaves the installed service in place
+and reports the failure. Unlocking a Keychain alone does not authorize a new
+executable. A fresh helper is installed only after its own credential check
+succeeds. If service startup fails, the previous launch configuration is restored.

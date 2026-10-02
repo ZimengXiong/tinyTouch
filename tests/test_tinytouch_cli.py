@@ -943,6 +943,7 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "unload_helper"),
                 mock.patch.object(cli, "load_helper"),
                 mock.patch.object(cli, "helper_loaded", return_value=True),
+                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
                 mock.patch.object(cli, "atomic_write_bytes") as write,
                 mock.patch.object(cli, "FROZEN", True),
                 mock.patch.object(cli.sys, "executable", "/cli"),
@@ -953,6 +954,96 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(launch_agent["ProcessType"], "Interactive")
         self.assertEqual(launch_agent["ThrottleInterval"], 1)
 
+
+    def test_helper_denied_credentials_preserves_existing_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = Path(directory) / "agent.plist"
+            agent.write_bytes(b"existing service")
+            with (
+                mock.patch.object(cli, "LAUNCH_AGENT", agent),
+                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/python")),
+                mock.patch.object(cli, "FROZEN", False),
+                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as run,
+                mock.patch.object(cli, "unload_helper") as unload,
+                mock.patch.object(cli, "load_helper") as load,
+            ):
+                with self.assertRaisesRegex(cli.ToolError, "existing service is unchanged"):
+                    cli.install_helper()
+            self.assertEqual(agent.read_bytes(), b"existing service")
+            self.assertEqual(run.call_args.args[0], ["/new/python", str(cli.HELPER), "--check-credentials"])
+            unload.assert_not_called()
+            load.assert_not_called()
+
+    def test_helper_start_failure_restores_previous_launch_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = root / "agent.plist"
+            previous = cli.plistlib.dumps({"ProgramArguments": ["/old/cli", "_helper"]})
+            agent.write_bytes(previous)
+            with (
+                mock.patch.object(cli, "SUPPORT_DIR", root / "support"),
+                mock.patch.object(cli, "LOG_DIR", root / "logs"),
+                mock.patch.object(cli, "LAUNCH_AGENT", agent),
+                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+                mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+                mock.patch.object(cli, "unload_helper"),
+                mock.patch.object(cli, "load_helper", side_effect=[cli.ToolError("startup failed"), None]) as load,
+                mock.patch.object(cli, "helper_loaded", return_value=True),
+            ):
+                with self.assertRaisesRegex(cli.ToolError, "previous service was restored"):
+                    cli.install_helper()
+            self.assertEqual(agent.read_bytes(), previous)
+            self.assertEqual(load.call_count, 2)
+
+    def test_helper_check_timeout_does_not_stop_working_service(self):
+        with (
+            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+            mock.patch.object(cli.subprocess, "run", side_effect=cli.subprocess.TimeoutExpired("check", 15)),
+            mock.patch.object(cli, "unload_helper") as unload,
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "existing service is unchanged"):
+                cli.install_helper()
+        unload.assert_not_called()
+
+    def test_repair_authorizes_current_cli_then_reinstalls_its_helper(self):
+        keychain = mock.Mock()
+        keychain.has_password.side_effect = lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
+        activity = []
+        keychain.authorize_executable.side_effect = lambda *args, **kwargs: activity.append(("authorize", args))
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_port", return_value="/dev/test"),
+            mock.patch.object(cli, "device_account", return_value="TT-123456ABCDEF"),
+            mock.patch.object(cli, "_keychain", return_value=keychain),
+            mock.patch.object(cli, "install_helper", side_effect=lambda: activity.append(("install", ()))),
+            mock.patch.object(cli, "say"),
+        ):
+            cli.command_repair(cli.parser().parse_args(["repair"]))
+        self.assertEqual([event[0] for event in activity], ["authorize"] * 3 + ["install"])
+        self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:2")
+        self.assertTrue(all(event[1][-1] == cli.sys.executable for event in activity[:3]))
+        keychain.set_password.assert_not_called()
+        keychain.delete_password.assert_not_called()
+
+    def test_repair_denial_does_not_replace_service_or_credentials(self):
+        keychain = mock.Mock()
+        keychain.has_password.return_value = True
+        keychain.authorize_executable.side_effect = RuntimeError("authorization denied")
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_port", return_value="/dev/test"),
+            mock.patch.object(cli, "device_account", return_value="TT-123456ABCDEF"),
+            mock.patch.object(cli, "_keychain", return_value=keychain),
+            mock.patch.object(cli, "install_helper") as install,
+            mock.patch.object(cli, "say"),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "authorization denied"):
+                cli.command_repair(cli.parser().parse_args(["repair"]))
+        install.assert_not_called()
+        keychain.set_password.assert_not_called()
+        keychain.delete_password.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
