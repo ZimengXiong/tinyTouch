@@ -169,6 +169,7 @@ jobs:
           "$cli" _package_test | grep -q "package ok (${{ matrix.expected_arch }})"
           codesign --verify --strict --verbose=2 "$cli"
           file "$cli" | grep -q "${{ matrix.expected_arch }}"
+          .venv-release/bin/python release/verify-keychain-upgrade.py "$cli"
       - name: Remove macOS signing keychain
         if: always()
         run: |

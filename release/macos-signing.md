@@ -68,6 +68,8 @@ It must identify `com.tinytouch.cli`, an Apple anchor, and the pinned team. It
 must not consist of a `cdhash`. The host test `keychain_identity_probe.c` verifies
 that one signed build can read a temporary Keychain item created by another
 signed build with different contents and the same requirement.
+Every release job runs `verify-keychain-upgrade.py` against its packaged CLI
+before uploading either architecture's release artifact.
 
 Existing items created by ad hoc builds still require a one-time repair. A new
 signature cannot silently inherit permission assigned to an old binary hash.
