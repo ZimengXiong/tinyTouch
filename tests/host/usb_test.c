@@ -143,10 +143,17 @@ int main(void) {
   transfer_queued = false;
   in_busy = false; handle_message(authenticate, sizeof(authenticate));
   update_usb_policy(); check_descriptor(true);
+  assert(!login_response_pending);
+  transfer_queued = true;
+  handle_message(authenticate, sizeof(authenticate));
+  assert(login_response_pending);
   ccid_xfer_cb(0, CCID_EP_IN, 1, 0);
   update_usb_policy(); check_descriptor(true);
-  assert(login_response_pending);
-  transfer_queued = true;
+  assert(!login_response_pending);
+  complete_login = false;
+  handle_message(select, sizeof(select));
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  update_usb_policy(); check_descriptor(true); // Unrelated reply cannot hide.
   now_us = touch_until; update_usb_policy(); check_descriptor(false);
   assert(!login_response_pending);
   complete_login = false;

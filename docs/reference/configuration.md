@@ -39,10 +39,10 @@ while idle, so macOS can offer password entry at the login or lock screen.
 Touching the sensor exposes the card for up to 20 seconds. A matching
 fingerprint is still required to use the private key. The card hides after the
 login and Login Keychain operations finish transferring their responses to
-macOS, or after a failed match. Login takes slightly longer because macOS must discover the card
-before the device types its dummy PIN. The timeout returns to password entry
-if login does not complete. Configuration commands and firmware transfers finish before an
-automatic USB reconnect.
+macOS, or after a failed match. Login takes slightly longer because macOS must
+discover the card before the device types its dummy PIN. The timeout returns to
+password entry if login does not complete. Configuration commands and firmware
+transfers finish before an automatic USB reconnect.
 
 The setting is off by default, survives reconnects, and does not change HID
 authentication. Run `tinytouch piv-touch off`, then unplug and reconnect, to

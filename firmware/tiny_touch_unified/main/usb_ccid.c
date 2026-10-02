@@ -184,7 +184,11 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
         const uint8_t fail[] = {0x6f, 0x00};
         send_ccid(0x80, slot, seq, 0x00, 0x00, fail, sizeof(fail));
       } else {
-        send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len);
+        if (!send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len)) {
+          taskENTER_CRITICAL(&policy_lock);
+          login_response_pending = false;
+          taskEXIT_CRITICAL(&policy_lock);
+        }
         if (len >= 2 && msg[11] == 0xa4 && resp_len >= 2 &&
             tx_buf[10 + resp_len - 2] == 0x90 && tx_buf[10 + resp_len - 1] == 0x00) {
           taskENTER_CRITICAL(&policy_lock);
@@ -246,7 +250,12 @@ static bool ccid_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_req
 static bool ccid_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
                          uint32_t xferred_bytes) {
   if (result != XFER_RESULT_SUCCESS) {
-    if (ep_addr == CCID_EP_IN) in_busy = false;
+    if (ep_addr == CCID_EP_IN) {
+      in_busy = false;
+      taskENTER_CRITICAL(&policy_lock);
+      login_response_pending = false;
+      taskEXIT_CRITICAL(&policy_lock);
+    }
     if (ep_addr == CCID_EP_OUT || ep_addr == CCID_EP_IN) {
       usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
     }
