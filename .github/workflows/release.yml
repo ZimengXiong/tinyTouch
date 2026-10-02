@@ -153,6 +153,9 @@ jobs:
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          # codesign also needs the private key on the user's Keychain search list.
+          security list-keychains -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain"
           rm -f "$certificate"
           echo "TINYTOUCH_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
       - name: Test and build CLI
