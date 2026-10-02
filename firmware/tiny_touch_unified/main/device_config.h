@@ -45,3 +45,7 @@ typedef enum {
 device_led_mode_t device_config_led_mode(void);
 const char *device_config_led_mode_name(void);
 bool device_config_set_led_mode(device_led_mode_t value);
+bool device_config_piv_touch_enabled(void);
+bool device_config_set_piv_touch_enabled(bool value);
+uint16_t device_config_piv_delay_ms(void);
+bool device_config_set_piv_delay_ms(uint16_t value);

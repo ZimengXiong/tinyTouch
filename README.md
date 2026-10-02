@@ -134,6 +134,34 @@ gate around the piv key.
 this avoids typing your real password, but only works where macos accepts smart
 cards, like login and `sudo` with pam.
 
+#### password entry while using PIV
+
+The unified firmware offers an optional setting for keeping password entry
+available at the macOS login/lock screen while staying in PIV mode:
+
+```sh
+tinytouch piv-touch on
+```
+
+Authorize the change with your fingerprint, then unplug and reconnect tinyTouch.
+The setting is saved on the device and defaults to off. With it enabled, the USB
+smart-card interface stays hidden until you touch the sensor. A matching
+fingerprint still authorizes PIV key use; touch alone does not authorize login.
+Discovery adds a short delay before the dummy PIN is typed. A failed fingerprint
+hides the card again, and a successful touch exposes it for at most 20 seconds.
+Wait for that window to close if you want to return to password entry.
+Configuration commands and firmware transfers finish before an automatic reconnect.
+
+`tinytouch pair` temporarily exposes the identity for pairing after authorization.
+This setup window lasts 60 seconds and does not bypass fingerprint authorization
+for private-key operations. USB serial briefly reconnects when visibility changes.
+The setting has no effect on how HID mode authenticates.
+
+To restore the existing always-visible behavior, run `tinytouch piv-touch off`
+and unplug/reconnect. `tinytouch status` reports the saved `piv_touch` preference,
+the running `piv_touch_active` setting, and `piv_visible`. Factory reset restores
+the default. This setting does not override a Mac policy that requires smart cards.
+
 ## install
 
 ### red pill

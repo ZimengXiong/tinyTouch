@@ -144,7 +144,7 @@ static void clear_ota(void) {
 }
 
 static void status(void) {
-  char line[320];
+  char line[384];
   int count = fingerprint_count();
   // fingerprint_count probes the UART and can update the live health state.
   // Read health after that probe so one STATUS line cannot say ready with an
@@ -152,12 +152,17 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1",
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 led_control=%s led_sync=%s "
+           "piv_touch=%s piv_touch_active=%s piv_visible=%s piv_delay_ms=%u",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
-           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name());
+           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name(),
+           fingerprint_led_control_status(), fingerprint_led_update_pending() ? "pending" : "synced",
+           device_config_piv_touch_enabled() ? "on" : "off",
+           usb_ccid_touch_enabled() ? "on" : "off",
+           usb_ccid_piv_visible() ? "yes" : "no", (unsigned)device_config_piv_delay_ms());
   reply(line);
 }
 
@@ -177,8 +182,19 @@ static void set_value(char *arguments) {
   if (ok && strcmp(arguments, "TYPE_DELAY") == 0) ok = device_config_set_typing_delay_ms(number);
   else if (ok && strcmp(arguments, "SUBMIT_ENTER") == 0 && number <= 1) ok = device_config_set_submit_enter(number);
   else if (ok && strcmp(arguments, "COOLDOWN") == 0) ok = device_config_set_touch_cooldown_ms(number);
-  else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH)
+  else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH) {
     ok = fingerprint_set_led_mode((device_led_mode_t)number);
+    if (ok && strcmp(fingerprint_led_control_status(), "reconnect") == 0) {
+      // Older CLIs ignore new STATUS fields. Do not let them report that the
+      // light is off while the sensor still owns automatic feedback.
+      reply("ERR SET LED reconnect_required");
+      return;
+    }
+  }
+  else if (ok && strcmp(arguments, "PIV_TOUCH") == 0 && number <= 1)
+    ok = device_config_set_piv_touch_enabled(number != 0);
+  else if (ok && strcmp(arguments, "PIV_DELAY") == 0)
+    ok = device_config_set_piv_delay_ms(number);
   else ok = false;
   reply(ok ? "OK SET" : "ERR SET");
 }
@@ -312,6 +328,7 @@ static void factory_reset(void) {
 
 static void piv_create_task(void *argument) {
   (void)argument;
+  usb_ccid_begin_console_command();
   bool ok = piv_create_identity();
   piv_create_active = false;
   reply(ok ? "OK PIV CREATE" : "ERR PIV CREATE");
@@ -319,8 +336,11 @@ static void piv_create_task(void *argument) {
     // Give CDC enough time to deliver the successful response before asking
     // macOS to rescan the PIV token.
     vTaskDelay(pdMS_TO_TICKS(300));
+    usb_ccid_open_setup();
     usb_ccid_rescan();
   }
+  vTaskDelay(pdMS_TO_TICKS(20));
+  usb_ccid_end_console_command();
   vTaskDelete(NULL);
 }
 
@@ -335,6 +355,19 @@ static void piv_create(void) {
     return;
   }
   reply("EVENT PIV_CREATE");
+}
+
+static void piv_open(void) {
+  if (!require_authorized()) return;
+  if (device_config_mode() != DEVICE_MODE_PIV || !piv_uses_provisioned_keys()) {
+    reply("ERR PIV OPEN not_ready");
+    return;
+  }
+  reply(usb_ccid_piv_visible() ? "OK PIV OPEN reconnect=none" :
+                              "OK PIV OPEN reconnect=required");
+  // Let the command reply drain before the USB policy task disconnects CDC.
+  vTaskDelay(pdMS_TO_TICKS(300));
+  usb_ccid_open_setup();
 }
 
 static void usb_reconnect_task(void *argument) {
@@ -408,6 +441,7 @@ static void handle_command(void) {
   else if (strcmp(command, "HOST LIST") == 0) host_list();
   else if (strncmp(command, "FINGER ", 7) == 0) fingerprint_command(command + 7);
   else if (strcmp(command, "PIV CREATE") == 0) piv_create();
+  else if (strcmp(command, "PIV OPEN") == 0) piv_open();
   else if (strcmp(command, "RESET FACTORY") == 0) factory_reset();
   else if (strncmp(command, "OTA BEGIN ", 10) == 0) ota_begin(command + 10);
   else if (strncmp(command, "OTA WRITE ", 10) == 0) ota_write(command + 10);
@@ -435,7 +469,13 @@ static void console_task(void *arg) {
           command[command_length] = '\0';
           if (!command_overflow && command_length) {
             if (strncmp(command, "PW ", 3) == 0 || strncmp(command, "PW2 ", 4) == 0) touch_pin_hid_submit_response(command);
-            else handle_command();
+            else {
+              usb_ccid_begin_console_command();
+              handle_command();
+              // Drain replies before an expired PIV window reconnects CDC.
+              vTaskDelay(pdMS_TO_TICKS(20));
+              usb_ccid_end_console_command();
+            }
           } else if (command_overflow) reply("ERR LINE");
           command_length = 0; command_overflow = false;
         } else if (command_length + 1 < sizeof(command)) command[command_length++] = buffer[i];

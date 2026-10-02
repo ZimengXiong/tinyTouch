@@ -11,6 +11,8 @@
 #define CONFIG_NAMESPACE "tt6"
 #define CONFIG_KEY "config"
 #define CONFIG_VERSION 6
+#define PIV_DELAY_DEFAULT_MS 25
+#define PIV_DELAY_MAX_MS 5000
 
 typedef struct {
   uint8_t version;
@@ -26,6 +28,8 @@ typedef struct {
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
 static device_led_mode_t led_mode = DEVICE_LED_ON;
+static bool piv_touch_enabled;
+static uint16_t piv_delay_ms = PIV_DELAY_DEFAULT_MS;
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -92,6 +96,17 @@ void device_config_init(void) {
   if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK &&
       stored_led <= DEVICE_LED_ONLY_AUTH)
     led_mode = (device_led_mode_t)stored_led;
+  // A separate optional key preserves the protocol-6 configuration blob and
+  // existing pairings. Older firmware has no key and retains always-on PIV.
+  uint8_t stored_piv_touch = 0;
+  piv_touch_enabled = loaded_ok &&
+      nvs_get_u8(handle, "piv_touch", &stored_piv_touch) == ESP_OK &&
+      stored_piv_touch == 1;
+  // Store timing separately so upgrades retain the existing configuration blob.
+  uint16_t stored_piv_delay = PIV_DELAY_DEFAULT_MS;
+  piv_delay_ms = PIV_DELAY_DEFAULT_MS;
+  if (loaded_ok && nvs_get_u16(handle, "piv_delay_ms", &stored_piv_delay) == ESP_OK &&
+      stored_piv_delay <= PIV_DELAY_MAX_MS) piv_delay_ms = stored_piv_delay;
   if (opened) nvs_close(handle);
   lock();
   if (loaded_ok) config = loaded;
@@ -198,5 +213,44 @@ bool device_config_set_led_mode(device_led_mode_t value) {
 
 bool device_config_factory_reset(void) {
   if (!device_config_set_led_mode(DEVICE_LED_ON)) return false;
+  if (!device_config_set_piv_touch_enabled(false)) return false;
+  if (!device_config_set_piv_delay_ms(PIV_DELAY_DEFAULT_MS)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
+}
+
+bool device_config_piv_touch_enabled(void) {
+  lock(); bool value = piv_touch_enabled; unlock(); return value;
+}
+
+bool device_config_set_piv_touch_enabled(bool value) {
+  lock();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, "piv_touch", value ? 1 : 0);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) piv_touch_enabled = value;
+  unlock();
+  return result == ESP_OK;
+}
+
+uint16_t device_config_piv_delay_ms(void) {
+  lock(); uint16_t value = piv_delay_ms; unlock(); return value;
+}
+
+bool device_config_set_piv_delay_ms(uint16_t value) {
+  if (value > PIV_DELAY_MAX_MS) return false;
+  lock();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u16(handle, "piv_delay_ms", value);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) piv_delay_ms = value;
+  unlock();
+  return result == ESP_OK;
 }
