@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LedFirmwareTests(unittest.TestCase):
+    def test_led_off_has_no_transient_authentication_flashes(self):
+        self.run_firmware_case("led_flash_test.c")
+
     def test_saved_led_control_and_fingerprint_results(self):
         self.run_firmware_case("led_test.c")
 

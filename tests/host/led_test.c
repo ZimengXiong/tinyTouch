@@ -25,6 +25,7 @@ static uint8_t disk_manual_stage, pending_manual_stage;
 static bool sensor_manual_saved, sensor_manual_active;
 static uint8_t reject_manual, physical_led;
 static unsigned manual_commands, automatic_lights, capture_commands;
+static unsigned visible_green, visible_red;
 static int drop_led, drop_manual;
 
 esp_reset_reason_t esp_reset_reason(void) { return reset_reason; }
@@ -37,6 +38,8 @@ static void sensor_power_cycle(void) {
 static void automatic_light(uint8_t color) {
   if (sensor_manual_active) return;
   physical_led = color;
+  if (color == FP_LED_GREEN) visible_green++;
+  if (color == FP_LED_RED) visible_red++;
   automatic_lights++;
 }
 
@@ -113,7 +116,11 @@ int uart_write_bytes(uart_port_t port, const void *data, size_t size) {
     assert(last_led[1] < 8); led_colors[last_led[1]]++;
     if (drop_led > 0) { drop_led--; request_len = 0; return (int)size; }
     if (reject_led > 0) { reject_led--; confirm = 1; }
-    else physical_led = last_led[1];
+    else {
+      physical_led = last_led[1];
+      if (physical_led == FP_LED_GREEN) visible_green++;
+      if (physical_led == FP_LED_RED) visible_red++;
+    }
   } else if (instruction == 0x60) {
     assert(request[8] == 4 && request[10] == 0);
     manual_commands++;

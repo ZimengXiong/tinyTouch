@@ -21,6 +21,22 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_led_off_rejects_legacy_firmware_that_can_still_flash_green(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={
+                "protocol": "6", "firmware": "0.1.30", "led": "off", "led_only_auth": "1",
+            }),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "automatic authentication flashes"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
+
     def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
         for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
             with (
@@ -28,7 +44,7 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session") as session,
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"},
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "on", "led_only_auth": "1", "led_control": "manual"},
                     {"led": state},
                 ]),
                 mock.patch.object(cli, "unlock") as unlock,
@@ -82,7 +98,7 @@ class ProtocolSixTests(unittest.TestCase):
         with (
             mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
             mock.patch.object(cli, "foreground_session"),
-            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off"}),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"}),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "serial_command", side_effect=cli.ToolError(message)),
             mock.patch.object(cli, "say") as output,
@@ -102,7 +118,7 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session"),
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off"},
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"},
                     {"led": "off", "led_control": control, "led_sync": sync},
                 ]),
                 mock.patch.object(cli, "unlock"),

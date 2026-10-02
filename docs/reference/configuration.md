@@ -31,6 +31,20 @@ authentication feedback (CLI and firmware 0.1.30+).
 The LED setting, introduced in 0.1.29, is stored separately from other configuration,
 so upgrading preserves fingerprints, paired computers, and timing settings.
 
+## Brief green flash with LED off
+
+Older firmware sends an off command after authentication, but the sensor's
+automatic mode can illuminate green during a match. Manual sensor lighting
+removes that animation. The setting is written once and takes effect after
+physically disconnecting USB and reconnecting the device.
+
+After installing firmware with this fix, run `tinytouch led off`. Follow any
+reconnect instruction, then check `tinytouch status`: `led=off`,
+`led_control=manual`, and `led_sync=synced`.
+
+The [ZW111 manufacturer manual, section 3.5.6](https://r0.hlktech.com/download/HLK-ZW111/1/%E6%8C%87%E7%BA%B9%E6%A8%A1%E7%BB%84%E4%BA%A7%E5%93%81%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C_V1.5.1.pdf)
+specifies the manual-lighting command and required sensor power cycle.
+
 ## Fingers and existing enrollment
 
 Each finger owns a fixed block of four templates. You enroll the whole finger

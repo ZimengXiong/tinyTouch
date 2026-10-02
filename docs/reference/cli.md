@@ -57,6 +57,17 @@ tinytouch led {on,off,only-auth} [--port PATH]
 `only-auth` disables idle blue and keeps red/green authentication feedback
 (CLI and firmware 0.1.30+).
 
+Full `off` mode also disables the sensor's automatic success/failure animations.
+The first update that adds manual sensor lighting requires a physical unplug and
+reconnect after the manual-mode command is saved. A software reset is insufficient.
+The CLI reports the required reconnect instead of claiming the light is already off.
+Older firmware can clear the LED after authentication but can still flash green;
+update firmware before using full `off` mode.
+
+`tinytouch status` reports `led_control=manual` when the migration is complete and
+`led_sync=synced` when the latest LED command was acknowledged. `reconnect` means
+sensor power must be cycled. Fingerprint matching remains enabled in all LED modes.
+
 ## `status`
 
 ```text

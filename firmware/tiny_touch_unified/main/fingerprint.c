@@ -246,6 +246,9 @@ static bool configure_manual_lighting(void) {
     }
   }
   if (!led_manual_stage) {
+    // ZW111 manual, section 3.5.6: 0x60/0x00 disables the sensor's own
+    // success/failure animation after sensor power loss. A 0x3c off command
+    // alone cannot prevent a brief green flash during authentication.
     const uint8_t manual = 0x00;
     uint8_t confirm = 0xff;
     bool was_ready = sensor_ready_snapshot();

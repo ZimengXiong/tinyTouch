@@ -1149,6 +1149,12 @@ def command_led(args: argparse.Namespace) -> None:
                 "This firmware does not support LED control. Run 'tinytouch update', "
                 "then unplug and reconnect tinyTouch before trying again."
             )
+        if args.state == "off" and "led_control" not in device:
+            raise ToolError(
+                "This firmware cannot disable the sensor's automatic authentication flashes. "
+                "Update the firmware before setting the LED fully off, then unplug and reconnect "
+                "tinyTouch when prompted."
+            )
         if args.state == "only-auth" and device.get("led_only_auth") != "1":
             raise ToolError(
                 "This firmware does not support authentication-only lighting. Run 'tinytouch update', "
