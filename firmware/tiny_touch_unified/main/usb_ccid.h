@@ -15,6 +15,8 @@ bool usb_ccid_touch_enabled(void);
 bool usb_ccid_piv_visible(void);
 void usb_ccid_touch_begin(void);
 void usb_ccid_touch_cancel(void);
+// Hide after the completed login response reaches the host.
+void usb_ccid_login_complete(void);
 bool usb_ccid_wait_for_piv(void);
 // Keep automatic reconnects from interrupting a console command's reply.
 void usb_ccid_begin_console_command(void);

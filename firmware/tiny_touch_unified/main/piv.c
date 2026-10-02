@@ -16,6 +16,7 @@
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
 #include "touch_pin_hid.h"
+#include "usb_ccid.h"
 
 static const char *TAG = "piv";
 
@@ -668,7 +669,13 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   off += sig_len;
   *response_len = off;
   touch_pin_hid_log_event("piv_crypto_ok", apdu[3]);
-  return append_sw(response, response_len, response_cap, 0x9000);
+  bool ok = append_sw(response, response_len, response_cap, 0x9000);
+  // Normal login uses both slots. Configuration permits repeated operations
+  // and must retain its separate discovery window for macOS pairing.
+  if (ok && !user_presence_allows_repeated_slots && user_presence_slots_used == 0x03) {
+    usb_ccid_login_complete();
+  }
+  return ok;
 }
 
 void piv_init(void) {

@@ -32,6 +32,7 @@ static bool touch_enabled;
 static bool piv_exposed;
 static bool piv_selected;
 static bool reconnect_requested;
+static bool login_response_pending;
 static int64_t touch_until;
 static int64_t setup_until;
 static portMUX_TYPE policy_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -52,6 +53,7 @@ static void reconnect_on_usb_task(void *argument) {
   taskENTER_CRITICAL(&policy_lock);
   piv_exposed = expose;
   piv_selected = false;
+  login_response_pending = false;
   taskEXIT_CRITICAL(&policy_lock);
   tud_connect();
   xSemaphoreGive(reconnect_done);
@@ -257,6 +259,14 @@ static bool ccid_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
     if (!in_busy) usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
   } else if (ep_addr == CCID_EP_IN) {
     in_busy = false;
+    // The host has received the final login/Keychain response. Changing the
+    // descriptor earlier could discard that response and break login.
+    taskENTER_CRITICAL(&policy_lock);
+    if (login_response_pending) {
+      touch_until = 0;
+      login_response_pending = false;
+    }
+    taskEXIT_CRITICAL(&policy_lock);
     usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
   }
   return true;
@@ -338,12 +348,21 @@ void usb_ccid_touch_begin(void) {
   if (!touch_enabled || device_config_mode() != DEVICE_MODE_PIV) return;
   taskENTER_CRITICAL(&policy_lock);
   touch_until = esp_timer_get_time() + TOUCH_WINDOW_US;
+  login_response_pending = false;
   taskEXIT_CRITICAL(&policy_lock);
 }
 
 void usb_ccid_touch_cancel(void) {
   taskENTER_CRITICAL(&policy_lock);
   touch_until = 0;
+  login_response_pending = false;
+  taskEXIT_CRITICAL(&policy_lock);
+}
+
+void usb_ccid_login_complete(void) {
+  if (!touch_enabled || device_config_mode() != DEVICE_MODE_PIV) return;
+  taskENTER_CRITICAL(&policy_lock);
+  login_response_pending = true;
   taskEXIT_CRITICAL(&policy_lock);
 }
 

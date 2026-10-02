@@ -73,8 +73,9 @@ apply the saved setting.
 
 When enabled, the smart-card interface stays hidden until touch, keeping
 password entry available while idle. A fingerprint match still authorizes PIV
-authentication. Discovery adds a short login delay; the card hides again after
-20 seconds, or after a failed match. The default is `off`.
+authentication. Discovery adds a short login delay. The card hides after login
+and Login Keychain responses reach macOS, after a failed match, or after a
+20-second timeout. The default is `off`.
 
 See [Device configuration](/reference/configuration#password-entry-in-piv-mode)
 for setup behavior and visibility windows.

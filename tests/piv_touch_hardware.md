@@ -16,6 +16,8 @@ one-second UI settling interval before typing the dummy PIN.
 4. Lock again and touch an enrolled finger. Confirm the card enumerates, the
    field changes to PIN before any keystrokes, and both login and Login Keychain
    unlock. Check cold connection and wake from sleep, not just repeated logins.
+   Immediately log out after login. Confirm password entry is available without
+   waiting for the 20-second timeout. Touch again and confirm a second login works.
 5. Try an unenrolled finger. Confirm there are no typed keys or authorized key
    operations, and the smart-card interface disappears again.
 6. Hold an enrolled finger down for over 20 seconds. Confirm only one login

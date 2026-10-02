@@ -9,6 +9,8 @@ static bool configured, connected, hid_ready, preference;
 static device_mode_t mode = DEVICE_MODE_PIV;
 static bool deferred;
 static bool ota_active;
+static bool complete_login;
+static bool transfer_queued = true;
 
 int64_t esp_timer_get_time(void) { return now_us; }
 void vTaskDelay(uint32_t ms) { now_us += (int64_t)ms * 1000; }
@@ -29,7 +31,7 @@ bool tud_connect(void) { assert(deferred); connected = true; return true; }
 bool tud_mounted(void) { return configured; }
 bool tud_hid_ready(void) { return hid_ready; }
 bool usbd_edpt_xfer(uint8_t r, uint8_t e, uint8_t *b, uint16_t n) {
-  (void)r; (void)e; (void)b; (void)n; return true;
+  (void)r; (void)e; (void)b; (void)n; return transfer_queued;
 }
 bool usbd_edpt_open(uint8_t r, const tusb_desc_endpoint_t *e) {
   (void)r; assert(e->bDescriptorType == 5); endpoints++; return true;
@@ -49,7 +51,9 @@ void piv_reset_transport_state(void) { resets++; }
 void touch_pin_hid_log_event(const char *event, int value) { (void)event; (void)value; }
 void touch_pin_hid_usb_attached(void) {}
 static bool apdu(const uint8_t *a, size_t n, uint8_t *r, size_t *rn, size_t cap) {
-  (void)a; (void)n; assert(cap >= 2); r[0] = 0x90; r[1] = 0; *rn = 2; apdus++; return true;
+  (void)a; (void)n; assert(cap >= 2); r[0] = 0x90; r[1] = 0; *rn = 2; apdus++;
+  if (complete_login) usb_ccid_login_complete();
+  return true;
 }
 
 static void check_descriptor(bool exposed) {
@@ -109,10 +113,54 @@ int main(void) {
   usb_ccid_touch_begin(); update_usb_policy();
   usb_ccid_touch_cancel(); update_usb_policy(); check_descriptor(false);
 
+  // Login completion hides before the timeout, after the final IN response.
+  uint8_t authenticate[] = {0x6f, 4,0,0,0, 0,2,0,0,0, 0,0x87,7,0x9d};
+  usb_ccid_touch_begin(); update_usb_policy(); check_descriptor(true);
+  complete_login = false;
+  in_busy = false; handle_message(authenticate, sizeof(authenticate));
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  update_usb_policy(); check_descriptor(true); // First slot alone cannot hide.
+  complete_login = true;
+  handle_message(authenticate, sizeof(authenticate));
+  old = reconnects;
+  update_usb_policy(); assert(reconnects == old && in_busy);
+  assert(login_response_pending && now_us < touch_until);
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  assert(!login_response_pending && touch_until == 0);
+  update_usb_policy(); check_descriptor(false);
+  assert(reconnects == old + 1);
+  complete_login = false;
+
+  // A new touch can complete a second login after the previous card hides.
+  usb_ccid_touch_begin(); update_usb_policy(); check_descriptor(true);
+  complete_login = true;
+  in_busy = false; handle_message(authenticate, sizeof(authenticate));
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  update_usb_policy(); check_descriptor(false);
+
+  // An unqueued or failed response cannot trigger an early disconnect.
+  usb_ccid_touch_begin(); update_usb_policy();
+  transfer_queued = false;
+  in_busy = false; handle_message(authenticate, sizeof(authenticate));
+  update_usb_policy(); check_descriptor(true);
+  ccid_xfer_cb(0, CCID_EP_IN, 1, 0);
+  update_usb_policy(); check_descriptor(true);
+  assert(login_response_pending);
+  transfer_queued = true;
+  now_us = touch_until; update_usb_policy(); check_descriptor(false);
+  assert(!login_response_pending);
+  complete_login = false;
+
   // Setup can expose the card without background PIN typing, then expires.
   usb_ccid_rescan(); update_usb_policy(); check_descriptor(false); // Unauthenticated reconnect.
   usb_ccid_open_setup(); usb_ccid_rescan(); update_usb_policy(); check_descriptor(true);
   old = reconnects;
+  // Completing a touch login must not truncate an active setup window.
+  usb_ccid_touch_begin();
+  usb_ccid_login_complete();
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  update_usb_policy(); check_descriptor(true);
+  assert(reconnects == old && touch_until == 0);
   now_us = setup_until - 1;
   usb_ccid_open_setup(); update_usb_policy();
   assert(reconnects == old && setup_until > now_us);
@@ -129,6 +177,15 @@ int main(void) {
   mode = DEVICE_MODE_HID; usb_ccid_touch_begin(); usb_ccid_rescan();
   update_usb_policy(); check_descriptor(false);
   assert(!usb_ccid_wait_for_piv());
-  in_busy = false; handle_message(select, sizeof(select)); assert(apdus == 1);
+  old = apdus;
+  in_busy = false; handle_message(select, sizeof(select)); assert(apdus == old);
+
+  // Continuous PIV mode keeps its interface after a completed login.
+  preference = false; mode = DEVICE_MODE_PIV;
+  usb_ccid_start(apdu); check_descriptor(true);
+  usb_ccid_login_complete();
+  assert(!login_response_pending);
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  update_usb_policy(); check_descriptor(true);
   return 0;
 }
