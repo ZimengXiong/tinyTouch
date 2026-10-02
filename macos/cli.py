@@ -1042,7 +1042,7 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt="Authenticate with a registered finger to unlock configuration.",
+                touch_prompt="Touch the device with a registered finger to unlock configuration.",
             )
             if explain_pin:
                 explain_piv_pin()
@@ -1753,7 +1753,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
         port,
         "AUTH",
         timeout=15,
-        touch_prompt="Authenticate with a registered finger to approve the firmware update.",
+        touch_prompt="Touch the device with a registered finger to approve the firmware update.",
     )
     token = secrets.token_hex(16)
     was_loaded = unload_helper()

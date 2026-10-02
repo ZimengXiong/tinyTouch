@@ -1024,7 +1024,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Authenticate with a registered finger to unlock configuration.",
+            "Touch the device with a registered finger to unlock configuration.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
