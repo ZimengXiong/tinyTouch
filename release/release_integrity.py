@@ -21,6 +21,7 @@ APP_DESCRIPTION_MAGIC = 0xABCD5432
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 BUILD_PATTERN = re.compile(r"[0-9a-f]{12}")
 NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?")
 RECOVERY_REQUEST = b"tinyTouch recovery request v1\0"
 EXPECTED_IMAGES = {
     "factory": {
@@ -54,6 +55,14 @@ def digest(path: Path) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise IntegrityError(message)
+
+
+def checked_version(value: object) -> str:
+    """Keep stable versions compatible with released CLI update validators."""
+    require(isinstance(value, str) and VERSION_PATTERN.fullmatch(value) is not None,
+            "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-dev.N "
+            "(for example, 0.1.31 or 0.1.31-dev.1)")
+    return value
 
 
 def load_json(path: Path) -> dict:
@@ -204,7 +213,7 @@ def validate_release(root: Path, commit: str, *, flat: bool = False,
                      require_cli: bool = True) -> dict:
     require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "commit must be a full SHA")
     manifest = load_json(root / "release-manifest.json")
-    version = manifest.get("version")
+    version = checked_version(manifest.get("version"))
     protocol = manifest.get("protocol")
     build = manifest.get("build")
     require(version == VERSION, f"release version {version!r} does not match VERSION {VERSION!r}")

@@ -2,12 +2,15 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import struct
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +31,77 @@ def metadata(path: Path) -> dict:
 
 class ReleasePipelineTests(unittest.TestCase):
     commit = "1234567890ab" + "c" * 28
+
+    def test_release_version_policy_preserves_stable_and_dev_formats(self):
+        for version in ("0.1.31", "1.0.0", "12.34.567", "0.1.31-dev.1", "0.1.100-dev.12"):
+            with self.subTest(version=version):
+                self.assertEqual(integrity.checked_version(version), version)
+        for version in (
+            "0.1.31-prod", "0.1.31-beta.1", "0.1.31-dev", "0.1.31-dev.x",
+            "0.1.31+build", "v0.1.31", "0.1", "0.1.31.1", "0.1.31\n",
+            "../0.1.31", "", None, 31,
+        ):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(integrity.IntegrityError, "version must be"):
+                    integrity.checked_version(version)
+
+    def test_version_guard_checks_tag_and_manifest_before_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version_file = root / "VERSION"
+            manifest_file = root / "release-manifest.json"
+            for version in ("0.1.31", "0.1.31-dev.1", "0.1.100"):
+                version_file.write_text(version + "\n")
+                manifest_file.write_text(json.dumps({"version": version}))
+                command = [
+                    "python3", str(ROOT / "release" / "check-version.py"),
+                    "--version-file", str(version_file), "--tag", f"v{version}",
+                    "--manifest", str(manifest_file),
+                ]
+                with self.subTest(version=version):
+                    self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+                    manifest_file.write_text(json.dumps({"version": "0.1.30"}))
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("manifest version does not match VERSION", result.stderr)
+                    command[command.index("--tag") + 1] = "v0.1.30-prod"
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("release tag must be", result.stderr)
+
+            version_file.write_text("0.1.31-prod\n")
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("version must be", result.stderr)
+
+    def test_integrity_rejects_invalid_version_even_when_it_matches_version_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "release-manifest.json").write_text(json.dumps({"version": "0.1.31-prod"}))
+            with mock.patch.object(integrity, "VERSION", "0.1.31-prod"):
+                with self.assertRaisesRegex(integrity.IntegrityError, "version must be"):
+                    integrity.validate_release(root, self.commit)
+
+    def test_publishing_dev_release_explicitly_excludes_it_from_latest(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        publish = workflow.split("      - name: Publish release\n", 1)[1]
+        script = textwrap.dedent(publish.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        # Execute the actual publish command with gh replaced by an argument recorder.
+        for version, prerelease in (("0.1.31", "false"), ("0.1.31-dev.1", "true")):
+            with self.subTest(version=version):
+                result = subprocess.run(
+                    ["bash", "-e", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + script],
+                    env={**os.environ, "RELEASE_TAG": f"v{version}", "RELEASE_PRERELEASE": prerelease},
+                    capture_output=True, text=True, check=True,
+                )
+                flags = result.stdout.splitlines()
+                self.assertIn(f"v{version}", flags)
+                if prerelease == "true":
+                    self.assertIn("--prerelease", flags)
+                    self.assertIn("--latest=false", flags)
+                else:
+                    self.assertNotIn("--prerelease", flags)
+                    self.assertNotIn("--latest=false", flags)
 
     def make_app(self, path: Path, kind: str) -> None:
         payload = bytearray(512)

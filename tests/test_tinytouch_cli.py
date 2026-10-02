@@ -328,6 +328,27 @@ class ProtocolSixTests(unittest.TestCase):
         with self.assertRaises(cli.ToolError):
             cli.release_root("0.1.26-prod")
 
+    def test_repository_stable_version_is_accepted_by_updater(self):
+        # A dev build still needs to understand the stable version of its release.
+        version = (ROOT / "VERSION").read_text().strip().split("-dev.")[0]
+        self.assertEqual(cli.release_root(version), f"{cli.RELEASE_DOWNLOAD_URL}/v{version}")
+
+    def test_updater_keeps_stable_format_compatible_across_component_widths(self):
+        for version in ("0.1.27", "0.1.31", "0.1.100", "1.0.0", "12.34.567"):
+            with self.subTest(version=version):
+                latest = json.dumps({"version": version}).encode()
+                with mock.patch.object(cli, "download", side_effect=[latest, latest]):
+                    root, manifest = cli.update_release()
+                self.assertEqual(root, f"{cli.RELEASE_DOWNLOAD_URL}/v{version}")
+                self.assertEqual(manifest["version"], version)
+
+    def test_updater_rejects_dev_manifest_before_downloading_release_assets(self):
+        latest = json.dumps({"version": "0.1.31-dev.1"}).encode()
+        with mock.patch.object(cli, "download", return_value=latest) as download:
+            with self.assertRaises(cli.ToolError):
+                cli.update_release()
+        download.assert_called_once()
+
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
         target_version = "9.9.9"
         root = f"https://github.com/ZimengXiong/tinyTouch/releases/download/v{target_version}"

@@ -27,6 +27,7 @@ jobs:
       commit: ${{ steps.release.outputs.commit }}
       tag: ${{ steps.release.outputs.tag }}
       release: ${{ steps.release.outputs.release }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -37,6 +38,7 @@ jobs:
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
+          python3 release/check-version.py
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             RELEASE_TAG="$INPUT_TAG"
             test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
@@ -49,11 +51,13 @@ jobs:
               publish=true
             fi
           fi
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?$ ]]
-          test "${RELEASE_TAG#v}" = "$(tr -d '[:space:]' < VERSION)"
+          python3 release/check-version.py --tag "$RELEASE_TAG"
+          prerelease=false
+          [[ "$RELEASE_TAG" == *-dev.* ]] && prerelease=true
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "release=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
   firmware:
     needs: validate
@@ -213,9 +217,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
           flags=(--verify-tag --generate-notes)
-          [[ "$RELEASE_TAG" == *-dev.* ]] && flags+=(--prerelease)
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
           gh release create "$RELEASE_TAG" dist/publish/* "${flags[@]}"
       - name: Verify published manifest
         env:
@@ -225,5 +232,6 @@ jobs:
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
           curl -fsSL --retry 6 --retry-delay 5 --max-time 60 \
             "$base/release-manifest.json" -o dist/live-release.json
-          test "$(jq -r .version dist/live-release.json)" = "${RELEASE_TAG#v}"
+          python3 release/check-version.py --tag "$RELEASE_TAG" \
+            --manifest dist/live-release.json
           test "$(jq -r .build dist/live-release.json)" = "${RELEASE_COMMIT:0:12}"

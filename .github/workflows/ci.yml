@@ -27,6 +27,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate release version format
+        run: python3 release/check-version.py
       - id: areas
         env:
           BEFORE_SHA: ${{ github.event.before }}
@@ -46,7 +48,8 @@ jobs:
           fi
           if git diff --quiet "$base" "$GITHUB_SHA" -- \
             firmware VERSION release/assemble-release.py \
-            release/release_integrity.py .github/workflows/ci.yml; then
+            release/release_integrity.py release/check-version.py \
+            .github/workflows/ci.yml; then
             echo "firmware=false" >> "$GITHUB_OUTPUT"
           else
             echo "firmware=true" >> "$GITHUB_OUTPUT"
@@ -54,6 +57,7 @@ jobs:
           if git diff --quiet "$base" "$GITHUB_SHA" -- \
             macos tests VERSION release/build-standalone-macos.sh \
             release/check-python-runtime.py release/install.sh \
+            release/release_integrity.py release/check-version.py \
             .github/workflows/ci.yml; then
             echo "cli=false" >> "$GITHUB_OUTPUT"
           else

@@ -15,6 +15,7 @@ if [[ ! -x "$venv_python" ]]; then
   "$bootstrap_python" -m venv "$venv_dir"
 fi
 
+"$venv_python" "$project_dir/release/check-version.py"
 "$venv_python" "$project_dir/release/check-python-runtime.py"
 
 # PEP 517 backends installed in the build environment are executables. Add the
