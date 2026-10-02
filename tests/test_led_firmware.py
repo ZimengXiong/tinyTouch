@@ -18,6 +18,9 @@ class LedFirmwareTests(unittest.TestCase):
     def test_console_authorization_inventory_and_disconnect(self):
         self.run_firmware_case("console_groups_test.c")
 
+    def test_custom_colors_effects_persistence_and_preview_restoration(self):
+        self.run_firmware_case("customization_test.c")
+
     def run_firmware_case(self, filename):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)

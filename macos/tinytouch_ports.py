@@ -55,7 +55,7 @@ class MacSerialPorts:
         utf8 = 0x08000100
         key = self.cf.CFStringCreateWithCString(None, name.encode("utf-8"), utf8)
         if not key:
-            raise MemoryError("Cannot allocate an IOKit property key")
+            raise MemoryError("Could not allocate an IOKit property key.")
         try:
             # Search recursively through parents without acquiring parent handles.
             value = self.io.IORegistryEntrySearchCFProperty(
@@ -87,13 +87,13 @@ class MacSerialPorts:
     def comports(self) -> list[SerialPort]:
         matching = self.io.IOServiceMatching(b"IOSerialBSDClient")
         if not matching:
-            raise MemoryError("Cannot allocate an IOKit matching dictionary")
+            raise MemoryError("Could not allocate an IOKit matching dictionary.")
         iterator = ctypes.c_uint32()
         # IOServiceGetMatchingServices consumes the dictionary, including on error.
         status = self.io.IOServiceGetMatchingServices(0, matching, ctypes.byref(iterator))
         try:
             if status:
-                raise OSError(f"Cannot enumerate serial devices (IOKit status {status})")
+                raise OSError(f'Could not list serial devices. IOKit status: {status}.')
             ports = []
             while service := self.io.IOIteratorNext(iterator):
                 try:

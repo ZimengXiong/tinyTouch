@@ -154,7 +154,7 @@ class ForegroundLease:
             time.sleep(0.05)
         self.release()
         raise LeaseProtocolError(
-            "The HID background service did not release the serial device in time."
+            "The HID background service did not release the USB serial device in time."
         )
 
     def release(self) -> None:

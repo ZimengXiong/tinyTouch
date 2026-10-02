@@ -26,6 +26,25 @@ typedef struct {
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
 static device_led_mode_t led_mode = DEVICE_LED_ON;
+static device_options_t options;
+
+static device_options_t option_defaults(void) {
+  return (device_options_t){
+    .version = 1, .led_idle_color = 1, .led_success_color = 2,
+    .led_failure_color = 4, .led_idle_end_color = 1,
+    .led_idle_effect = 3, .led_idle_cycles = 0, .piv_auto_type = 1,
+    .led_feedback_ms = 350,
+  };
+}
+
+static bool valid_options(const device_options_t *value) {
+  uint8_t effect = value->led_idle_effect;
+  return value->version == 1 && value->led_idle_color <= 7 &&
+         value->led_success_color <= 7 && value->led_failure_color <= 7 &&
+         value->led_idle_end_color <= 7 && value->piv_auto_type <= 1 &&
+         value->led_feedback_ms >= 50 && value->led_feedback_ms <= 2000 &&
+         (effect == 1 || effect == 2 || effect == 3 || effect == 5 || effect == 6);
+}
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -87,6 +106,12 @@ void device_config_init(void) {
   bool loaded_ok = opened && nvs_get_blob(handle, CONFIG_KEY, &loaded, &length) == ESP_OK &&
                    length == sizeof(loaded) && valid(&loaded);
   uint8_t stored_led = 1;
+  options = option_defaults();
+  device_options_t loaded_options;
+  size_t options_length = sizeof(loaded_options);
+  if (loaded_ok && nvs_get_blob(handle, "custom", &loaded_options, &options_length) == ESP_OK &&
+      options_length == sizeof(loaded_options) && valid_options(&loaded_options))
+    options = loaded_options;
   led_mode = DEVICE_LED_ON;
   // Keep the existing key and its 0/1 values compatible with saved preferences.
   if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK &&
@@ -198,5 +223,59 @@ bool device_config_set_led_mode(device_led_mode_t value) {
 
 bool device_config_factory_reset(void) {
   if (!device_config_set_led_mode(DEVICE_LED_ON)) return false;
-  lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
+  lock();
+  stored_config_t candidate; defaults(&candidate);
+  device_options_t reset_options = option_defaults();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "custom", &reset_options, sizeof(reset_options));
+    if (result == ESP_OK) result = nvs_set_blob(handle, CONFIG_KEY, &candidate, sizeof(candidate));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) { config = candidate; options = reset_options; }
+  unlock(); return result == ESP_OK;
+}
+
+device_options_t device_config_options(void) {
+  if (!config_mutex) return option_defaults();
+  lock(); device_options_t value = options; unlock(); return value;
+}
+
+bool device_config_set_option(device_option_t option, uint16_t value) {
+  lock(); device_options_t candidate = options;
+  switch (option) {
+    case DEVICE_OPTION_LED_IDLE_COLOR:
+    case DEVICE_OPTION_LED_SUCCESS_COLOR:
+    case DEVICE_OPTION_LED_FAILURE_COLOR:
+    case DEVICE_OPTION_LED_IDLE_END_COLOR:
+      if (value > 7) { unlock(); return false; }
+      if (option == DEVICE_OPTION_LED_IDLE_COLOR) candidate.led_idle_color = value;
+      else if (option == DEVICE_OPTION_LED_SUCCESS_COLOR) candidate.led_success_color = value;
+      else if (option == DEVICE_OPTION_LED_FAILURE_COLOR) candidate.led_failure_color = value;
+      else candidate.led_idle_end_color = value;
+      break;
+    case DEVICE_OPTION_LED_IDLE_EFFECT:
+      if (value > UINT8_MAX) { unlock(); return false; }
+      candidate.led_idle_effect = value; break;
+    case DEVICE_OPTION_LED_IDLE_CYCLES:
+      if (value > UINT8_MAX) { unlock(); return false; }
+      candidate.led_idle_cycles = value; break;
+    case DEVICE_OPTION_LED_FEEDBACK_MS: candidate.led_feedback_ms = value; break;
+    case DEVICE_OPTION_PIV_AUTO_TYPE:
+      if (value > 1) { unlock(); return false; }
+      candidate.piv_auto_type = value; break;
+    default: unlock(); return false;
+  }
+  if (!valid_options(&candidate)) { unlock(); return false; }
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(handle, "custom", &candidate, sizeof(candidate));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) options = candidate;
+  unlock(); return result == ESP_OK;
 }

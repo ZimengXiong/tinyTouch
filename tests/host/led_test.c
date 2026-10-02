@@ -7,6 +7,8 @@ static TickType_t clock_ticks;
 static int mutexes[32], mutex_count;
 static stored_config_t disk_config;
 static bool have_config, have_led, stage_led, fail_save;
+static device_options_t disk_options, staged_options;
+static bool have_options, stage_options;
 static uint8_t disk_led, pending_led;
 static finger_profiles_t disk_profiles, staged_profiles;
 static bool have_profiles, stage_profiles;
@@ -36,6 +38,10 @@ int nvs_get_blob(nvs_handle_t handle, const char *key, void *data, size_t *lengt
     if (!have_profiles) return ESP_ERR_NVS_NOT_FOUND;
     assert(*length == sizeof(disk_profiles)); memcpy(data, &disk_profiles, *length); return ESP_OK;
   }
+  if (strcmp(key, "custom") == 0) {
+    if (!have_options) return ESP_ERR_NVS_NOT_FOUND;
+    assert(*length == sizeof(disk_options)); memcpy(data, &disk_options, *length); return ESP_OK;
+  }
   assert(strcmp(key, "config") == 0);
   if (!have_config) return -1;
   assert(*length == sizeof(disk_config)); memcpy(data, &disk_config, *length); return ESP_OK;
@@ -46,6 +52,11 @@ int nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, size_t 
     if (fail_save) return -2;
     assert(length == sizeof(staged_profiles)); memcpy(&staged_profiles, data, length);
     stage_profiles = true; return ESP_OK;
+  }
+  if (strcmp(key, "custom") == 0) {
+    if (fail_save) return -2;
+    assert(length == sizeof(staged_options)); memcpy(&staged_options, data, length);
+    stage_options = true; return ESP_OK;
   }
   assert(strcmp(key, "config") == 0); assert(length == sizeof(disk_config));
   if (fail_save) return -1;
@@ -60,6 +71,7 @@ int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value) {
 }
 int nvs_commit(nvs_handle_t handle) {
   (void)handle; if (fail_save) return -1;
+  if (stage_options) { disk_options = staged_options; have_options = true; stage_options = false; }
   if (stage_profiles) { disk_profiles = staged_profiles; have_profiles = true; stage_profiles = false; }
   if (stage_led) { disk_led = pending_led; have_led = true; stage_led = false; }
   return ESP_OK;

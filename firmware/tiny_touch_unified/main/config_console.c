@@ -144,7 +144,8 @@ static void clear_ota(void) {
 }
 
 static void status(void) {
-  char line[320];
+  char line[768];
+  device_options_t preferences = device_config_options();
   int count = fingerprint_count();
   // fingerprint_count probes the UART and can update the live health state.
   // Read health after that probe so one STATUS line cannot say ready with an
@@ -152,12 +153,20 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1",
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 "
+           "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
+           "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
+           "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
-           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name());
+           (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name(),
+           (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1u : 0u,
+           (unsigned)device_config_touch_cooldown_ms(), preferences.led_idle_color,
+           preferences.led_success_color, preferences.led_failure_color, preferences.led_idle_end_color,
+           preferences.led_idle_effect, preferences.led_idle_cycles,
+           preferences.led_feedback_ms, preferences.piv_auto_type);
   reply(line);
 }
 
@@ -179,8 +188,36 @@ static void set_value(char *arguments) {
   else if (ok && strcmp(arguments, "COOLDOWN") == 0) ok = device_config_set_touch_cooldown_ms(number);
   else if (ok && strcmp(arguments, "LED") == 0 && number <= DEVICE_LED_ONLY_AUTH)
     ok = fingerprint_set_led_mode((device_led_mode_t)number);
-  else ok = false;
+  else if (ok) {
+    static const struct { const char *name; device_option_t option; } settings[] = {
+      {"LED_IDLE_COLOR", DEVICE_OPTION_LED_IDLE_COLOR},
+      {"LED_SUCCESS_COLOR", DEVICE_OPTION_LED_SUCCESS_COLOR},
+      {"LED_FAILURE_COLOR", DEVICE_OPTION_LED_FAILURE_COLOR},
+      {"LED_IDLE_END_COLOR", DEVICE_OPTION_LED_IDLE_END_COLOR},
+      {"LED_IDLE_EFFECT", DEVICE_OPTION_LED_IDLE_EFFECT},
+      {"LED_IDLE_CYCLES", DEVICE_OPTION_LED_IDLE_CYCLES},
+      {"LED_FEEDBACK_MS", DEVICE_OPTION_LED_FEEDBACK_MS},
+      {"PIV_AUTO_TYPE", DEVICE_OPTION_PIV_AUTO_TYPE},
+    };
+    ok = false;
+    for (unsigned i = 0; i < sizeof(settings) / sizeof(settings[0]); i++) {
+      if (strcmp(arguments, settings[i].name) == 0) {
+        ok = fingerprint_set_option(settings[i].option, number); break;
+      }
+    }
+  }
   reply(ok ? "OK SET" : "ERR SET");
+}
+
+static void led_preview(const char *arguments) {
+  if (!require_authorized()) return;
+  char color[16], effect[16], duration[16], extra;
+  uint32_t c, e, d;
+  bool ok = sscanf(arguments, "%15s %15s %15s %c", color, effect, duration, &extra) == 3 &&
+            parse_u32(color, 7, &c) && parse_u32(effect, 6, &e) &&
+            parse_u32(duration, 5000, &d) &&
+            fingerprint_preview_led(c, e, d);
+  reply(ok ? "OK LED PREVIEW" : "ERR LED preview_failed");
 }
 
 static void host_add(char *arguments) {
@@ -403,6 +440,7 @@ static void handle_command(void) {
   else if (strcmp(command, "AUTH") == 0) authorize();
   else if (strncmp(command, "SET MODE ", 9) == 0) set_mode(command + 9);
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);
+  else if (strncmp(command, "LED PREVIEW ", 12) == 0) led_preview(command + 12);
   else if (strncmp(command, "HOST ADD ", 9) == 0) host_add(command + 9);
   else if (strncmp(command, "HOST REMOVE ", 12) == 0) host_remove(command + 12);
   else if (strcmp(command, "HOST LIST") == 0) host_list();
