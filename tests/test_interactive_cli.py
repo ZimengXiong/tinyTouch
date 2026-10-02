@@ -34,7 +34,7 @@ class InteractiveCliTests(unittest.TestCase):
             self.assertEqual(cli.main(), 0)
         device.assert_not_called()
         text = self.output.getvalue()
-        for label in ("1. Setup", "2. Enroll", "3. Status", "4. Advanced"):
+        for label in ("1. Setup", "2. Enroll", "3. Update", "4. Status", "5. Advanced"):
             self.assertIn(label, text)
 
     def test_noninteractive_no_command_prints_help_without_prompting(self):
@@ -95,7 +95,7 @@ class InteractiveCliTests(unittest.TestCase):
         with (
             mock.patch(
                 "builtins.input",
-                side_effect=["4", "fingers", "list", "back", "0", "3", "q"],
+                side_effect=["5", "fingers", "list", "back", "0", "4", "q"],
             ),
             mock.patch.object(cli, "command_fingers") as fingers,
             mock.patch.object(cli, "command_status") as status,
@@ -126,6 +126,18 @@ class InteractiveCliTests(unittest.TestCase):
             cli.interactive_menu(self.args)
         pair.assert_called_once()
         repair.assert_called_once()
+
+    def test_home_status_uses_summary_and_advanced_status_keeps_details(self):
+        with (
+            mock.patch(
+                "builtins.input", side_effect=["4", "5", "full status", "0", "0"]
+            ),
+            mock.patch.object(cli, "command_status") as status,
+        ):
+            cli.interactive_menu(self.args)
+        self.assertEqual(
+            [call.args[0].summary for call in status.call_args_list], [True, False]
+        )
 
     def test_invalid_menu_input_reprompts(self):
         with mock.patch("builtins.input", side_effect=["", "-1", "99", "status"]):

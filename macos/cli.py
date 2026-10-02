@@ -1946,8 +1946,39 @@ def command_rom(args: argparse.Namespace) -> None:
 
 def command_status(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    data = status(port)
-    say(json.dumps(data, indent=2, sort_keys=True))
+    if not getattr(args, "summary", False):
+        say(json.dumps(status(port), indent=2, sort_keys=True))
+        return
+    with foreground_session(port):
+        data = status(port)
+        fingerprints = "Unavailable"
+        if data.get("finger_groups") == "1":
+            try:
+                groups, _available = finger_inventory(port, data)
+                enrolled = sum(views == 4 for views in groups.values())
+                incomplete = len(groups) - enrolled
+                fingerprints = f"{enrolled} enrolled"
+                if incomplete:
+                    fingerprints += f" ({incomplete} incomplete)"
+            except ToolError:
+                pass
+        elif data.get("fingerprints", "-1").isdigit():
+            fingerprints = f"{data['fingerprints']} saved scans"
+    lighting = {"on": "On", "off": "Off", "only-auth": "Authentication only"}
+    sensor = "Ready" if data.get("sensor") in {"ready", "ok"} else "Unavailable"
+    rows = [
+        ("Mode", data.get("mode", "Unknown").upper()),
+        ("Fingerprints", fingerprints),
+        ("Firmware", data.get("firmware", "Unknown")),
+        ("Lighting", lighting.get(data.get("led"), "Unknown")),
+        ("Sensor", sensor),
+    ]
+    if data.get("mode") == "piv":
+        rows.append(
+            ("Smart card", "Ready" if data.get("piv") == "ready" else "Not configured")
+        )
+    for label, value in rows:
+        say(f"{label}: {value}")
 
 
 def command_logs(args: argparse.Namespace) -> None:
@@ -2304,7 +2335,8 @@ INTERACTIVE_MENUS = {
         (
             ("setup", "Setup", ["setup"]),
             ("enroll", "Enroll", ["enroll"]),
-            ("status", "Status", ["status"]),
+            ("update", "Update", ["update"]),
+            ("status", "Status", ["status", "--summary"]),
             ("advanced", "Advanced", "advanced"),
         ),
     ),
@@ -2363,10 +2395,10 @@ INTERACTIVE_MENUS = {
             ("settings", "Settings", "settings"),
             ("fingers", "Fingerprints", "fingers"),
             ("computers", "Computers", "computers"),
-            ("update", "Update", ["update"]),
             ("test", "Test connection", ["test"]),
             ("piv", "PIV", "piv"),
             ("diagnostics", "Diagnostics", "diagnostics"),
+            ("status", "Full status", ["status"]),
         ),
     ),
     "piv": (
@@ -2615,17 +2647,42 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
     update.add_argument("--release-version", help=argparse.SUPPRESS)
     update.set_defaults(func=command_update)
-    rom = sub.add_parser("rom", aliases=["bootloader"], help="Show the physical ROM bootloader instructions.")
-    rom.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
+    rom = sub.add_parser(
+        "rom",
+        aliases=["bootloader"],
+        help="Show the physical ROM bootloader instructions.",
+    )
+    rom.add_argument(
+        "--port",
+        default=argparse.SUPPRESS,
+        help="Use this USB serial path instead of the global --port value.",
+    )
     rom.set_defaults(func=command_rom)
     status_cmd = sub.add_parser("status", help="Show device status as JSON.")
-    status_cmd.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
+    status_cmd.add_argument(
+        "--port",
+        default=argparse.SUPPRESS,
+        help="Use this USB serial path instead of the global --port value.",
+    )
+    status_cmd.add_argument(
+        "--summary", action="store_true", help="Show a short, readable summary."
+    )
     status_cmd.set_defaults(func=command_status)
-    logs = sub.add_parser("logs", help="Show the device event log without starting fingerprint capture.")
-    logs.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
+    logs = sub.add_parser(
+        "logs", help="Show the device event log without starting fingerprint capture."
+    )
+    logs.add_argument(
+        "--port",
+        default=argparse.SUPPRESS,
+        help="Use this USB serial path instead of the global --port value.",
+    )
     logs.set_defaults(func=command_logs)
     test = sub.add_parser("test", help="Check the USB serial connection.")
-    test.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
+    test.add_argument(
+        "--port",
+        default=argparse.SUPPRESS,
+        help="Use this USB serial path instead of the global --port value.",
+    )
     test.set_defaults(func=command_test)
     keys = sub.add_parser("keys", help="Create a PIV identity on the device.")
     keys.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
@@ -2654,7 +2711,7 @@ def parser() -> argparse.ArgumentParser:
         "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and local pairing. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
         "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
         "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),
-        "status": ("Read the device status as JSON. Use 'config' for a readable settings table. Use 'ports' to list USB serial paths.", "tinytouch status\ntinytouch --port /dev/cu.usbmodem101 status"),
+        "status": ("Show full device status as JSON, or use --summary for a short overview.", "tinytouch status --summary\ntinytouch status"),
         "test": ("Check USB serial communication and device status. Use --verbose to show protocol diagnostics.", "tinytouch test\ntinytouch --verbose test\ntinytouch ports"),
         "logs": ("Read recent touch and HID events without starting fingerprint capture.", "tinytouch logs"),
         "keys": ("Create a PIV identity after fingerprint approval. Use 'setup' for the full macOS configuration process.", "tinytouch keys"),

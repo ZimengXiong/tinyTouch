@@ -694,6 +694,49 @@ class ProtocolSixTests(unittest.TestCase):
             "Fingerprint authentication could not start. Please try again.",
         )
 
+    def test_status_summary_counts_complete_fingers_instead_of_scans(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="port"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(
+                cli,
+                "status",
+                return_value={
+                    "mode": "hid",
+                    "finger_groups": "1",
+                    "fingerprints": "5",
+                    "firmware": "0.1.34-dev.1",
+                    "sensor": "ready",
+                    "led": "only-auth",
+                },
+            ),
+            mock.patch.object(
+                cli,
+                "serial_command",
+                return_value=[
+                    "OK FINGER LIST groups=1:4,2:1 available=8 capacity=40 pending=0",
+                ],
+            ),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["status", "--summary"])
+            args.func(args)
+        lines = [call.args[0] for call in output.call_args_list]
+        self.assertIn("Fingerprints: 1 enrolled (1 incomplete)", lines)
+        self.assertIn("Sensor: Ready", lines)
+        self.assertEqual(len(lines), 5)
+
+    def test_full_status_preserves_all_fields_as_json(self):
+        data = {"mode": "hid", "firmware": "test", "future_field": "value"}
+        with (
+            mock.patch.object(cli, "choose_port", return_value="port"),
+            mock.patch.object(cli, "status", return_value=data),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["status"])
+            args.func(args)
+        self.assertEqual(json.loads(output.call_args.args[0]), data)
+
     def test_status_requires_a_terminal_status_line(self):
         with mock.patch.object(
             cli,
