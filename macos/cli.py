@@ -1787,9 +1787,9 @@ def download(url: str) -> bytes:
 
 
 def release_root(version: str) -> str:
-    """Return the immutable asset root for a validated production version."""
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
-        raise ToolError("The release manifest contains an invalid production version.")
+    """Return an immutable asset root for a stable or explicitly selected dev version."""
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?", version) is None:
+        raise ToolError("The release manifest contains an invalid release version.")
     return f"{RELEASE_DOWNLOAD_URL}/v{version}"
 
 
@@ -1803,6 +1803,8 @@ def update_release(version: str | None = None) -> tuple[str, dict]:
         version = latest.get("version") if isinstance(latest, dict) else None
         if not isinstance(version, str):
             raise ToolError("The release manifest contains no valid version.")
+        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+            raise ToolError("The latest release manifest does not identify a stable version.")
 
     root = release_root(version)
     manifest = json.loads(download(f"{root}/release-manifest.json").decode())

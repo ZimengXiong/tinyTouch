@@ -328,6 +328,19 @@ tinytouch bootloader [--port PATH]
 
 Prints ROM-mode instructions. Flash with the [Flash center](/flash) or ESP-IDF.
 
+### Development release updates
+
+Development releases are opt-in and do not replace the stable update channel.
+Install the CLI from the selected prerelease's `install.sh` using its
+`TINYTOUCH_RELEASE_ROOT`, then stage its matching firmware explicitly:
+
+```sh
+tinytouch update --release-version 0.1.34-dev.1
+```
+
+Unplug and reconnect after staging. An ordinary `tinytouch update` selects the
+latest stable release.
+
 ## `config`
 
 ```text

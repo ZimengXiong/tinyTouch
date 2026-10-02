@@ -441,6 +441,25 @@ class ProtocolSixTests(unittest.TestCase):
                 cli.update_release()
         download.assert_called_once()
 
+    def test_explicit_dev_update_is_pinned_without_reading_latest(self):
+        version = "0.1.34-dev.1"
+        exact = json.dumps({"version": version, "ota": {}}).encode()
+        with mock.patch.object(cli, "download", return_value=exact) as download:
+            root, manifest = cli.update_release(version)
+        self.assertEqual(root, f"{cli.RELEASE_DOWNLOAD_URL}/v{version}")
+        self.assertEqual(manifest["version"], version)
+        download.assert_called_once_with(f"{root}/release-manifest.json")
+
+    def test_explicit_release_rejects_invalid_names_and_mismatched_manifest(self):
+        for version in ("0.1.34-dev", "0.1.34-dev.1/../../main", "0.1.34-beta.1", "0.1.34-dev.-1"):
+            with self.subTest(version=version), mock.patch.object(cli, "download") as download:
+                with self.assertRaises(cli.ToolError):
+                    cli.update_release(version)
+                download.assert_not_called()
+        with mock.patch.object(cli, "download", return_value=b'{"version":"0.1.33"}'):
+            with self.assertRaisesRegex(cli.ToolError, "do not match"):
+                cli.update_release("0.1.34-dev.1")
+
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
         target_version = "9.9.9"
         root = f"https://github.com/ZimengXiong/tinyTouch/releases/download/v{target_version}"
