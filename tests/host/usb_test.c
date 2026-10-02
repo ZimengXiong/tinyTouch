@@ -11,6 +11,7 @@ static bool deferred;
 static bool ota_active;
 static bool complete_login;
 static bool transfer_queued = true;
+static uint16_t delay_ms = 50;
 
 int64_t esp_timer_get_time(void) { return now_us; }
 void vTaskDelay(uint32_t ms) { now_us += (int64_t)ms * 1000; }
@@ -46,6 +47,7 @@ int tinyusb_driver_install(const tinyusb_config_t *c) {
 int esp_read_mac(uint8_t *m, int kind) { (void)kind; memset(m, 42, 6); return 0; }
 device_mode_t device_config_mode(void) { return mode; }
 bool device_config_piv_touch_enabled(void) { return preference; }
+uint16_t device_config_piv_delay_ms(void) { return delay_ms; }
 bool firmware_update_active(void) { return ota_active; }
 void piv_reset_transport_state(void) { resets++; }
 void touch_pin_hid_log_event(const char *event, int value) { (void)event; (void)value; }
@@ -98,7 +100,16 @@ int main(void) {
   configured = hid_ready = true;
   uint8_t select[] = {0x6f, 4,0,0,0, 0,1,0,0,0, 0,0xa4,4,0};
   in_busy = false; handle_message(select, sizeof(select));
-  assert(apdus == 1 && piv_selected && usb_ccid_wait_for_piv());
+  assert(apdus == 1 && piv_selected);
+  int64_t started = now_us;
+  assert(usb_ccid_wait_for_piv() && now_us - started == 50000);
+  delay_ms = 100;
+  started = now_us;
+  assert(usb_ccid_wait_for_piv() && now_us - started == 100000);
+  delay_ms = 0;
+  started = now_us;
+  assert(usb_ccid_wait_for_piv() && now_us == started);
+  delay_ms = 50;
   // Host traffic and a held finger cannot prolong the touch lease.
   now_us = touch_until;
   usb_ccid_begin_console_command();

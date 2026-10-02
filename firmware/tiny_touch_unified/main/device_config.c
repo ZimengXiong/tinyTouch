@@ -11,7 +11,7 @@
 #define CONFIG_NAMESPACE "tt6"
 #define CONFIG_KEY "config"
 #define CONFIG_VERSION 6
-#define PIV_DELAY_DEFAULT_MS 1000
+#define PIV_DELAY_DEFAULT_MS 50
 #define PIV_DELAY_MAX_MS 5000
 
 typedef struct {

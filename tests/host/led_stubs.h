@@ -55,6 +55,8 @@ int nvs_get_blob(nvs_handle_t handle, const char *key, void *data, size_t *lengt
 int nvs_set_blob(nvs_handle_t handle, const char *key, const void *data, size_t length);
 int nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *value);
 int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value);
+int nvs_get_u16(nvs_handle_t handle, const char *key, uint16_t *value);
+int nvs_set_u16(nvs_handle_t handle, const char *key, uint16_t value);
 int nvs_commit(nvs_handle_t handle);
 void nvs_close(nvs_handle_t handle);
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224);

@@ -10,6 +10,8 @@ static uint8_t disk_led, pending_led;
 static bool have_piv_touch;
 static uint8_t disk_piv_touch, pending_piv_touch;
 static bool write_piv_touch, write_led;
+static bool have_piv_delay, write_piv_delay;
+static uint16_t disk_piv_delay, pending_piv_delay;
 static uint8_t request[64], response[32], last_led[4];
 static size_t request_len, response_len;
 static int led_commands, reject_led;
@@ -54,7 +56,20 @@ int nvs_commit(nvs_handle_t handle) {
     disk_piv_touch = pending_piv_touch; have_piv_touch = true; write_piv_touch = false;
   }
   if (write_led) { disk_led = pending_led; have_led = true; write_led = false; }
+  if (write_piv_delay) {
+    disk_piv_delay = pending_piv_delay; have_piv_delay = true; write_piv_delay = false;
+  }
   return ESP_OK;
+}
+int nvs_get_u16(nvs_handle_t handle, const char *key, uint16_t *value) {
+  (void)handle; assert(strcmp(key, "piv_delay_ms") == 0);
+  if (!have_piv_delay) return -1;
+  *value = disk_piv_delay; return ESP_OK;
+}
+int nvs_set_u16(nvs_handle_t handle, const char *key, uint16_t value) {
+  (void)handle; assert(strcmp(key, "piv_delay_ms") == 0);
+  if (fail_save) return -1;
+  pending_piv_delay = value; write_piv_delay = true; return ESP_OK;
 }
 void nvs_close(nvs_handle_t handle) { (void)handle; }
 int mbedtls_sha256(const unsigned char *data, size_t length, unsigned char output[32], int is224) {
@@ -107,6 +122,22 @@ int main(void) {
   disk_config.typing_delay_ms = 23; have_config = true;
   stored_config_t before = disk_config;
   device_config_init(); assert(device_config_led_enabled());
+  assert(device_config_piv_delay_ms() == 50); // Missing optional key uses 50 ms.
+  assert(device_config_set_piv_delay_ms(100));
+  device_config_init(); assert(device_config_piv_delay_ms() == 100);
+  assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
+  assert(!device_config_set_piv_delay_ms(5001));
+  assert(device_config_piv_delay_ms() == 100 && disk_piv_delay == 100);
+  fail_save = true;
+  assert(!device_config_set_piv_delay_ms(50));
+  assert(device_config_piv_delay_ms() == 100 && disk_piv_delay == 100);
+  fail_save = false;
+  assert(device_config_set_piv_delay_ms(0));
+  device_config_init(); assert(device_config_piv_delay_ms() == 0);
+  assert(device_config_set_piv_delay_ms(5000));
+  device_config_init(); assert(device_config_piv_delay_ms() == 5000);
+  disk_piv_delay = 6000;
+  device_config_init(); assert(device_config_piv_delay_ms() == 50);
   assert(!device_config_piv_touch_enabled());
   assert(device_config_set_piv_touch_enabled(true));
   assert(device_config_piv_touch_enabled());
@@ -141,6 +172,7 @@ int main(void) {
   assert(fingerprint_authorize_poll_match().slot == 1); expect_led(FP_LED_GREEN);
   fingerprint_led_idle(); expect_led(FP_LED_BLUE);
   assert(device_config_factory_reset()); assert(device_config_led_enabled());
+  assert(device_config_piv_delay_ms() == 50 && disk_piv_delay == 50);
   assert(!device_config_piv_touch_enabled());
   device_config_init(); assert(!device_config_piv_touch_enabled());
   disk_piv_touch = 99; device_config_init(); assert(!device_config_piv_touch_enabled());
