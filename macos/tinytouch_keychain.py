@@ -1,6 +1,8 @@
 """Small Security.framework wrapper for generic-password items."""
 
 import ctypes
+import getpass
+import warnings
 import plistlib
 import re
 import subprocess
@@ -163,7 +165,46 @@ def has_password(service: str, account: str) -> bool:
     return True
 
 
-def authorize_executable(service: str, account: str, executable: str) -> None:
+def can_read_password(service: str, account: str) -> bool:
+    """Check unattended access and wipe the temporary credential copy."""
+    status = _SECURITY.SecKeychainSetUserInteractionAllowed(False)
+    if status != 0:
+        raise KeychainError("disable interaction", status)
+    value = None
+    try:
+        value = get_password_bytes(service, account)
+        return value is not None
+    except KeychainError as exc:
+        if exc.status in {-25293, -25308, -25315, -25320}:
+            return False
+        raise
+    finally:
+        if value is not None:
+            value[:] = b"\x00" * len(value)
+        _SECURITY.SecKeychainSetUserInteractionAllowed(not _BACKGROUND_MODE)
+
+
+def prompt_keychain_password() -> bytearray:
+    """Read the Keychain password from the terminal without echoing it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return bytearray(
+                getpass.getpass("Login Keychain password: ").encode("utf-8")
+            )
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise RuntimeError(
+                "Run tinytouch repair in an interactive terminal."
+            ) from exc
+
+
+def authorize_executable(
+    service: str,
+    account: str,
+    executable: str,
+    *,
+    password_provider=prompt_keychain_password,
+) -> None:
     """Authorize a stable signed CLI without replacing its saved credential."""
     metadata = subprocess.run(
         ["codesign", "-d", "--verbose=2", executable],
@@ -193,6 +234,11 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
     for name, arguments, result in (
         ("SecKeychainItemCopyAccess", [pointer, output], ctypes.c_int32),
         ("SecKeychainItemSetAccess", [pointer, pointer], ctypes.c_int32),
+        (
+            "SecKeychainItemSetAccessWithPassword",
+            [pointer, pointer, ctypes.c_uint32, pointer],
+            ctypes.c_int32,
+        ),
         (
             "SecTrustedApplicationCreateFromPath",
             [ctypes.c_char_p, output],
@@ -244,8 +290,8 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
             )
         )
         for authorization in (
-            "kSecACLAuthorizationDecrypt",
             "kSecACLAuthorizationPartitionID",
+            "kSecACLAuthorizationDecrypt",
         ):
             tag = pointer.in_dll(_SECURITY, authorization)
             acls = _SECURITY.SecAccessCopyMatchingACLList(access, tag)
@@ -253,6 +299,7 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
                 if authorization == "kSecACLAuthorizationPartitionID":
                     continue
                 raise KeychainError("find credential ACL", -1)
+            changed = False
             try:
                 for index in range(_CORE_FOUNDATION.CFArrayGetCount(acls)):
                     acl = _CORE_FOUNDATION.CFArrayGetValueAtIndex(acls, index)
@@ -290,8 +337,9 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
                             )
                             values = partitions["Partitions"]
                             team_partition = "teamid:" + team[1]
-                            if team_partition not in values:
-                                values.append(team_partition)
+                            if team_partition in values:
+                                continue
+                            values.append(team_partition)
                             encoded = (
                                 plistlib.dumps(partitions, fmt=plistlib.FMT_XML)
                                 .hex()
@@ -310,6 +358,7 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
                                 selector,
                             )
                         )
+                        changed = True
                     finally:
                         for reference in (
                             updated_apps,
@@ -321,13 +370,37 @@ def authorize_executable(service: str, account: str, executable: str) -> None:
                                 _CORE_FOUNDATION.CFRelease(reference)
             finally:
                 _CORE_FOUNDATION.CFRelease(acls)
-        # The owner must approve changing an existing item's trusted code.
-        # A Keychain unlock password alone cannot grant application access.
-        check(_SECURITY.SecKeychainSetUserInteractionAllowed(True))
-        try:
-            check(_SECURITY.SecKeychainItemSetAccess(item, access))
-        finally:
-            check(_SECURITY.SecKeychainSetUserInteractionAllowed(not _BACKGROUND_MODE))
+            if not changed:
+                continue
+            if authorization == "kSecACLAuthorizationPartitionID":
+                # An old ad hoc partition rejects this process before macOS can
+                # show the application-access dialog. Authorize the new team first.
+                password = password_provider()
+                try:
+                    buffer = (ctypes.c_ubyte * len(password)).from_buffer(password)
+                    status = _SECURITY.SecKeychainItemSetAccessWithPassword(
+                        item, access, len(password), buffer
+                    )
+                    if status != 0:
+                        raise KeychainError("authorize signing identity", status)
+                finally:
+                    password[:] = b"\x00" * len(password)
+                # Reload before editing the decrypt ACL. Combining both changes
+                # makes Security.framework reject legacy items with errSecAuthFailed.
+                _CORE_FOUNDATION.CFRelease(access)
+                access = pointer()
+                check(_SECURITY.SecKeychainItemCopyAccess(item, ctypes.byref(access)))
+            else:
+                check(_SECURITY.SecKeychainSetUserInteractionAllowed(True))
+                try:
+                    check(_SECURITY.SecKeychainItemSetAccess(item, access))
+                finally:
+                    check(
+                        _SECURITY.SecKeychainSetUserInteractionAllowed(
+                            not _BACKGROUND_MODE
+                        )
+                    )
+
     finally:
         for reference in (trusted, access, item):
             if reference:

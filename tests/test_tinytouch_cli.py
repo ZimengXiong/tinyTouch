@@ -410,7 +410,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "notify"),
         ):
             cli.command_update(args)
-        install_helper.assert_called_once_with()
+        install_helper.assert_called_once_with(check_saved=True)
         repair.assert_not_called()
 
     def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
@@ -453,6 +453,24 @@ class ProtocolSixTests(unittest.TestCase):
         repair.assert_called_once()
         self.assertIsNone(repair.call_args.args[0].port)
         self.assertEqual(activity, ["repair", "ota"])
+
+    def test_offline_upgrade_checks_saved_credentials_before_replacing_service(self):
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(
+                cli, "ensure_helper_environment", return_value=Path("/new/cli")
+            ),
+            mock.patch.object(
+                cli.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+            ) as run,
+            mock.patch.object(cli, "unload_helper") as unload,
+        ):
+            with self.assertRaises(cli.HelperCredentialAccessError):
+                cli.install_helper(check_saved=True)
+        self.assertEqual(
+            run.call_args.args[0][-2:], ["--check-credentials", "--include-saved"]
+        )
+        unload.assert_not_called()
 
     def test_upgrade_of_one_device_repairs_access_for_the_shared_helper(self):
         with (
@@ -1175,6 +1193,7 @@ class ProtocolSixTests(unittest.TestCase):
 
     def test_repair_authorizes_current_cli_then_reinstalls_its_helper(self):
         keychain = mock.Mock()
+        keychain.can_read_password.side_effect = [False, True] * 7
         keychain.has_password.side_effect = (
             lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
         )
@@ -1208,8 +1227,64 @@ class ProtocolSixTests(unittest.TestCase):
         keychain.set_password.assert_not_called()
         keychain.delete_password.assert_not_called()
 
+    def test_repair_reinstalls_without_changing_readable_credentials(self):
+        keychain = mock.Mock()
+        keychain.has_password.side_effect = (
+            lambda service, name: ":fingerprint:" not in name
+        )
+        keychain.can_read_password.return_value = True
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch(
+                "tinytouch_helper.known_device_ids",
+                return_value={"TT-123456ABCDEF"},
+            ),
+            mock.patch.object(cli, "_keychain", return_value=keychain),
+            mock.patch.object(cli, "install_helper") as install,
+            mock.patch.object(cli, "say"),
+        ):
+            cli.command_repair(SimpleNamespace(port=None))
+        self.assertEqual(keychain.can_read_password.call_count, 2)
+        keychain.authorize_executable.assert_not_called()
+        install.assert_called_once_with()
+
+    def test_repair_without_saved_or_connected_devices_explains_setup(self):
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch("tinytouch_helper.known_device_ids", return_value=set()),
+            mock.patch.object(cli, "_keychain") as keychain,
+            mock.patch.object(cli, "install_helper") as install,
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "no complete HID pairing"):
+                cli.command_repair(SimpleNamespace(port=None))
+        keychain.return_value.has_password.assert_not_called()
+        install.assert_not_called()
+
+    def test_repair_rejects_authorization_that_does_not_grant_unattended_access(self):
+        keychain = mock.Mock()
+        keychain.has_password.return_value = True
+        keychain.can_read_password.return_value = False
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch(
+                "tinytouch_helper.known_device_ids", return_value={"TT-123456ABCDEF"}
+            ),
+            mock.patch.object(cli, "_keychain", return_value=keychain),
+            mock.patch.object(cli, "install_helper") as install,
+            mock.patch.object(cli, "say"),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "still cannot read"):
+                cli.command_repair(SimpleNamespace(port=None))
+        install.assert_not_called()
+        keychain.set_password.assert_not_called()
+        keychain.delete_password.assert_not_called()
+
     def test_repair_denial_does_not_replace_service_or_credentials(self):
         keychain = mock.Mock()
+        keychain.can_read_password.side_effect = [False, True] * 7
         keychain.has_password.return_value = True
         keychain.authorize_executable.side_effect = RuntimeError("authorization denied")
         with (
@@ -1229,8 +1304,9 @@ class ProtocolSixTests(unittest.TestCase):
         keychain.set_password.assert_not_called()
         keychain.delete_password.assert_not_called()
 
-    def test_upgrade_repair_includes_multiple_disconnected_devices(self):
+    def test_offline_repair_checks_all_saved_devices(self):
         keychain = mock.Mock()
+        keychain.can_read_password.side_effect = [False, True] * 7
         keychain.has_password.side_effect = (
             lambda service, name: ":fingerprint:" not in name
         )

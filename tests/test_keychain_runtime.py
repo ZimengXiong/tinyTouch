@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "tinytouch_keychain_runtime_test",
@@ -32,6 +31,46 @@ class KeychainRuntimeTests(unittest.TestCase):
         error = keychain.KeychainError("read", -25293)
         self.assertFalse(error.transient)
         self.assertEqual(error.status_name, "authentication_failed")
+
+    def test_unattended_probe_wipes_secret_and_restores_interaction(self):
+        raw = bytearray(b"test secret")
+        with (
+            mock.patch.object(keychain, "_BACKGROUND_MODE", False),
+            mock.patch.object(
+                keychain._SECURITY,
+                "SecKeychainSetUserInteractionAllowed",
+                return_value=0,
+            ) as interaction,
+            mock.patch.object(keychain, "get_password_bytes", return_value=raw),
+        ):
+            self.assertTrue(keychain.can_read_password("service", "account"))
+        self.assertEqual(raw, bytearray(len(raw)))
+        self.assertEqual(
+            interaction.call_args_list, [mock.call(False), mock.call(True)]
+        )
+
+    def test_unattended_probe_only_classifies_authorization_failures(self):
+        for status in (-25293, -25308, -25315, -25320, -34018):
+            with (
+                self.subTest(status=status),
+                mock.patch.object(keychain, "_BACKGROUND_MODE", True),
+                mock.patch.object(
+                    keychain._SECURITY,
+                    "SecKeychainSetUserInteractionAllowed",
+                    return_value=0,
+                ) as interaction,
+                mock.patch.object(
+                    keychain,
+                    "get_password_bytes",
+                    side_effect=keychain.KeychainError("read", status),
+                ),
+            ):
+                if status == -34018:
+                    with self.assertRaises(keychain.KeychainError):
+                        keychain.can_read_password("service", "account")
+                else:
+                    self.assertFalse(keychain.can_read_password("service", "account"))
+                interaction.assert_called_with(False)
 
     def test_text_password_wrapper_wipes_raw_copy(self):
         raw = bytearray(b"secret")

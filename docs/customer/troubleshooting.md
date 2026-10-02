@@ -72,8 +72,10 @@ If the logs report a Keychain access error after an upgrade, run:
 tinytouch repair
 ```
 
-Approve the macOS Keychain dialogs. Repair preserves saved credentials and installs
-the current helper after checking its access. For an older CLI without `repair`,
+Repair also works while tinyTouch is disconnected. Enter your login Keychain
+password in the terminal if requested, and approve the macOS Keychain dialogs.
+Repair preserves saved credentials, verifies unattended access, and reinstalls
+the current helper. For an older CLI without `repair`,
 follow [Upgrade an older CLI](/customer/update#upgrade-an-older-cli).
 
 If credentials are missing, run `tinytouch setup --mode hid --skip-enroll`.

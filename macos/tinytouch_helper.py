@@ -697,13 +697,19 @@ def device_ports() -> list[str]:
 
 
 def credentials_exist(device_id: str) -> bool:
-    return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
+    return all(
+        has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE)
+    )
+
+
+def connected_device_ids() -> set[str]:
+    """List attached devices without opening their serial ports."""
+    return {endpoint.device_id for endpoint in device_endpoints()}
 
 
 def known_device_ids() -> set[str]:
-    """Find connected devices and saved device identities without opening USB."""
-    device_ids = {endpoint.device_id for endpoint in device_endpoints()}
-    # Include previously used devices while they are disconnected.
+    """List attached devices and identities saved by the helper."""
+    device_ids = connected_device_ids()
     for prefix in ("state-", "settings-"):
         for path in STATE_DIR.glob(f"{prefix}TT-*.json"):
             device_id = path.stem[len(prefix) :]
@@ -712,9 +718,10 @@ def known_device_ids() -> set[str]:
     return device_ids
 
 
-def check_credentials() -> None:
+def check_credentials(*, include_saved: bool = False) -> None:
     """Check unattended access without opening a device or typing a password."""
-    for device_id in sorted(known_device_ids()):
+    device_ids = known_device_ids() if include_saved else connected_device_ids()
+    for device_id in sorted(device_ids):
         if not credentials_exist(device_id):
             continue
         passwords: dict[int, bytearray] = {}
@@ -989,12 +996,13 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--check-credentials", action="store_true")
+    parser.add_argument("--include-saved", action="store_true")
     args = parser.parse_args()
 
     set_background_mode()
     if args.check_credentials:
         try:
-            check_credentials()
+            check_credentials(include_saved=args.include_saved)
         except Exception as exc:
             # Never include credential values or arbitrary exception messages.
             diagnostic(

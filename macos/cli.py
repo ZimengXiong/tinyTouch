@@ -524,7 +524,7 @@ def ensure_helper_environment() -> Path:
     return python
 
 
-def install_helper() -> None:
+def install_helper(*, check_saved: bool = False) -> None:
     global _helper_suppressed
     python = ensure_helper_environment()
     arguments = (
@@ -534,9 +534,12 @@ def install_helper() -> None:
     )
     # Keychain access depends on the executable's identity. Check the exact
     # replacement process before stopping a helper that can still read secrets.
+    credential_check = [*arguments, "--check-credentials"]
+    if check_saved:
+        credential_check.append("--include-saved")
     try:
         candidate = subprocess.run(
-            [*arguments, "--check-credentials"],
+            credential_check,
             check=False,
             timeout=15,
             stdin=subprocess.DEVNULL,
@@ -562,8 +565,11 @@ def install_helper() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
-        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+        "Label": "com.tinytouch.helper",
+        "ProgramArguments": arguments,
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Interactive",
         "ThrottleInterval": 1,
         "StandardOutPath": str(LOG_DIR / "helper.log"),
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
@@ -633,13 +639,31 @@ def command_repair(args: argparse.Namespace) -> None:
             "This Mac has no complete HID pairing. Run 'tinytouch setup --mode hid'."
         )
     say(
-        "Repairing access for the current CLI. Approve macOS Keychain authorization if prompted."
+        "Checking saved HID credentials. Approve macOS Keychain authorization if prompted."
     )
+    owner_password = None
+
+    def password_provider():
+        nonlocal owner_password
+        if owner_password is None:
+            owner_password = keychain.prompt_keychain_password()
+        return bytearray(owner_password)
+
     try:
         for service, name in accounts:
-            keychain.authorize_executable(service, name, sys.executable)
+            if not keychain.can_read_password(service, name):
+                keychain.authorize_executable(
+                    service, name, sys.executable, password_provider=password_provider
+                )
+                if not keychain.can_read_password(service, name):
+                    raise ToolError(
+                        "The current CLI still cannot read the credential. The helper was not replaced."
+                    )
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        raise ToolError(f"Keychain repair did not finish: {exc}") from exc
+        raise ToolError(f"Keychain repair did not finish for {name}: {exc}") from exc
+    finally:
+        if owner_password is not None:
+            owner_password[:] = b"\x00" * len(owner_password)
     install_helper()
     say(
         "Current HID helper reinstalled. Saved passwords and pairing keys are unchanged."
@@ -652,15 +676,19 @@ def command_upgrade_helper(args: argparse.Namespace) -> None:
         return
     say("Updating the HID background service...")
     try:
-        install_helper()
+        install_helper(check_saved=True)
     except HelperCredentialAccessError:
         say("The new CLI needs Keychain authorization. Starting repair...")
-        # One helper serves every paired device, even when OTA targets one port.
+        # Repair saved devices too, including upgrades while USB is disconnected.
         command_repair(argparse.Namespace(port=None))
 
 
 def exchange_serial(
-    device, command: str, *, timeout: float, touch_prompt: str | None = None,
+    device,
+    command: str,
+    *,
+    timeout: float,
+    touch_prompt: str | None = None,
     lift_prompt: str | None = "Lift your finger from the sensor.",
     touch_again_prompt: str | None = None,
     wait_message: str | None = None,
