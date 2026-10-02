@@ -50,16 +50,23 @@ Changes mode after fingerprint approval. Reconnect the device when prompted.
 ## `led`
 
 ```text
-tinytouch led {on,off} [--port PATH]
+tinytouch led {on,off,only-auth} [--port PATH]
 ```
 
-Turns the sensor ring on or off, including authentication feedback. The setting
-is saved on the device and survives reconnects. Fingerprint sensing stays active.
-An enrolled device asks for a matching fingerprint before changing the setting.
+`on` enables the sensor ring. `off` disables it, including authentication feedback.
+`only-auth` disables idle blue and keeps red/green authentication feedback
+(CLI and firmware 0.1.30+).
 
-To upgrade from an older release, run `tinytouch update`, unplug and reconnect
-once when prompted, then run `tinytouch led off`. Use `tinytouch led on` to restore
-the default lighting.
+Full `off` mode also disables the sensor's automatic success/failure animations.
+The first update that adds manual sensor lighting requires a physical unplug and
+reconnect after the manual-mode command is saved. A software reset is insufficient.
+The CLI reports the required reconnect instead of claiming the light is already off.
+Older firmware can clear the LED after authentication but can still flash green;
+update firmware before using full `off` mode.
+
+`tinytouch status` reports `led_control=manual` when the migration is complete and
+`led_sync=synced` when the latest LED command was acknowledged. `reconnect` means
+sensor power must be cycled. Fingerprint matching remains enabled in all LED modes.
 
 ## `piv-touch`
 
@@ -95,13 +102,15 @@ Prints JSON containing:
 | `build` | First 12 characters of the source commit, or `development` |
 | `mode` | `piv` or `hid` |
 | `piv` | `ready` or `unconfigured` |
-| `led` | Saved sensor LED setting: `on` or `off` (firmware 0.1.29+) |
+| `led` | Saved sensor LED setting: `on`/`off` (0.1.29+) or `only-auth` (0.1.30+) |
+| `led_only_auth` | `1` when authentication-only lighting is supported (firmware 0.1.30+) |
 | `piv_touch` | Saved touch activation preference: `on` or `off` (firmware 0.1.30+) |
 | `piv_touch_active` | Touch activation setting applied at boot: `on` or `off` |
 | `piv_delay_ms` | Saved delay before PIN entry after PIV selection and USB/HID readiness, in milliseconds |
 | `piv_visible` | Whether USB currently exposes the smart-card interface: `yes` or `no` |
 | `sensor` | `ready` or `offline` after a live UART probe |
-| `fingerprints` | Number of occupied sensor slots |
+| `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for finger blocks |
+| `finger_groups` | `1` when whole-finger commands are supported (firmware 0.1.29+) |
 | `hosts` | Number of registered HID computers |
 | `ota` | `idle`, `writing`, or `staged` |
 
@@ -124,27 +133,41 @@ Prints up to 32 recent touch and HID events.
 ## `enroll`
 
 ```text
-tinytouch enroll SLOT [--port PATH]
+tinytouch enroll FINGER [--replace] [--port PATH]
 ```
 
-Enrolls slot `1` through `5`. Existing templates require fingerprint approval.
-
-Examples:
+Enrolls finger `1` through `10` through the complete four-view sequence. Use the
+same finger for every view and lift it when prompted. Each view is scanned twice.
 
 ```sh
-tinytouch enroll 5
+tinytouch enroll 1
+tinytouch enroll 2
 tinytouch enroll 3 --port /dev/cu.usbmodem101
 ```
 
-Setup uses slots 1–4.
+## `fingers`
+
+```text
+tinytouch fingers [--port PATH]
+```
+
+Lists occupied and partially occupied finger blocks and space for additional
+fingers. With existing templates 1–5, fingers 1 and 2 are occupied and eight blocks
+remain available. No changes or fingerprint authorization are needed to list them.
 
 ## `delete`
 
 ```text
-tinytouch delete SLOT [--port PATH]
+tinytouch delete FINGER [--port PATH]
 ```
 
-Deletes slot `1` through `5` after fingerprint approval. To delete all state, use `factory-reset`.
+Deletes the **entire** block for finger `1` through `10` after fingerprint approval.
+For example, `tinytouch delete 2` deletes templates 5–8, including any legacy print
+in that block. It does not delete other fingers. To delete all state, use
+`factory-reset`.
+
+See [Device configuration](/reference/configuration#fingers-and-existing-enrollment)
+for the complete mapping and interrupted-enrollment behavior.
 
 ## `computers`
 

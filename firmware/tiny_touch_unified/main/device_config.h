@@ -36,8 +36,15 @@ uint16_t device_config_touch_cooldown_ms(void);
 bool device_config_set_touch_cooldown_ms(uint16_t value);
 bool device_config_factory_reset(void);
 
-bool device_config_led_enabled(void);
-bool device_config_set_led_enabled(bool value);
+typedef enum {
+  DEVICE_LED_OFF = 0,
+  DEVICE_LED_ON = 1,
+  DEVICE_LED_ONLY_AUTH = 2,
+} device_led_mode_t;
+
+device_led_mode_t device_config_led_mode(void);
+const char *device_config_led_mode_name(void);
+bool device_config_set_led_mode(device_led_mode_t value);
 bool device_config_piv_touch_enabled(void);
 bool device_config_set_piv_touch_enabled(bool value);
 uint16_t device_config_piv_delay_ms(void);

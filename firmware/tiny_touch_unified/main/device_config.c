@@ -27,7 +27,7 @@ typedef struct {
 
 static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
-static bool led_enabled = true;
+static device_led_mode_t led_mode = DEVICE_LED_ON;
 static bool piv_touch_enabled;
 static uint16_t piv_delay_ms = PIV_DELAY_DEFAULT_MS;
 
@@ -91,9 +91,11 @@ void device_config_init(void) {
   bool loaded_ok = opened && nvs_get_blob(handle, CONFIG_KEY, &loaded, &length) == ESP_OK &&
                    length == sizeof(loaded) && valid(&loaded);
   uint8_t stored_led = 1;
-  led_enabled = true;
-  if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK && stored_led <= 1)
-    led_enabled = stored_led != 0;
+  led_mode = DEVICE_LED_ON;
+  // Keep the existing key and its 0/1 values compatible with saved preferences.
+  if (loaded_ok && nvs_get_u8(handle, "led_enabled", &stored_led) == ESP_OK &&
+      stored_led <= DEVICE_LED_ONLY_AUTH)
+    led_mode = (device_led_mode_t)stored_led;
   // A separate optional key preserves the protocol-6 configuration blob and
   // existing pairings. Older firmware has no key and retains always-on PIV.
   uint8_t stored_piv_touch = 0;
@@ -179,28 +181,38 @@ bool device_config_set_submit_enter(bool value) { lock(); stored_config_t c = co
 uint16_t device_config_touch_cooldown_ms(void) { lock(); uint16_t value = config.touch_cooldown_ms; unlock(); return value; }
 bool device_config_set_touch_cooldown_ms(uint16_t value) { lock(); stored_config_t c = config; c.touch_cooldown_ms = value; bool ok = replace_locked(&c); unlock(); return ok; }
 
-bool device_config_led_enabled(void) {
+device_led_mode_t device_config_led_mode(void) {
   // Sensor initialization precedes configuration during destructive recovery.
-  if (!config_mutex) return true;
-  lock(); bool value = led_enabled; unlock(); return value;
+  if (!config_mutex) return DEVICE_LED_ON;
+  lock(); device_led_mode_t value = led_mode; unlock(); return value;
 }
 
-bool device_config_set_led_enabled(bool value) {
+const char *device_config_led_mode_name(void) {
+  switch (device_config_led_mode()) {
+    case DEVICE_LED_OFF: return "off";
+    case DEVICE_LED_ONLY_AUTH: return "only-auth";
+    default: return "on";
+  }
+}
+
+bool device_config_set_led_mode(device_led_mode_t value) {
+  if (value != DEVICE_LED_OFF && value != DEVICE_LED_ON && value != DEVICE_LED_ONLY_AUTH)
+    return false;
   lock();
   nvs_handle_t handle;
   esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
   if (result == ESP_OK) {
-    result = nvs_set_u8(handle, "led_enabled", value ? 1 : 0);
+    result = nvs_set_u8(handle, "led_enabled", (uint8_t)value);
     if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
   }
-  if (result == ESP_OK) led_enabled = value;
+  if (result == ESP_OK) led_mode = value;
   unlock();
   return result == ESP_OK;
 }
 
 bool device_config_factory_reset(void) {
-  if (!device_config_set_led_enabled(true)) return false;
+  if (!device_config_set_led_mode(DEVICE_LED_ON)) return false;
   if (!device_config_set_piv_touch_enabled(false)) return false;
   if (!device_config_set_piv_delay_ms(PIV_DELAY_DEFAULT_MS)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;

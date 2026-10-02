@@ -21,14 +21,30 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
-    def test_led_command_saves_and_verifies_both_states_in_one_session(self):
-        for state, value in (("off", "0"), ("on", "1")):
+    def test_led_off_rejects_legacy_firmware_that_can_still_flash_green(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={
+                "protocol": "6", "firmware": "0.1.30", "led": "off", "led_only_auth": "1",
+            }),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "automatic authentication flashes"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
+
+    def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
+        for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
             with (
                 self.subTest(state=state),
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session") as session,
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.29", "led": "on"},
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "on", "led_only_auth": "1", "led_control": "manual"},
                     {"led": state},
                 ]),
                 mock.patch.object(cli, "unlock") as unlock,
@@ -55,6 +71,92 @@ class ProtocolSixTests(unittest.TestCase):
                 args.func(args)
             unlock.assert_not_called()
             command.assert_not_called()
+
+    def test_led_migration_requires_reconnect_without_claiming_light_is_off(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", side_effect=[
+                {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "reconnect"},
+                {"led": "off", "led_control": "reconnect", "led_sync": "synced"},
+            ]),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            args.func(args)
+            text = "\n".join(call.args[0] for call in output.call_args_list)
+            self.assertIn("Unplug tinyTouch and reconnect", text)
+            self.assertIn("preference saved", text)
+            self.assertNotIn("LED is off", text)
+
+    def test_led_reconnect_response_explains_saved_preference(self):
+        message = cli.human_error("ERR SET LED reconnect_required")
+        self.assertIn("preference saved", message)
+        self.assertIn("Unplug tinyTouch and reconnect", message)
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"}),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command", side_effect=cli.ToolError(message)),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "Unplug tinyTouch and reconnect"):
+                args.func(args)
+            output.assert_not_called()
+
+    def test_led_incomplete_control_or_cleanup_does_not_report_success(self):
+        for control, sync in (("rejected", "synced"), ("pending", "synced"),
+                              ("unavailable", "synced"),
+                              ("storage-error", "synced"), ("busy", "pending"),
+                              ("manual", "pending")):
+            with (
+                self.subTest(control=control, sync=sync),
+                mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+                mock.patch.object(cli, "foreground_session"),
+                mock.patch.object(cli, "status", side_effect=[
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"},
+                    {"led": "off", "led_control": control, "led_sync": sync},
+                ]),
+                mock.patch.object(cli, "unlock"),
+                mock.patch.object(cli, "serial_command"),
+                mock.patch.object(cli, "say") as output,
+            ):
+                args = cli.parser().parse_args(["led", "off"])
+                with self.assertRaisesRegex(cli.ToolError, "not applied"):
+                    args.func(args)
+                output.assert_not_called()
+
+    def test_led_only_auth_on_old_firmware_requires_update_without_writing(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.29", "led": "off"}),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "only-auth"])
+            with self.assertRaisesRegex(cli.ToolError, "unplug and reconnect"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
+
+    def test_led_wrong_readback_does_not_report_success(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"}),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "only-auth"])
+            with self.assertRaises(cli.ToolError):
+                args.func(args)
+            output.assert_not_called()
 
     def test_led_failed_write_does_not_report_success(self):
         with (
@@ -99,40 +201,124 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("HID — Types your password", text)
         self.assertIn("PIV — Acts as a smart card", text)
 
-    def test_enrollment_uses_directional_prompts(self):
-        statuses = iter([{"fingerprints": "0"}, {"fingerprints": "4"}])
+    def test_enrollment_runs_all_views_for_one_finger(self):
+        responses = [
+            ["OK FINGER LIST groups=none available=10 capacity=40 pending=0"],
+            ["OK FINGER ENROLL_GROUP"],
+            ["OK FINGER LIST groups=2:4 available=9 capacity=40 pending=0"],
+        ]
+        def exchange(_port, command, **kwargs):
+            if command.startswith("FINGER ENROLL_GROUP"):
+                for view in range(1, 5):
+                    for event in (f"EVENT VIEW {view}", "EVENT TOUCH", "EVENT LIFT", "EVENT TOUCH_AGAIN"):
+                        kwargs["event_handler"](event)
+            return responses.pop(0)
         with (
-            mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
+            mock.patch.object(cli.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(cli, "status", return_value={"finger_groups": "1"}),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command", side_effect=exchange) as command,
+            mock.patch.object(cli, "say") as output,
+        ):
+            cli.enroll_finger("port", {"finger_groups": "1"}, 2)
+        self.assertEqual(command.call_args_list[1].args, ("port", "FINGER ENROLL_GROUP 2"))
+        unlock.assert_called_once()
+        text = "\n".join(call.args[0] for call in output.call_args_list)
+        for view in ("left edge", "right edge", "top", "center"):
+            self.assertIn(f"Touch with the {view} of the same finger.", text)
+        self.assertIn("Finger 2 enrolled with all four views.", text)
+
+    def test_partial_legacy_block_requires_replacement_confirmation(self):
+        with (
+            mock.patch.object(cli, "serial_command", return_value=[
+                "OK FINGER LIST groups=1:4,2:1 available=8 capacity=40 pending=0"
+            ]) as command,
+            mock.patch.object(cli, "ask", return_value="no"),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "say"),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "not changed"):
+                cli.enroll_finger("port", {"finger_groups": "1"}, 2)
+        self.assertEqual(command.call_count, 1)
+        unlock.assert_not_called()
+
+    def test_confirmed_replacement_targets_only_requested_finger(self):
+        with (
+            mock.patch.object(cli, "finger_inventory", side_effect=[({1: 4, 2: 1}, 8), ({1: 4, 2: 4}, 8)]),
+            mock.patch.object(cli, "ask", return_value="yes"),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "status", return_value={}),
+            mock.patch.object(cli, "serial_command") as command,
+            mock.patch.object(cli, "say"),
+        ):
+            cli.enroll_finger("port", {"finger_groups": "1"}, 2)
+        self.assertEqual(command.call_args.args, ("port", "FINGER ENROLL_GROUP 2 REPLACE"))
+
+    def test_setup_preserves_arbitrary_existing_enrollment(self):
+        for count in (1, 3, 4, 5, 40):
+            with (
+                mock.patch.object(cli, "status", return_value={"fingerprints": str(count)}),
+                mock.patch.object(cli, "enroll_finger") as enroll,
+                mock.patch.object(cli, "say"),
+            ):
+                cli.enroll("port", False)
+                enroll.assert_not_called()
+
+    def test_first_setup_enrolls_one_whole_finger(self):
+        device = {"fingerprints": "0", "finger_groups": "1"}
+        with (
+            mock.patch.object(cli, "status", return_value=device),
+            mock.patch.object(cli, "enroll_finger") as enroll,
+        ):
+            cli.enroll("port", False)
+        enroll.assert_called_once_with("port", device, 1)
+
+    def test_new_enrollment_on_old_firmware_requires_update(self):
+        with mock.patch.object(cli, "serial_command") as command:
+            with self.assertRaisesRegex(cli.ToolError, "unplug and reconnect"):
+                cli.enroll_finger("port", {"firmware": "0.1.28"}, 1)
+            command.assert_not_called()
+
+    def test_delete_targets_whole_finger_and_verifies_it_is_empty(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="port"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.29", "finger_groups": "1"}),
+            mock.patch.object(cli, "finger_inventory", side_effect=[({1: 4, 2: 1}, 8), ({1: 4}, 9)]),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "serial_command") as command,
             mock.patch.object(cli, "say"),
         ):
-            cli.enroll("/dev/cu.TT-1234", False)
-        prompts = [call.kwargs["touch_prompt"] for call in command.call_args_list]
-        self.assertEqual(
-            prompts,
-            [
-                "Tap the fingerprint sensor with the left edge of your finger, then lift your finger from the sensor.",
-                "Tap the fingerprint sensor with the right edge of your finger, then lift your finger from the sensor.",
-                "Tap the fingerprint sensor with the top of your finger, then lift your finger from the sensor.",
-                "Tap the fingerprint sensor with the center of your finger, then lift your finger from the sensor.",
-            ],
-        )
-        repeat_prompts = [
-            call.kwargs["touch_again_prompt"] for call in command.call_args_list
-        ]
-        self.assertEqual(
-            repeat_prompts,
-            [
-                "Tap the fingerprint sensor with the left edge of your finger again.",
-                "Tap the fingerprint sensor with the right edge of your finger again.",
-                "Tap the fingerprint sensor with the top of your finger again.",
-                "Tap the fingerprint sensor with the center of your finger again.",
-            ],
-        )
-        self.assertTrue(
-            all(call.kwargs["lift_prompt"] is None for call in command.call_args_list)
-        )
+            args = cli.parser().parse_args(["delete", "2"])
+            args.func(args)
+        command.assert_called_once_with("port", "FINGER DELETE_GROUP 2", timeout=25)
+
+    def test_enrollment_failure_does_not_report_success(self):
+        with (
+            mock.patch.object(cli, "finger_inventory", return_value=({1: 4}, 9)),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command", side_effect=cli.ToolError("enrollment failed")),
+            mock.patch.object(cli, "say") as output,
+        ):
+            with self.assertRaises(cli.ToolError):
+                cli.enroll_finger("port", {"finger_groups": "1"}, 2)
+        self.assertNotIn("enrolled with all four views", str(output.call_args_list))
+
+    def test_pending_cleanup_is_not_reported_as_a_completed_finger(self):
+        with mock.patch.object(cli, "serial_command", return_value=[
+            "OK FINGER LIST groups=1:4,2:4 available=8 capacity=40 pending=2"
+        ]):
+            groups, available = cli.finger_inventory("port", {"finger_groups": "1"})
+        self.assertEqual(groups, {1: 4, 2: -1})
+        self.assertEqual(available, 8)
+
+    def test_enrollment_parser_accepts_ten_fingers_and_replacement(self):
+        args = cli.parser().parse_args(["enroll", "10", "--replace"])
+        self.assertEqual(args.finger, 10)
+        self.assertTrue(args.replace)
+        for invalid in ("0", "11", "-1"):
+            with mock.patch.object(cli.sys, "stderr"), self.assertRaises(SystemExit):
+                cli.parser().parse_args(["enroll", invalid])
 
     def test_enrollment_events_follow_both_sensor_taps(self):
         with mock.patch.object(cli, "show_enrollment_view") as view:
@@ -560,7 +746,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch the fingerprint sensor now to pair PIV with this Mac.",
+            "Touch the fingerprint sensor now with an already-enrolled finger to pair PIV with this Mac.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):

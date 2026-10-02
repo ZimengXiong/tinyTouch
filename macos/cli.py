@@ -443,6 +443,12 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
             "Fingerprint authorization did not start because the sensor was busy or "
             "unavailable. Run 'tinytouch status'; it must report sensor=ready before retrying."
         )
+    if line == "ERR FINGER update_cli":
+        return "Update the tinyTouch CLI: enrollment now uses whole fingers instead of individual templates."
+    if line == "ERR FINGER inventory_unavailable":
+        return "Could not verify the sensor's occupied finger blocks. No enrollment was changed."
+    if line == "ERR SET LED reconnect_required":
+        return "LED preference saved. Unplug tinyTouch and reconnect it to finish applying the lighting setting."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -725,7 +731,7 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt=f"Touch the fingerprint sensor now to {reason}.",
+                touch_prompt=f"Touch the fingerprint sensor now with an already-enrolled finger to {reason}.",
             )
             if explain_pin:
                 explain_piv_pin()
@@ -909,47 +915,96 @@ def host_list(port: str) -> tuple[set[str], int]:
     return ids, capacity
 
 
-def enroll(port: str, skip: bool) -> None:
-    current = status(port)
-    if skip:
-        say("Fingerprint enrollment skipped.")
-        return
-    count = int(current.get("fingerprints", "0"))
-    if count == 4:
-        return
-    if count:
-        if ask("Replace the existing fingerprint enrollment? [y/N] ").lower() not in {"y", "yes"}:
+def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int], int]:
+    if device.get("finger_groups") != "1":
+        raise ToolError(
+            "This firmware needs an update for finger-based enrollment. Run "
+            "'tinytouch update', then unplug and reconnect tinyTouch."
+        )
+    data = fields_from(serial_command(port, "FINGER LIST", timeout=6), "OK FINGER LIST")
+    try:
+        groups = {} if data["groups"] == "none" else {
+            int(number): int(views) for number, views in
+            (entry.split(":") for entry in data["groups"].split(","))
+        }
+        available = int(data["available"])
+        pending = int(data["pending"])
+        if not 0 <= available <= 10 or any(
+            not 1 <= number <= 10 or not 0 <= views <= 4 for number, views in groups.items()
+        ):
+            raise ValueError()
+        if pending:
+            if pending not in groups:
+                raise ValueError()
+            groups[pending] = -1
+    except (KeyError, ValueError) as exc:
+        raise ToolError("The device returned an invalid finger inventory.") from exc
+    return groups, available
+
+
+def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool = False) -> None:
+    groups, available = finger_inventory(port, device)
+    occupied = finger in groups
+    if occupied and not replace:
+        say(f"Finger {finger} already has enrollment data.")
+        say("Replacing it removes all existing prints in that finger's block.")
+        if ask(f"Replace finger {finger}? [y/N] ").lower() not in {"y", "yes"}:
             raise ToolError("Fingerprint enrollment was not changed.")
-    say("")
-    unlock(port, reason="start fingerprint enrollment")
+        replace = True
+    if not occupied and available == 0:
+        raise ToolError("No empty finger blocks remain. Delete a finger before enrolling another.")
     visual = sys.stdout.isatty()
     if visual and sys.stdin.isatty():
         introduce_enrollment()
-    for slot, (_zone, view, _color) in enumerate(ENROLLMENT_VIEWS, 1):
-        if not visual:
-            say("")
-        serial_command(
-            port,
-            f"FINGER ENROLL {slot}",
-            timeout=45,
-            touch_prompt=(
-                f"Tap the fingerprint sensor with the {view} of your finger, "
-                "then lift your finger from the sensor."
-            ),
-            lift_prompt=None,
-            touch_again_prompt=(
-                f"Tap the fingerprint sensor with the {view} of your finger again."
-            ),
-            event_handler=(
-                lambda event, view_index=slot - 1: show_enrollment_event(view_index, event)
-            ) if visual else None,
-        )
-    if visual:
-        sys.stdout.write("\033[2J\033[H")
-        say("Fingerprint enrollment complete.")
+    view_index = 0
+
+    def event_handler(event: str) -> None:
+        nonlocal view_index
+        if event.startswith("EVENT VIEW "):
+            try:
+                view_index = int(event.split()[-1]) - 1
+                if not 0 <= view_index < len(ENROLLMENT_VIEWS):
+                    raise ValueError()
+            except ValueError as exc:
+                raise ToolError("The device returned an invalid enrollment step.") from exc
+            say(f"Finger {finger}: view {view_index + 1} of 4.")
+        elif visual:
+            show_enrollment_event(view_index, event)
+        elif event == "EVENT TOUCH":
+            say(f"Touch with the {ENROLLMENT_VIEWS[view_index][1]} of the same finger.")
+        elif event == "EVENT TOUCH_AGAIN":
+            say(f"Touch with the {ENROLLMENT_VIEWS[view_index][1]} of that finger again.")
+        elif event == "EVENT LIFT":
+            say("Lift your finger from the sensor.")
+
+    unlock(port, reason=f"begin enrolling finger {finger}")
+    command = f"FINGER ENROLL_GROUP {finger}" + (" REPLACE" if replace else "")
+    try:
+        serial_command(port, command, timeout=300, event_handler=event_handler)
+    except (ToolError, KeyboardInterrupt):
+        say(f"Enrollment of finger {finger} did not finish. Other finger blocks were preserved.")
+        if replace:
+            say(f"Finger {finger}'s previous prints may have been removed; enroll it again.")
+        raise
     current = status(port)
-    if current.get("fingerprints") != "4":
-        raise ToolError("Live verification failed: the four-view fingerprint profile was not reported.")
+    groups, _available = finger_inventory(port, current)
+    if groups.get(finger) != 4:
+        raise ToolError("Live verification failed: the complete finger was not reported.")
+    say(f"Finger {finger} enrolled with all four views.")
+
+
+def enroll(port: str, skip: bool) -> None:
+    if skip:
+        say("Fingerprint enrollment skipped.")
+        return
+    current = status(port)
+    count = int(current.get("fingerprints", "-1"))
+    if count < 0:
+        raise ToolError("The fingerprint sensor is unavailable. Existing enrollment was preserved.")
+    if count:
+        say("Existing fingerprint enrollment preserved. Use 'tinytouch enroll N' to add or replace a finger.")
+        return
+    enroll_finger(port, current, 1)
 
 
 def command_setup(args: argparse.Namespace) -> None:
@@ -971,7 +1026,7 @@ def command_setup(args: argparse.Namespace) -> None:
             mode == "piv"
             and device.get("mode") == "piv"
             and device.get("piv") == "ready"
-            and device.get("fingerprints") == "4"
+            and int(device.get("fingerprints", "0")) > 0
             and paired_piv_identities()
         ):
             say("PIV is already set up on this Mac.")
@@ -1094,9 +1149,27 @@ def command_led(args: argparse.Namespace) -> None:
                 "This firmware does not support LED control. Run 'tinytouch update', "
                 "then unplug and reconnect tinyTouch before trying again."
             )
-        unlock(port, reason=f"turn the sensor LED {args.state}")
-        serial_command(port, f"SET LED {int(args.state == 'on')}", timeout=5)
-        fresh_status(port, {"led": args.state})
+        if args.state == "off" and "led_control" not in device:
+            raise ToolError(
+                "This firmware cannot disable the sensor's automatic authentication flashes. "
+                "Update the firmware before setting the LED fully off, then unplug and reconnect "
+                "tinyTouch when prompted."
+            )
+        if args.state == "only-auth" and device.get("led_only_auth") != "1":
+            raise ToolError(
+                "This firmware does not support authentication-only lighting. Run 'tinytouch update', "
+                "then unplug and reconnect tinyTouch before trying again."
+            )
+        unlock(port, reason=f"set the sensor LED to {args.state}")
+        value = {"off": 0, "on": 1, "only-auth": 2}[args.state]
+        serial_command(port, f"SET LED {value}", timeout=5)
+        updated = fresh_status(port, {"led": args.state})
+        if updated.get("led_control") == "reconnect":
+            say(f"Sensor LED preference saved as {args.state}.")
+            say("Unplug tinyTouch and reconnect it to finish disabling the sensor's automatic lighting.")
+            return
+        if updated.get("led_control") not in (None, "manual") or updated.get("led_sync") == "pending":
+            raise ToolError("LED preference saved, but the sensor has not applied it. Check 'tinytouch status' and retry.")
         say(f"Sensor LED is {args.state}. This setting is saved on tinyTouch.")
 
 
@@ -1147,40 +1220,41 @@ def command_config(args: argparse.Namespace) -> None:
 
 def command_enroll(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    sensor_ready(device)
-    unlock(port, reason="add this fingerprint")
-    visual = sys.stdout.isatty()
-    if visual and sys.stdin.isatty():
-        introduce_enrollment()
-    view_index = min(max(args.slot - 1, 0), len(ENROLLMENT_VIEWS) - 1)
-    serial_command(
-        port,
-        f"FINGER ENROLL {args.slot}",
-        timeout=45,
-        event_handler=(
-            lambda event: show_enrollment_event(view_index, event)
-        ) if visual else None,
-    )
-    if visual:
-        sys.stdout.write("\033[2J\033[H")
-        say("Fingerprint enrolled.")
-    current = status(port)
-    if int(current.get("fingerprints", "0")) < 1:
-        raise ToolError("Live verification failed: the enrollment was not reported.")
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        sensor_ready(device)
+        enroll_finger(port, device, args.finger, args.replace)
+
+
+def command_fingers(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        groups, available = finger_inventory(port, device)
+        for finger, views in sorted(groups.items()):
+            description = "cleanup pending; reconnect the device" if views == -1 else (
+                "occupied" if views == 4 else "partially occupied; reserved"
+            )
+            say(f"Finger {finger}: {description}")
+        if not groups:
+            say("No fingers enrolled.")
+        say(f"Space for {available} additional fingers.")
 
 
 def command_delete(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    unlock(port, reason="delete this fingerprint")
-    serial_command(port, f"FINGER DELETE {args.slot}", timeout=5)
-    current = status(port)
-    if int(current.get("fingerprints", "0")) < 0:
-        raise ToolError("Live verification failed after deleting the fingerprint.")
-    say(f"Fingerprint slot {args.slot} was deleted.")
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        finger_inventory(port, device)
+        unlock(port, reason=f"delete finger {args.finger}")
+        serial_command(port, f"FINGER DELETE_GROUP {args.finger}", timeout=25)
+        groups, _available = finger_inventory(port, status(port))
+        if args.finger in groups:
+            raise ToolError("Live verification failed after deleting the finger.")
+        say(f"Finger {args.finger} was deleted.")
 
 
 def command_computers(args: argparse.Namespace) -> None:
@@ -1469,6 +1543,8 @@ def command_update(args: argparse.Namespace) -> None:
     notify("tinyTouch update staged", "Unplug tinyTouch, reconnect it, then run tinytouch status.")
     say("OTA firmware is staged in the inactive slot.")
     say("Unplug tinyTouch and reconnect it once to boot the new firmware.")
+    if device.get("led") in ("off", "only-auth") and device.get("led_control") != "manual":
+        say(f"After it boots, run 'tinytouch led {device['led']}' and follow any additional reconnect prompt to finish the lighting update.")
 
 
 def command_rom(args: argparse.Namespace) -> None:
@@ -1693,11 +1769,10 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("mode", choices=("hid", "piv"))
     mode.add_argument("--port")
     mode.set_defaults(func=command_mode)
-    led = sub.add_parser("led", help="turn the sensor LED on or off")
-    led.add_argument("state", choices=("on", "off"))
+    led = sub.add_parser("led", help="set sensor lighting: on, off, or authentication feedback only")
+    led.add_argument("state", choices=("on", "off", "only-auth"))
     led.add_argument("--port")
     led.set_defaults(func=command_led)
-
     piv_touch = sub.add_parser("piv-touch", help="allow password entry in PIV mode by hiding the card until touch")
     piv_touch.add_argument("state", choices=("on", "off"))
     piv_touch.add_argument("--port")
@@ -1708,13 +1783,17 @@ def parser() -> argparse.ArgumentParser:
     config.add_argument("--port")
     config.set_defaults(func=command_config)
     enroll_cmd = sub.add_parser("enroll")
-    enroll_cmd.add_argument("slot", type=int)
+    enroll_cmd.add_argument("finger", type=int, choices=range(1, 11))
+    enroll_cmd.add_argument("--replace", action="store_true", help="replace this finger without a confirmation prompt")
     enroll_cmd.add_argument("--port")
     enroll_cmd.set_defaults(func=command_enroll)
     delete = sub.add_parser("delete")
-    delete.add_argument("slot", type=int)
+    delete.add_argument("finger", type=int, choices=range(1, 11))
     delete.add_argument("--port")
     delete.set_defaults(func=command_delete)
+    fingers = sub.add_parser("fingers", help="list occupied finger blocks and available capacity")
+    fingers.add_argument("--port")
+    fingers.set_defaults(func=command_fingers)
     computers = sub.add_parser("computers")
     computers.add_argument("action", choices=("list", "remove"), nargs="?", default="list")
     computers.add_argument("host_id", nargs="?")

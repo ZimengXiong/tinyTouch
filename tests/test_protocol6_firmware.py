@@ -111,7 +111,7 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
     def test_fingerprint_operations_report_each_required_touch(self) -> None:
         console = self.source("config_console.c")
         self.assertIn('"EVENT %s"', console)
-        self.assertIn("fingerprint_enroll((uint16_t)slot, enroll_prompt)", console)
+        self.assertIn("fingerprint_enroll_finger(finger, replace, enroll_prompt, enrollment_connected)", console)
         self.assertIn('"ERR AUTH no_match"', console)
 
     def test_development_auth_bypass_is_explicitly_opt_in(self) -> None:
