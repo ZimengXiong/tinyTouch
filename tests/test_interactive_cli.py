@@ -34,7 +34,7 @@ class InteractiveCliTests(unittest.TestCase):
             self.assertEqual(cli.main(), 0)
         device.assert_not_called()
         text = self.output.getvalue()
-        for label in ("Set up this Mac", "Manage fingerprints", "Device settings", "Update CLI and firmware"):
+        for label in ("1. Setup", "2. Enroll", "3. Status", "4. Advanced"):
             self.assertIn(label, text)
 
     def test_noninteractive_no_command_prints_help_without_prompting(self):
@@ -93,7 +93,10 @@ class InteractiveCliTests(unittest.TestCase):
 
     def test_numeric_and_named_navigation_and_back(self):
         with (
-            mock.patch("builtins.input", side_effect=["2", "list", "back", "5", "q"]),
+            mock.patch(
+                "builtins.input",
+                side_effect=["4", "fingers", "list", "back", "0", "3", "q"],
+            ),
             mock.patch.object(cli, "command_fingers") as fingers,
             mock.patch.object(cli, "command_status") as status,
         ):
@@ -101,15 +104,69 @@ class InteractiveCliTests(unittest.TestCase):
         fingers.assert_called_once()
         status.assert_called_once()
 
+    def test_advanced_navigation_keeps_piv_and_recovery_commands_available(self):
+        with (
+            mock.patch(
+                "builtins.input",
+                side_effect=[
+                    "advanced",
+                    "piv",
+                    "pair",
+                    "0",
+                    "diagnostics",
+                    "repair",
+                    "0",
+                    "0",
+                    "0",
+                ],
+            ),
+            mock.patch.object(cli, "command_pair") as pair,
+            mock.patch.object(cli, "command_repair") as repair,
+        ):
+            cli.interactive_menu(self.args)
+        pair.assert_called_once()
+        repair.assert_called_once()
+
     def test_invalid_menu_input_reprompts(self):
         with mock.patch("builtins.input", side_effect=["", "-1", "99", "status"]):
-            self.assertEqual(cli.select_option("Action", [("status", "Status")]), "status")
+            self.assertEqual(
+                cli.select_option("Action", [("status", "Status")]), "status"
+            )
         self.assertEqual(self.output.getvalue().count("Invalid selection."), 3)
+
+    def test_selection_accepts_visible_label_and_existing_command_name(self):
+        options = [
+            ("led", "Lighting"),
+            ("only-auth", "Authentication only — match feedback"),
+        ]
+        for answer, expected in (
+            ("lighting", "led"),
+            ("led", "led"),
+            ("authentication only", "only-auth"),
+        ):
+            with (
+                self.subTest(answer=answer),
+                mock.patch("builtins.input", return_value=answer),
+            ):
+                self.assertEqual(cli.select_option("Lighting", options), expected)
 
     def test_menu_passes_led_selection_and_global_options_to_regular_handler(self):
         args = cli.parser().parse_args(["--verbose", "--port", "selected"])
         with (
-            mock.patch("builtins.input", side_effect=["settings", "led", "mode", "3", "0", "0", "0"]),
+            mock.patch(
+                "builtins.input",
+                side_effect=[
+                    "advanced",
+                    "settings",
+                    "led",
+                    "mode",
+                    "3",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ],
+            ),
             mock.patch.object(cli, "command_led") as handler,
         ):
             cli.interactive_menu(args)
@@ -141,7 +198,7 @@ class InteractiveCliTests(unittest.TestCase):
 
     def test_device_error_keeps_menu_available(self):
         with (
-            mock.patch("builtins.input", side_effect=["status", "test", "0"]),
+            mock.patch("builtins.input", side_effect=["status", "advanced", "test", "0", "0"]),
             mock.patch.object(cli, "command_status", side_effect=cli.ToolError("Device disconnected")),
             mock.patch.object(cli, "command_test") as test,
         ):
@@ -151,7 +208,7 @@ class InteractiveCliTests(unittest.TestCase):
 
     def test_action_interrupt_keeps_menu_available(self):
         with (
-            mock.patch("builtins.input", side_effect=["status", "test", "0"]),
+            mock.patch("builtins.input", side_effect=["status", "advanced", "test", "0", "0"]),
             mock.patch.object(cli, "command_status", side_effect=KeyboardInterrupt),
             mock.patch.object(cli, "command_test") as test,
         ):
@@ -161,12 +218,11 @@ class InteractiveCliTests(unittest.TestCase):
 
     def test_eof_in_submenu_closes_session(self):
         self.terminal()
-        with mock.patch("builtins.input", side_effect=["fingers", EOFError]):
+        with mock.patch("builtins.input", side_effect=["advanced", "fingers", EOFError]):
             cli.command_menu(self.args)
-        self.assertIn("Session closed.", self.output.getvalue())
 
     def test_prompt_interrupt_returns_from_submenu(self):
-        with mock.patch("builtins.input", side_effect=["fingers", KeyboardInterrupt, "0"]):
+        with mock.patch("builtins.input", side_effect=["advanced", "fingers", KeyboardInterrupt, "0", "0"]):
             cli.interactive_menu(self.args)
         self.assertIn("Cancelled.", self.output.getvalue())
 

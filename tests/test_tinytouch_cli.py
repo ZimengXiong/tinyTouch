@@ -216,8 +216,8 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             self.assertEqual(cli.choose_mode(None), "hid")
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("HID (Types your password", text)
-        self.assertIn("PIV (Acts as a smart card", text)
+        self.assertIn("HID — types your password; works with most apps", text)
+        self.assertIn("PIV — smart card; no password typing in supported Mac prompts", text)
 
     def test_enrollment_runs_all_views_for_one_finger(self):
         responses = [
@@ -514,16 +514,34 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "command_repair") as repair,
             mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT-1234"),
             mock.patch.object(
-                cli, "status", return_value={"protocol": "6", "firmware": "x"}
+                cli,
+                "status",
+                return_value={
+                    "protocol": "6",
+                    "firmware": "x",
+                    "led": "only-auth",
+                    "led_control": "reconnect",
+                },
             ),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "download", return_value=image),
-            mock.patch.object(cli, "stage_ota"),
-            mock.patch.object(cli, "notify"),
+            mock.patch.object(cli, "stage_ota") as ota,
+            mock.patch.object(cli, "notify") as notify,
+            mock.patch.object(cli, "say") as output,
         ):
             cli.command_update(args)
         install_helper.assert_called_once_with(check_saved=True)
         repair.assert_not_called()
+        ota.assert_called_once_with("/dev/cu.TT-1234", image, digest)
+        message = "Update ready. Unplug and reconnect tinyTouch to finish."
+        self.assertEqual(
+            output.call_args_list,
+            [
+                mock.call("Updating the HID background service..."),
+                mock.call(message),
+            ],
+        )
+        notify.assert_called_once_with("tinyTouch update ready", message)
 
     def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
         image = b"firmware"
@@ -889,7 +907,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("Waiting for macOS", wait.call_args.kwargs["message"])
         self.assertTrue(pair.call_args.kwargs["separate_identity_list"])
         self.assertIn(
-            "tinyTouch is ready to use in PIV mode.",
+            "Ready (PIV).",
             [call.args[0] for call in output.call_args_list],
         )
         self.assertIn(
@@ -915,7 +933,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(paired, [])
         self.assertEqual(available, [new_identity])
 
-    def test_macos_authorization_explains_hidden_password_input(self):
+    def test_macos_authorization_uses_native_terminal_prompt(self):
         results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
         with (
             mock.patch.object(cli, "_sudo_session_ready", False),
@@ -925,7 +943,7 @@ class ProtocolSixTests(unittest.TestCase):
             cli.authorize_macos()
         text = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("Authorize macOS in this terminal.", text)
-        self.assertIn("Your typing is hidden", text)
+        self.assertEqual(text, "Authorize macOS in this terminal.")
 
     def test_piv_unlock_prints_pin_before_macos_can_prompt(self):
         with (
@@ -942,7 +960,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch the sensor with an enrolled finger to pair PIV with this Mac.",
+            "Touch to pair PIV with this Mac.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):

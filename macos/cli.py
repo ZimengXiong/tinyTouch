@@ -79,29 +79,61 @@ class SerialTimeout(ToolError):
     """The device did not return a terminal response."""
 
 
-LED_COLORS = {"off": 0, "blue": 1, "green": 2, "cyan": 3, "red": 4,
-              "purple": 5, "yellow": 6, "white": 7}
+LED_COLORS = {
+    "off": 0,
+    "blue": 1,
+    "green": 2,
+    "cyan": 3,
+    "red": 4,
+    "purple": 5,
+    "yellow": 6,
+    "white": 7,
+}
 LED_EFFECTS = {"breathe": 1, "flash": 2, "steady": 3, "fade-in": 5, "fade-out": 6}
 MODE_OPTIONS = (
-    ("hid", "HID (Types your password into the active field and works passwords are accepted)"),
-    ("piv", "PIV (Acts as a smart card. It works only with supported login, sudo, and System Settings prompts)"),
+    ("hid", "HID — types your password; works with most apps"),
+    ("piv", "PIV — smart card; no password typing in supported Mac prompts"),
 )
 COMMAND_TITLES = {
-    "menu": "tinyTouch", "setup": "Set up this Mac", "mode": "Device mode",
-    "led": "Sensor lighting", "config": "Device settings", "settings": "Device settings",
-    "enroll": "Fingerprint enrollment", "enroll-demo": "Fingerprint enrollment demo",
-    "fingers": "Fingerprints", "delete": "Delete a fingerprint", "computers": "Registered computers",
-    "factory-reset": "Factory reset", "update": "Update tinyTouch", "rom": "ROM bootloader",
-    "bootloader": "ROM bootloader", "status": "Device status", "logs": "Device event log",
-    "test": "Connection test", "keys": "PIV identity", "pair": "PIV pairing",
-    "hid-smoke": "HID helper test", "ports": "USB serial devices", "help": "Command help",
+    "menu": "tinyTouch",
+    "setup": "Setup",
+    "mode": "Mode",
+    "led": "Sensor lighting",
+    "config": "Device settings",
+    "settings": "Device settings",
+    "enroll": "Enroll",
+    "enroll-demo": "Fingerprint enrollment demo",
+    "fingers": "Fingerprints",
+    "delete": "Delete a fingerprint",
+    "computers": "Registered computers",
+    "factory-reset": "Factory reset",
+    "update": "Update",
+    "rom": "ROM bootloader",
+    "bootloader": "ROM bootloader",
+    "status": "Status",
+    "logs": "Device event log",
+    "test": "Connection test",
+    "keys": "PIV identity",
+    "pair": "PIV pairing",
+    "hid-smoke": "HID helper test",
+    "ports": "USB serial devices",
+    "help": "Command help",
 }
 
 
 class SettingSpec:
-    def __init__(self, wire: str, label: str, description: str, default: str,
-                 minimum: int = 0, maximum: int = 0, *,
-                 choices: dict[str, int] | None = None, capability: str | None = None):
+    def __init__(
+        self,
+        wire: str,
+        label: str,
+        description: str,
+        default: str,
+        minimum: int = 0,
+        maximum: int = 0,
+        *,
+        choices: dict[str, int] | None = None,
+        capability: str | None = None,
+    ):
         self.wire, self.label, self.description, self.default = wire, label, description, default
         self.minimum, self.maximum = minimum, maximum
         self.choices, self.capability = choices, capability
@@ -340,9 +372,10 @@ def show_startup_mark(command: str) -> None:
         say(terminal_style(line, "36"))
     say(f"          tinyTouch {terminal_style(CLI_VERSION, '2')}")
     say("")
-    title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
-    say(terminal_style(f"── {title} ────────────────────", "2"))
-    say("")
+    if command != "menu":
+        title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
+        say(terminal_style(f"── {title} ────────────────────", "2"))
+        say("")
 
 
 def verbose(message: str) -> None:
@@ -371,12 +404,13 @@ def authorize_macos() -> None:
     if _sudo_session_ready:
         return
     cached = subprocess.run(
-        ["sudo", "-n", "-v"], check=False,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["sudo", "-n", "-v"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     if cached.returncode:
         say("Authorize macOS in this terminal.")
-        say("Your typing is hidden. No characters appear while you type.")
         validated = subprocess.run(["sudo", "-v"], check=False)
         if validated.returncode:
             raise ToolError("macOS authorization failed.")
@@ -386,9 +420,7 @@ def authorize_macos() -> None:
 def prepare_hid_password() -> None:
     """Capture the HID password and unlock Keychain without requiring sudo."""
     global _setup_password
-    say("Type your Mac password.")
-    say("Your typing is hidden. No characters appear while you type.")
-    entered = bytearray(getpass.getpass("Password: ").encode("utf-8"))
+    entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
     if not entered:
         raise ToolError("HID mode requires the password for this Mac.")
     try:
@@ -396,7 +428,9 @@ def prepare_hid_password() -> None:
             _keychain().unlock_default_keychain(entered)
             _keychain().disable_user_interaction()
         except _keychain().KeychainError as exc:
-            raise ToolError("The Mac password did not unlock the login Keychain.") from exc
+            raise ToolError(
+                "The Mac password did not unlock the login Keychain."
+            ) from exc
         _setup_password = bytearray(entered)
     finally:
         entered[:] = b"\x00" * len(entered)
@@ -984,7 +1018,7 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt=f'Touch the sensor with an enrolled finger to {reason}.',
+                touch_prompt=f"Touch to {reason}.",
             )
             if explain_pin:
                 explain_piv_pin()
@@ -1249,14 +1283,14 @@ def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool 
 
 def enroll(port: str, skip: bool) -> None:
     if skip:
-        say("Fingerprint enrollment skipped.")
         return
     current = status(port)
     count = int(current.get("fingerprints", "-1"))
     if count < 0:
-        raise ToolError("The fingerprint sensor is unavailable. The existing enrollment was not changed.")
+        raise ToolError(
+            "The fingerprint sensor is unavailable. The existing enrollment was not changed."
+        )
     if count:
-        say("The existing fingerprint enrollment was not changed. Run 'tinytouch enroll N' to add or replace a finger.")
         return
     enroll_finger(port, current, 1)
 
@@ -1322,14 +1356,12 @@ def command_setup(args: argparse.Namespace) -> None:
             sensor_ready(device)
             device = status(port)
     if mode_changed:
-        notify("tinyTouch mode changed", "Reconnect tinyTouch to apply the new device mode.")
-        say(f"{mode.upper()} mode was selected.")
-        say("")
-        say("Unplug and reconnect tinyTouch to apply the new device mode.")
-        say("Waiting for the device to disconnect from USB.")
+        notify(
+            "tinyTouch mode changed",
+            "Reconnect tinyTouch to apply the new device mode.",
+        )
+        say(f"Unplug and reconnect tinyTouch to use {mode.upper()} mode.")
         reconnected_port = wait_for_reconnect(port)
-        say("The device reconnected. Continuing setup.")
-        say("")
         resumed = argparse.Namespace(**vars(args))
         resumed.mode = mode
         resumed.port = reconnected_port
@@ -1362,10 +1394,7 @@ def command_setup(args: argparse.Namespace) -> None:
             separate_identity_list=created_piv_identities is not None,
         )
     say("")
-    if mode == "piv":
-        say("tinyTouch is ready to use in PIV mode.")
-    else:
-        say("tinyTouch is ready to use in HID mode.")
+    say(f"Ready ({mode.upper()}).")
 
 
 def command_mode(args: argparse.Namespace) -> None:
@@ -1896,13 +1925,13 @@ def command_update(args: argparse.Namespace) -> None:
     image = download(f"{root}/{metadata['file']}")
     digest = hashlib.sha256(image).hexdigest()
     if digest != metadata["sha256"]:
-        raise ToolError("The downloaded firmware checksum does not match the release manifest.")
+        raise ToolError(
+            "The downloaded firmware checksum does not match the release manifest."
+        )
     stage_ota(port, image, digest)
-    notify("tinyTouch update staged", "Unplug and reconnect tinyTouch. Then run 'tinytouch status'.")
-    say("The OTA firmware update is staged in the inactive slot.")
-    say("Unplug and reconnect tinyTouch once to start the new firmware.")
-    if device.get("led") in ("off", "only-auth") and device.get("led_control") != "manual":
-        say(f"After it boots, run 'tinytouch led {device['led']}' and follow any additional reconnect prompt to finish the lighting update.")
+    message = "Update ready. Unplug and reconnect tinyTouch to finish."
+    notify("tinyTouch update ready", message)
+    say(message)
 
 
 def command_rom(args: argparse.Namespace) -> None:
@@ -2087,20 +2116,25 @@ def command_pair(
 
 
 def select_option(
-    title: str, options: list[tuple[str, str]], *, back: str = "Back",
+    title: str,
+    options: list[tuple[str, str]],
+    *,
+    back: str = "Back",
 ) -> str | None:
     """Select an option by number or name; return None to leave this menu."""
     while True:
         say("")
-        say(terminal_style(title, "1"))
-        for index, (key, label) in enumerate(options, 1):
-            say(f"  {index}. {label.removesuffix('.')} [{key}]")
+        if title:
+            say(terminal_style(title, "1"))
+        for index, (_key, label) in enumerate(options, 1):
+            say(f"  {index}. {label.removesuffix('.')}")
         say(f"  0. {back}")
-        answer = ask("Select an option by number or name: ").lower()
+        answer = ask("Select: ").lower()
         if answer in {"0", "b", "back", "q", "quit", "exit"}:
             return None
-        for index, (key, _label) in enumerate(options, 1):
-            if answer in {str(index), key.lower()}:
+        for index, (key, label) in enumerate(options, 1):
+            name = label.split(" — ", 1)[0].removesuffix(".").lower()
+            if answer in {str(index), key.lower(), name}:
                 return key
         say("Invalid selection. Select one of the listed options.")
 
@@ -2196,16 +2230,21 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
             return
         command.extend(["--mode", mode] if command[0] == "setup" else [mode])
     elif command == ["led"]:
-        state = select_option("Sensor lighting", [
-            ("on", "On (Enable idle lighting and authentication feedback)"),
-            ("off", "Off (Disable all sensor lighting)"),
-            ("only-auth", "Authentication only (Show success and failure feedback)"),
-        ])
+        state = select_option(
+            "Sensor lighting",
+            [
+                ("on", "On — idle lighting and feedback"),
+                ("off", "Off — no lighting"),
+                ("only-auth", "Authentication only — match feedback"),
+            ],
+        )
         if state is None:
             return
         command.append(state)
     elif command == ["piv-touch"]:
-        state = select_option("Touch-activated PIV", [("on", "Enable"), ("off", "Disable")])
+        state = select_option(
+            "Touch-activated PIV", [("on", "Enable"), ("off", "Disable")]
+        )
         if state is None:
             return
         command.append(state)
@@ -2258,60 +2297,94 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
 
 
 INTERACTIVE_MENUS = {
-    "home": ("tinyTouch", (
-        ("setup", "Set up this Mac", ["setup"]),
-        ("fingers", "Manage fingerprints", "fingers"),
-        ("settings", "Device settings", "settings"),
-        ("computers", "Manage registered computers", "computers"),
-        ("status", "Device status", ["status"]),
-        ("test", "Test device connection", ["test"]),
-        ("update", "Update CLI and firmware", ["update"]),
-        ("advanced", "Diagnostics and recovery", "advanced"),
-    )),
-    "fingers": ("Fingerprints", (
-        ("list", "List enrolled fingerprints", ["fingers"]),
-        ("enroll", "Enroll or replace a fingerprint", ["enroll"]),
-        ("delete", "Delete a fingerprint", ["delete"]),
-    )),
-    "settings": ("Device settings", (
-        ("show", "Show current settings and defaults", ["config", "show"]),
-        ("mode", "Change HID/PIV mode", ["mode"]),
-        ("piv-touch", "Show the smart card only after touch", ["piv-touch"]),
-        ("led", "Sensor colors and effects", "lighting"),
-        ("config", "Configure a setting", ["config"]),
-        ("list", "List settings, limits and effects", ["config", "list"]),
-    )),
-    "lighting": ("Sensor colors and effects", (
-        ("show", "Show current lighting settings", ["led", "show"]),
-        ("mode", "Enable sensor lighting, disable it, or show authentication results only.", ["led"]),
-        ("colors", "Set the idle, success, and failure colors.", "colors"),
-        ("effect", "Set idle animation", ["config", "led_idle_effect"]),
-        ("cycles", "Set animation repeats", ["config", "led_idle_cycles"]),
-        ("feedback", "Set result feedback duration", ["config", "led_feedback_ms"]),
-        ("preset", "Apply a color preset", ["led", "preset"]),
-        ("preview", "Preview a color and effect without saving changes.", ["led", "preview"]),
-    )),
-    "colors": ("LED colors", (
-        ("idle", "Idle and enrollment color", ["config", "led_idle_color"]),
-        ("success", "Fingerprint match color", ["config", "led_success_color"]),
-        ("failure", "Fingerprint failure color", ["config", "led_failure_color"]),
-        ("end", "Breathing end color", ["config", "led_idle_end_color"]),
-    )),
-    "computers": ("Registered computers", (
-        ("list", "List registered HID computers", ["computers", "list"]),
-        ("add", "Set up HID password entry on this Mac.", ["setup", "--mode", "hid"]),
-        ("remove", "Remove a registered computer", ["computers", "remove"]),
-    )),
-    "advanced": ("Diagnostics and recovery", (
-        ("ports", "List USB serial device paths", ["ports"]),
-        ("logs", "Device event log", ["logs"]),
-        ("repair", "Repair saved Keychain access", ["repair"]),
-        ("keys", "Create a PIV identity", ["keys"]),
-        ("pair", "Pair PIV with this Mac", ["pair"]),
-        ("rom", "ROM bootloader instructions", ["rom"]),
-        ("enroll-demo", "Preview fingerprint enrollment", ["enroll-demo"]),
-        ("factory-reset", "Factory reset (Clear device and local configuration)", ["factory-reset"]),
-    )),
+    "home": (
+        "",
+        (
+            ("setup", "Setup", ["setup"]),
+            ("enroll", "Enroll", ["enroll"]),
+            ("status", "Status", ["status"]),
+            ("advanced", "Advanced", "advanced"),
+        ),
+    ),
+    "fingers": (
+        "Fingerprints",
+        (
+            ("list", "List fingerprints", ["fingers"]),
+            ("enroll", "Enroll or replace", ["enroll"]),
+            ("delete", "Delete", ["delete"]),
+        ),
+    ),
+    "settings": (
+        "Settings",
+        (
+            ("show", "Current settings", ["config", "show"]),
+            ("mode", "Mode", ["mode"]),
+            ("piv-touch", "Touch-activated PIV", ["piv-touch"]),
+            ("led", "Lighting", "lighting"),
+            ("config", "Edit a setting", ["config"]),
+            ("list", "All settings", ["config", "list"]),
+        ),
+    ),
+    "lighting": (
+        "Lighting",
+        (
+            ("show", "Current lighting", ["led", "show"]),
+            ("mode", "Mode", ["led"]),
+            ("colors", "Colors", "colors"),
+            ("effect", "Idle effect", ["config", "led_idle_effect"]),
+            ("cycles", "Animation repeats", ["config", "led_idle_cycles"]),
+            ("feedback", "Feedback duration", ["config", "led_feedback_ms"]),
+            ("preset", "Preset", ["led", "preset"]),
+            ("preview", "Preview", ["led", "preview"]),
+        ),
+    ),
+    "colors": (
+        "LED colors",
+        (
+            ("idle", "Idle", ["config", "led_idle_color"]),
+            ("success", "Success", ["config", "led_success_color"]),
+            ("failure", "Failure", ["config", "led_failure_color"]),
+            ("end", "Breathing end", ["config", "led_idle_end_color"]),
+        ),
+    ),
+    "computers": (
+        "Computers",
+        (
+            ("list", "List computers", ["computers", "list"]),
+            ("add", "Add this Mac", ["setup", "--mode", "hid"]),
+            ("remove", "Remove a computer", ["computers", "remove"]),
+        ),
+    ),
+    "advanced": (
+        "Advanced",
+        (
+            ("settings", "Settings", "settings"),
+            ("fingers", "Fingerprints", "fingers"),
+            ("computers", "Computers", "computers"),
+            ("update", "Update", ["update"]),
+            ("test", "Test connection", ["test"]),
+            ("piv", "PIV", "piv"),
+            ("diagnostics", "Diagnostics", "diagnostics"),
+        ),
+    ),
+    "piv": (
+        "PIV",
+        (
+            ("keys", "Create identity", ["keys"]),
+            ("pair", "Pair with this Mac", ["pair"]),
+        ),
+    ),
+    "diagnostics": (
+        "Diagnostics",
+        (
+            ("ports", "USB ports", ["ports"]),
+            ("logs", "Logs", ["logs"]),
+            ("repair", "Repair Keychain", ["repair"]),
+            ("rom", "ROM mode", ["rom"]),
+            ("enroll-demo", "Enrollment demo", ["enroll-demo"]),
+            ("factory-reset", "Factory reset", ["factory-reset"]),
+        ),
+    ),
 }
 
 
@@ -2319,8 +2392,11 @@ def interactive_menu(args: argparse.Namespace, name: str = "home") -> None:
     title, entries = INTERACTIVE_MENUS[name]
     while True:
         try:
-            selected = select_option(title, [(key, label) for key, label, _target in entries],
-                                     back="Exit" if name == "home" else "Back")
+            selected = select_option(
+                title,
+                [(key, label) for key, label, _target in entries],
+                back="Exit" if name == "home" else "Back",
+            )
         except KeyboardInterrupt:
             say("\nCancelled.")
             return
@@ -2345,7 +2421,6 @@ def command_menu(args: argparse.Namespace) -> None:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         parser().print_help()
         return
-    say("Select an action. Existing commands remain available. Run 'tinytouch --help' to list commands.")
     if args.port:
         say(f"Selected device: {args.port}")
     try:
@@ -2353,7 +2428,6 @@ def command_menu(args: argparse.Namespace) -> None:
     except ToolError as exc:
         if not isinstance(exc.__cause__, EOFError):
             raise
-    say("Session closed.")
 
 
 class FriendlyArgumentParser(argparse.ArgumentParser):
@@ -2643,7 +2717,6 @@ def chime(name: str) -> None:
         )
     except OSError:
         pass
-
 
 
 if __name__ == "__main__":
