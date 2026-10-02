@@ -700,8 +700,8 @@ def credentials_exist(device_id: str) -> bool:
     return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
 
 
-def check_credentials() -> None:
-    """Check unattended access without opening a device or typing a password."""
+def known_device_ids() -> set[str]:
+    """Find connected devices and saved device identities without opening USB."""
     device_ids = {endpoint.device_id for endpoint in device_endpoints()}
     # Include previously used devices while they are disconnected.
     for prefix in ("state-", "settings-"):
@@ -709,7 +709,12 @@ def check_credentials() -> None:
             device_id = path.stem[len(prefix):]
             if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", device_id):
                 device_ids.add(normalize_serial(device_id))
-    for device_id in sorted(device_ids):
+    return device_ids
+
+
+def check_credentials() -> None:
+    """Check unattended access without opening a device or typing a password."""
+    for device_id in sorted(known_device_ids()):
         if not credentials_exist(device_id):
             continue
         passwords: dict[int, bytearray] = {}
@@ -993,7 +998,10 @@ def main() -> None:
         except Exception as exc:
             # Never include credential values or arbitrary exception messages.
             diagnostic("credentials.failed", level="error", error_type=type(exc).__name__)
-            raise SystemExit(1) from None
+            access_denied = isinstance(exc, KeychainError) and exc.status in {
+                -25293, -25308, -25315, -25320,
+            }
+            raise SystemExit(1 if access_denied else 2) from None
         return
     if args.self_test:
         if not args.device_id:

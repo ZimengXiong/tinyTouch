@@ -31,6 +31,19 @@ class SerialFramingTests(unittest.TestCase):
 
 
 class CredentialPreflightTests(unittest.TestCase):
+    def test_preflight_distinguishes_access_denial_from_corrupt_credentials(self):
+        for error, exit_code in ((helper.KeychainError("read", -25293), 1), (ValueError("invalid key"), 2)):
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(helper.sys, "argv", ["helper", "--check-credentials"]),
+                mock.patch.object(helper, "set_background_mode"),
+                mock.patch.object(helper, "check_credentials", side_effect=error),
+                mock.patch.object(helper, "diagnostic"),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    helper.main()
+                self.assertEqual(raised.exception.code, exit_code)
+
     def test_disconnected_device_is_checked_and_buffers_are_wiped(self):
         password, key = bytearray(b"test password"), bytearray(b"k" * 32)
         device_id = "TT-123456ABCDEF"

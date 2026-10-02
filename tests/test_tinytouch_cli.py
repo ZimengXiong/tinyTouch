@@ -5,7 +5,6 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -398,6 +397,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "update_release", return_value=("https://release", manifest)),
             mock.patch.object(cli, "LAUNCH_AGENT", launch_agent),
             mock.patch.object(cli, "install_helper") as install_helper,
+            mock.patch.object(cli, "command_repair") as repair,
             mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT-1234"),
             mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "x"}),
             mock.patch.object(cli, "protocol6"),
@@ -407,6 +407,69 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_update(args)
         install_helper.assert_called_once_with()
+        repair.assert_not_called()
+
+    def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
+        image = b"firmware"
+        digest = hashlib.sha256(image).hexdigest()
+        manifest = {"version": cli.CLI_VERSION, "ota": {"file": "app.bin", "sha256": digest}}
+        args = SimpleNamespace(port=None, firmware_only=True)
+        activity = []
+        with (
+            mock.patch.object(cli, "update_release", return_value=("https://release", manifest)),
+            mock.patch.object(cli, "LAUNCH_AGENT") as agent,
+            mock.patch.object(cli, "install_helper", side_effect=cli.HelperCredentialAccessError("denied")),
+            mock.patch.object(cli, "command_repair", side_effect=lambda args: activity.append("repair")) as repair,
+            mock.patch.object(cli, "choose_port", return_value="/dev/test"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "x"}),
+            mock.patch.object(cli, "download", return_value=image),
+            mock.patch.object(cli, "stage_ota", side_effect=lambda *args: activity.append("ota")),
+            mock.patch.object(cli, "notify"),
+            mock.patch.object(cli, "say"),
+        ):
+            agent.exists.return_value = True
+            cli.command_update(args)
+        repair.assert_called_once_with(args)
+        self.assertEqual(activity, ["repair", "ota"])
+
+    def test_upgrade_denied_repair_does_not_stage_firmware(self):
+        with (
+            mock.patch.object(cli, "update_release", return_value=("https://release", {"version": cli.CLI_VERSION})),
+            mock.patch.object(cli, "LAUNCH_AGENT") as agent,
+            mock.patch.object(cli, "install_helper", side_effect=cli.HelperCredentialAccessError("denied")),
+            mock.patch.object(cli, "command_repair", side_effect=cli.ToolError("authorization denied")),
+            mock.patch.object(cli, "stage_ota") as ota,
+            mock.patch.object(cli, "unload_helper") as unload,
+            mock.patch.object(cli, "say"),
+        ):
+            agent.exists.return_value = True
+            with self.assertRaisesRegex(cli.ToolError, "authorization denied"):
+                cli.command_update(SimpleNamespace(port=None, firmware_only=True))
+        ota.assert_not_called()
+        unload.assert_not_called()
+
+    def test_upgrade_does_not_repair_an_unrelated_helper_failure(self):
+        with (
+            mock.patch.object(cli, "LAUNCH_AGENT") as agent,
+            mock.patch.object(cli, "install_helper", side_effect=cli.ToolError("check failed")),
+            mock.patch.object(cli, "command_repair") as repair,
+            mock.patch.object(cli, "say"),
+        ):
+            agent.exists.return_value = True
+            with self.assertRaisesRegex(cli.ToolError, "check failed"):
+                cli.command_upgrade_helper(SimpleNamespace(port=None))
+        repair.assert_not_called()
+
+    def test_fresh_installer_does_not_create_an_unconfigured_helper(self):
+        with (
+            mock.patch.object(cli, "LAUNCH_AGENT") as agent,
+            mock.patch.object(cli, "install_helper") as install,
+            mock.patch.object(cli, "command_repair") as repair,
+        ):
+            agent.exists.return_value = False
+            cli.command_upgrade_helper(SimpleNamespace(port=None))
+        install.assert_not_called()
+        repair.assert_not_called()
 
     def test_protocol_six_is_required(self):
         cli.protocol6({"firmware": "unified", "protocol": "6"})
@@ -517,7 +580,7 @@ class ProtocolSixTests(unittest.TestCase):
                 cli, "unlock", side_effect=lambda _port, **_kwargs: calls.append("touch")
             ) as unlock,
             mock.patch.object(cli, "run", side_effect=cli.ToolError("sc_auth failed")),
-            mock.patch.object(cli, "say") as output,
+            mock.patch.object(cli, "say"),
         ):
             cli.command_pair(args)
         self.assertEqual(calls, ["sudo", "touch"])
@@ -1040,7 +1103,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "install_helper", side_effect=lambda: activity.append(("install", ()))),
             mock.patch.object(cli, "say"),
         ):
-            cli.command_repair(cli.parser().parse_args(["repair"]))
+            cli.command_repair(cli.parser().parse_args(["repair", "--port", "/dev/test"]))
         self.assertEqual([event[0] for event in activity], ["authorize"] * 3 + ["install"])
         self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:2")
         self.assertTrue(all(event[1][-1] == cli.sys.executable for event in activity[:3]))
@@ -1061,10 +1124,29 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "say"),
         ):
             with self.assertRaisesRegex(cli.ToolError, "authorization denied"):
-                cli.command_repair(cli.parser().parse_args(["repair"]))
+                cli.command_repair(cli.parser().parse_args(["repair", "--port", "/dev/test"]))
         install.assert_not_called()
         keychain.set_password.assert_not_called()
         keychain.delete_password.assert_not_called()
+
+    def test_upgrade_repair_includes_multiple_disconnected_devices(self):
+        keychain = mock.Mock()
+        keychain.has_password.side_effect = lambda service, name: ":fingerprint:" not in name
+        devices = {"TT-123456ABCDEF", "TT-000011112222"}
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch("tinytouch_helper.known_device_ids", return_value=devices),
+            mock.patch.object(cli, "choose_port") as choose,
+            mock.patch.object(cli, "_keychain", return_value=keychain),
+            mock.patch.object(cli, "install_helper") as install,
+            mock.patch.object(cli, "say"),
+        ):
+            cli.command_repair(SimpleNamespace(port=None))
+        self.assertEqual(keychain.authorize_executable.call_count, 4)
+        self.assertEqual({call.args[1] for call in keychain.authorize_executable.call_args_list}, devices)
+        choose.assert_not_called()
+        install.assert_called_once_with()
 
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,11 @@ before uploading either architecture's release artifact.
 
 Existing items created by ad hoc builds still require a one-time repair. A new
 signature cannot silently inherit permission assigned to an old binary hash.
+The installer and `tinytouch update` run repair automatically if the replacement
+helper cannot read saved credentials. This check applies to every prior version.
+Repair includes connected devices and disconnected devices recorded on this Mac.
+If approval is denied, the working helper stays installed and firmware is not
+staged. The installer also keeps the existing CLI command until the check passes.
 
 ## Repair an existing HID installation
 
