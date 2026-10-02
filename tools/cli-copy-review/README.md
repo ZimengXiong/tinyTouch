@@ -17,6 +17,8 @@ node --test tools/cli-copy-review/feedback.test.cjs
 python3 -m unittest discover -s tools/cli-copy-review -p '*_test.py'
 ```
 
+The published `site/index.html` embeds its styles, JavaScript, and catalog in one document. This prevents cached assets from mixing an older script with newer page controls. Edit `index.template.html` for page markup and rebuild before publishing.
+
 Generation imports the CLI's metadata and reads runtime string literals from the CLI, native support modules, installer, and tracked firmware C files. Help descriptions are read before argparse wraps them into display lines. Generation does not execute command handlers, connect to hardware, change device settings, or import native macOS helper modules.
 
 Publish the static directory with Devshare:

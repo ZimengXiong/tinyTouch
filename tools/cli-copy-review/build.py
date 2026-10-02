@@ -273,6 +273,19 @@ def sentence_catalog(previous: dict) -> tuple[list[dict], dict]:
     return list(selected.values()), stats
 
 
+def build_page(payload: dict) -> None:
+    """Publish one coherent document; cached assets cannot mix page versions."""
+    template = (HERE / 'index.template.html').read_text()
+    style = (HERE / 'site/style.css').read_text()
+    script = (HERE / 'site/app.js').read_text()
+    embedded = json.dumps(payload, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    page = template.replace('<link rel="stylesheet" href="style.css">', '<style>\n' + style + '\n</style>')
+    page = page.replace('  <script defer src="app.js"></script>\n', '')
+    script = re.sub(r'</script', r'<\\/script', script, flags=re.IGNORECASE)
+    page = page.replace('</body>', '<script type="application/json" id="copy-catalog">' + embedded + '</script>\n<script>\n' + script + '\n</script>\n</body>')
+    (HERE / 'site/index.html').write_text(page)
+
+
 def main() -> None:
     catalog_path = HERE / 'site/catalog.json'
     previous = json.loads(catalog_path.read_text()) if catalog_path.exists() else {}
@@ -318,6 +331,7 @@ def main() -> None:
                    style='Approximately 80% AES technical English: direct instructions, short sentences, consistent terminology, and explicit results and recovery steps.')
     (HERE / 'site/original-catalog.json').write_text(json.dumps(dict(entries=ENTRIES, coverage=COVERAGE), ensure_ascii=False, indent=2) + '\n')
     catalog_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+    build_page(payload)
     print(f'Built {len(entries)} unique sentences and longer phrases (six or more words).')
     print(f'Combined {stats["duplicates"]} duplicates; omitted {stats["omitted"]} short or technical entries.')
 

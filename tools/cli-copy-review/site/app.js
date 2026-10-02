@@ -4,6 +4,11 @@
 function proposedText(entry, draft = {}) {
   return draft.proposed ?? entry.proposed ?? entry.original;
 }
+function readCatalog(page) {
+  const embedded = page.getElementById('copy-catalog');
+  if (!embedded) throw new Error('The embedded review catalog is missing.');
+  return JSON.parse(embedded.textContent);
+}
 function hasFeedback(entry, draft = {}) {
   return (typeof draft.proposed === 'string' && draft.proposed !== entry.original)
     || (Boolean(draft.reviewed) && proposedText(entry, draft) !== entry.original)
@@ -79,10 +84,14 @@ function restoreDraft(catalog, saved) {
   if (archived.length) state.general += `${state.general ? '\n\n' : ''}Earlier feedback outside the sentence filter:\n\n${archived.join('\n\n')}`;
   return state;
 }
-if (typeof module !== 'undefined' && module.exports) module.exports = {hasFeedback, filterEntries, feedbackText, proposedText, restoreDraft};
+if (typeof module !== 'undefined' && module.exports) module.exports = {hasFeedback, filterEntries, feedbackText, proposedText, restoreDraft, readCatalog};
 
 if (typeof document !== 'undefined') {
-  const $ = id => document.getElementById(id);
+  const $ = id => {
+    const node = document.getElementById(id);
+    if (!node) throw new Error(`Missing review page control: ${id}`);
+    return node;
+  };
   let catalog;
   let state = {entries: {}, general: ''};
   let activeGroup = '';
@@ -202,7 +211,7 @@ if (typeof document !== 'undefined') {
     const start = page * pageSize;
     const end = Math.min(start + pageSize, entries.length);
     $('entries').replaceChildren(...entries.slice(start, end).map(renderCard));
-    $('group-title').textContent = activeGroup || 'All copy';
+    $('group-title').textContent = activeGroup || 'All sentences';
     $('result-count').textContent = `${entries.length.toLocaleString()} matching entries${entries.length ? ` · showing ${start + 1}–${end}` : ''}`;
     $('page-info').textContent = `${page + 1} / ${pages}`;
     $('previous').disabled = page === 0;
@@ -264,9 +273,7 @@ if (typeof document !== 'undefined') {
   }
   async function start() {
     try {
-      const response = await fetch('catalog.json');
-      if (!response.ok) throw new Error(`Catalog request failed (${response.status})`);
-      catalog = await response.json();
+      catalog = readCatalog(document);
       storageKey = 'tinytouch-copy-review:sentences-v1';
       try {
         const raw = localStorage.getItem(storageKey) || localStorage.getItem(catalog.legacyStorageKey);
@@ -306,7 +313,7 @@ if (typeof document !== 'undefined') {
       renderEntries();
       updateCounts();
     } catch (error) {
-      $('fatal').textContent = `The copy catalog could not load. Reload this page to retry. ${error.message}`;
+      $('fatal').textContent = `The review page could not start. Reload this page to retry. ${error.message}`;
       $('fatal').hidden = false;
       $('save-state').textContent = 'Catalog unavailable';
       $('result-count').textContent = 'Unable to load catalog';

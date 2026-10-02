@@ -1,7 +1,9 @@
 """Selection checks for the sentence-focused review; no browser or device access."""
 import importlib.util
+from html.parser import HTMLParser
 import json
 from pathlib import Path
+import re
 import unittest
 
 HERE = Path(__file__).resolve().parent
@@ -11,6 +13,49 @@ spec.loader.exec_module(builder)
 
 
 class CatalogReviewTests(unittest.TestCase):
+    def test_published_page_contains_matching_controls_script_and_catalog(self):
+        class PageContract(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = set()
+                self.scripts = []
+                self.current_script = None
+                self.external_scripts = []
+
+            def handle_starttag(self, tag, attributes):
+                attrs = dict(attributes)
+                if 'id' in attrs:
+                    if attrs['id'] in self.ids:
+                        raise AssertionError('Duplicate page control: ' + attrs['id'])
+                    self.ids.add(attrs['id'])
+                if tag == 'script':
+                    if 'src' in attrs:
+                        self.external_scripts.append(attrs['src'])
+                    self.current_script = {'attributes': attrs, 'text': ''}
+                    self.scripts.append(self.current_script)
+
+            def handle_data(self, text):
+                if self.current_script is not None:
+                    self.current_script['text'] += text
+
+            def handle_endtag(self, tag):
+                if tag == 'script':
+                    self.current_script = None
+
+        page = PageContract()
+        page.feed((HERE / 'site/index.html').read_text())
+        self.assertEqual(page.external_scripts, [], 'Published pages must not reuse an older external script.')
+        catalog_script = next(script for script in page.scripts if script['attributes'].get('id') == 'copy-catalog')
+        self.assertEqual(json.loads(catalog_script['text']), json.loads((HERE / 'site/catalog.json').read_text()))
+        app_script = next(script for script in page.scripts if script['attributes'].get('type') != 'application/json')
+        source = (HERE / 'site/app.js').read_text()
+        self.assertEqual(app_script['text'].strip(), source.strip())
+        selectors = re.findall(r"\$\('([^']+)'\)", source)
+        for selector in selectors:
+            self.assertIn(selector, page.ids, 'Script references a missing page control: ' + selector)
+        self.assertIn('copy-catalog', page.ids)
+        self.assertNotIn("fetch('catalog.json')", source, 'The page must use its own embedded catalog.')
+
     def test_six_word_boundary_counts_values_and_addresses_as_one_word(self):
         self.assertEqual(builder.word_count('Contact tinytouch@alpacaengineer.ing if this continues.'), 5)
         self.assertEqual(builder.word_count('Touch the same finger again now.'), 6)

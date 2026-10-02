@@ -94,3 +94,14 @@ test('legacy menu numbering does not turn an unchanged draft into a copy edit', 
   assert.equal(migrated.entries['TT-1'].proposed, entry.original);
   assert.equal(hasFeedback(entry, migrated.entries['TT-1']), false);
 });
+test('startup reads the catalog from the same document as the page controls', () => {
+  const {readCatalog} = require('./site/app.js');
+  const documentFixture = {getElementById(id) {
+    return id === 'copy-catalog' ? {textContent: JSON.stringify(catalog)} : null;
+  }};
+  assert.deepEqual(readCatalog(documentFixture), catalog);
+});
+test('startup reports a missing embedded catalog instead of dereferencing a null control', () => {
+  const {readCatalog} = require('./site/app.js');
+  assert.throws(() => readCatalog({getElementById() { return null; }}), /embedded review catalog is missing/);
+});
