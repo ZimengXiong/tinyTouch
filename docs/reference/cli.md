@@ -98,6 +98,7 @@ Prints JSON containing:
 | `led` | Saved sensor LED setting: `on` or `off` (firmware 0.1.29+) |
 | `piv_touch` | Saved touch activation preference: `on` or `off` (firmware 0.1.30+) |
 | `piv_touch_active` | Touch activation setting applied at boot: `on` or `off` |
+| `piv_delay_ms` | Saved delay before PIN entry after PIV selection and USB/HID readiness, in milliseconds |
 | `piv_visible` | Whether USB currently exposes the smart-card interface: `yes` or `no` |
 | `sensor` | `ready` or `offline` after a live UART probe |
 | `fingerprints` | Number of occupied sensor slots |
@@ -208,10 +209,13 @@ Without a value, prints status. With a value, writes a protected setting:
 | Name | Range | Default | Effect |
 |---|---:|---:|---|
 | `typing_delay_ms` | 1–100 | 7 | Delay after HID key press and release |
+| `piv_delay_ms` | 0–5000 | 1000 | Delay before touch-login PIN entry after PIV selection and USB/HID readiness |
 | `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
 
-`STATUS` doesn't return these values. A successful write can still report a verification error.
+`STATUS` reports `piv_delay_ms`, so the CLI verifies that setting after saving it.
+It applies to the next touch login without reconnecting. The other settings in
+this table are not returned by `STATUS`; their writes can report a verification error.
 
 ## Developer commands
 

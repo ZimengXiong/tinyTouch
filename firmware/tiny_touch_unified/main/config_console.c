@@ -152,7 +152,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s piv_touch=%s piv_touch_active=%s piv_visible=%s",
+           "hosts=%u ota=%s led=%s piv_touch=%s piv_touch_active=%s piv_visible=%s piv_delay_ms=%u",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
@@ -160,7 +160,7 @@ static void status(void) {
            (firmware_update_active() ? "writing" : "idle"), device_config_led_enabled() ? "on" : "off",
            device_config_piv_touch_enabled() ? "on" : "off",
            usb_ccid_touch_enabled() ? "on" : "off",
-           usb_ccid_piv_visible() ? "yes" : "no");
+           usb_ccid_piv_visible() ? "yes" : "no", (unsigned)device_config_piv_delay_ms());
   reply(line);
 }
 
@@ -184,6 +184,8 @@ static void set_value(char *arguments) {
     ok = fingerprint_set_led_enabled(number != 0);
   else if (ok && strcmp(arguments, "PIV_TOUCH") == 0 && number <= 1)
     ok = device_config_set_piv_touch_enabled(number != 0);
+  else if (ok && strcmp(arguments, "PIV_DELAY") == 0)
+    ok = device_config_set_piv_delay_ms(number);
   else ok = false;
   reply(ok ? "OK SET" : "ERR SET");
 }

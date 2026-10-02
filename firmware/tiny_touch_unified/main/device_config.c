@@ -11,6 +11,8 @@
 #define CONFIG_NAMESPACE "tt6"
 #define CONFIG_KEY "config"
 #define CONFIG_VERSION 6
+#define PIV_DELAY_DEFAULT_MS 1000
+#define PIV_DELAY_MAX_MS 5000
 
 typedef struct {
   uint8_t version;
@@ -27,6 +29,7 @@ static stored_config_t config;
 static SemaphoreHandle_t config_mutex;
 static bool led_enabled = true;
 static bool piv_touch_enabled;
+static uint16_t piv_delay_ms = PIV_DELAY_DEFAULT_MS;
 
 static void lock(void) { assert(xSemaphoreTake(config_mutex, portMAX_DELAY) == pdTRUE); }
 static void unlock(void) { assert(xSemaphoreGive(config_mutex) == pdTRUE); }
@@ -97,6 +100,11 @@ void device_config_init(void) {
   piv_touch_enabled = loaded_ok &&
       nvs_get_u8(handle, "piv_touch", &stored_piv_touch) == ESP_OK &&
       stored_piv_touch == 1;
+  // Store timing separately so upgrades retain the existing configuration blob.
+  uint16_t stored_piv_delay = PIV_DELAY_DEFAULT_MS;
+  piv_delay_ms = PIV_DELAY_DEFAULT_MS;
+  if (loaded_ok && nvs_get_u16(handle, "piv_delay_ms", &stored_piv_delay) == ESP_OK &&
+      stored_piv_delay <= PIV_DELAY_MAX_MS) piv_delay_ms = stored_piv_delay;
   if (opened) nvs_close(handle);
   lock();
   if (loaded_ok) config = loaded;
@@ -194,6 +202,7 @@ bool device_config_set_led_enabled(bool value) {
 bool device_config_factory_reset(void) {
   if (!device_config_set_led_enabled(true)) return false;
   if (!device_config_set_piv_touch_enabled(false)) return false;
+  if (!device_config_set_piv_delay_ms(PIV_DELAY_DEFAULT_MS)) return false;
   lock(); stored_config_t candidate; defaults(&candidate); bool ok = replace_locked(&candidate); unlock(); return ok;
 }
 
@@ -211,6 +220,25 @@ bool device_config_set_piv_touch_enabled(bool value) {
     nvs_close(handle);
   }
   if (result == ESP_OK) piv_touch_enabled = value;
+  unlock();
+  return result == ESP_OK;
+}
+
+uint16_t device_config_piv_delay_ms(void) {
+  lock(); uint16_t value = piv_delay_ms; unlock(); return value;
+}
+
+bool device_config_set_piv_delay_ms(uint16_t value) {
+  if (value > PIV_DELAY_MAX_MS) return false;
+  lock();
+  nvs_handle_t handle;
+  esp_err_t result = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u16(handle, "piv_delay_ms", value);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result == ESP_OK) piv_delay_ms = value;
   unlock();
   return result == ESP_OK;
 }

@@ -14,6 +14,7 @@ tinyTouch stores schema-6 configuration in ESP32 NVS. Invalid data resets to def
 | Sensor LED | On | Off or on |
 | Mode | PIV | PIV or HID |
 | Touch-activated PIV | Off | Off or on |
+| PIV delay before PIN entry | 1000 ms | 0–5000 ms |
 | Submit Enter after HID password | On | Off or on |
 | HID typing delay | 7 ms | 1–100 ms |
 | Touch cooldown | 800 ms | 100–5000 ms |
@@ -52,6 +53,24 @@ preserves the existing configuration and pairings.
 `tinytouch pair` can temporarily expose the card for setup after fingerprint
 authorization. This discovery window lasts 60 seconds; it does not grant
 private-key access by itself. A Mac policy requiring smart cards still applies.
+
+### Delay before PIN entry
+
+After macOS selects the PIV applet and USB/HID are ready, tinyTouch waits
+1000 ms before typing its dummy PIN. Set a different delay with:
+
+```sh
+tinytouch config piv_delay_ms 50
+```
+
+The range is 0–5000 ms. Fingerprint approval is required. The setting persists
+across reconnects and applies to the next touch login without a reboot.
+`tinytouch status` reports the saved value as `piv_delay_ms`.
+
+The device cannot confirm when macOS finishes switching the login field. Test
+50 ms on your Mac, including after wake and reconnect. If PIN entry starts too
+early, increase the delay. Restore the default with
+`tinytouch config piv_delay_ms 1000`.
 
 ## Fingerprint profile
 

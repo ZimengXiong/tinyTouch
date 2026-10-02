@@ -1127,12 +1127,22 @@ def command_config(args: argparse.Namespace) -> None:
     if args.value is None:
         say(json.dumps(device, indent=2, sort_keys=True))
         return
+    if args.name == "piv_delay_ms":
+        if "piv_delay_ms" not in device:
+            raise ToolError("This firmware does not support configurable PIV delay. Update its firmware first.")
+        if not args.value.isascii() or not args.value.isdecimal() or not 0 <= int(args.value) <= 5000:
+            raise ToolError("piv_delay_ms must be an integer from 0 to 5000 milliseconds.")
+        args.value = str(int(args.value))
     unlock(port, reason="change this setting")
-    names = {"typing_delay_ms": "TYPE_DELAY", "submit_enter": "SUBMIT_ENTER", "touch_cooldown_ms": "COOLDOWN"}
+    names = {"typing_delay_ms": "TYPE_DELAY", "submit_enter": "SUBMIT_ENTER", "touch_cooldown_ms": "COOLDOWN",
+             "piv_delay_ms": "PIV_DELAY"}
     device_name = names.get(args.name, args.name.upper())
     serial_command(port, f"SET {device_name} {args.value}", timeout=4)
-    fresh_status(port, {device_name.lower(): args.value})
+    status_name = args.name if args.name == "piv_delay_ms" else device_name.lower()
+    fresh_status(port, {status_name: args.value})
     say(f"Updated {args.name} to {args.value}.")
+    if args.name == "piv_delay_ms":
+        say("The delay is saved and applies to the next touch login. No reconnect is needed.")
 
 
 def command_enroll(args: argparse.Namespace) -> None:

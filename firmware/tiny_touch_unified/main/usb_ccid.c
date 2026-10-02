@@ -384,9 +384,10 @@ bool usb_ccid_wait_for_piv(void) {
     taskEXIT_CRITICAL(&policy_lock);
     if (device_config_mode() != DEVICE_MODE_PIV) return false;
     if (ready && tud_mounted() && tud_hid_ready()) {
-      // USB readiness alone precedes smart-card discovery. Give the login UI
-      // time to switch fields after the host has selected the PIV applet.
-      vTaskDelay(pdMS_TO_TICKS(1000));
+      // Wait for the login UI to switch fields after PIV selection. This
+      // saved delay does not replace enumeration and HID readiness checks.
+      uint16_t delay_ms = device_config_piv_delay_ms();
+      if (delay_ms) vTaskDelay(pdMS_TO_TICKS(delay_ms));
       taskENTER_CRITICAL(&policy_lock);
       ready = piv_exposed && piv_selected && esp_timer_get_time() < touch_until;
       taskEXIT_CRITICAL(&policy_lock);
