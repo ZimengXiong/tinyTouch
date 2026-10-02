@@ -49,15 +49,20 @@ class CredentialPreflightTests(unittest.TestCase):
                     helper.main()
                 self.assertEqual(raised.exception.code, exit_code)
 
-    def test_disconnected_device_is_checked_and_buffers_are_wiped(self):
+    def test_connected_device_passes_despite_disconnected_cached_device(self):
         password, key = bytearray(b"test password"), bytearray(b"k" * 32)
         device_id = "TT-123456ABCDEF"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / f"state-{device_id}.json").write_text("{}")
+            (root / "state-TT-000011112222.json").write_text("{}")
+            (root / "settings-TT-000011112222.json").write_text("{}")
             with (
                 mock.patch.object(helper, "STATE_DIR", root),
-                mock.patch.object(helper, "device_endpoints", return_value=[]),
+                mock.patch.object(
+                    helper,
+                    "device_endpoints",
+                    return_value=[helper.DeviceEndpoint(device_id, "/dev/test", "")],
+                ),
                 mock.patch.object(helper, "credentials_exist", return_value=True),
                 mock.patch.object(
                     helper, "load_passwords", return_value={0: password}

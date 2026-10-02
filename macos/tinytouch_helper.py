@@ -697,24 +697,19 @@ def device_ports() -> list[str]:
 
 
 def credentials_exist(device_id: str) -> bool:
-    return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
+    return all(
+        has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE)
+    )
 
 
-def known_device_ids() -> set[str]:
-    """Find connected devices and saved device identities without opening USB."""
-    device_ids = {endpoint.device_id for endpoint in device_endpoints()}
-    # Include previously used devices while they are disconnected.
-    for prefix in ("state-", "settings-"):
-        for path in STATE_DIR.glob(f"{prefix}TT-*.json"):
-            device_id = path.stem[len(prefix) :]
-            if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", device_id):
-                device_ids.add(normalize_serial(device_id))
-    return device_ids
+def connected_device_ids() -> set[str]:
+    """List attached devices without opening their serial ports."""
+    return {endpoint.device_id for endpoint in device_endpoints()}
 
 
 def check_credentials() -> None:
     """Check unattended access without opening a device or typing a password."""
-    for device_id in sorted(known_device_ids()):
+    for device_id in sorted(connected_device_ids()):
         if not credentials_exist(device_id):
             continue
         passwords: dict[int, bytearray] = {}

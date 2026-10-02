@@ -613,9 +613,13 @@ def command_repair(args: argparse.Namespace) -> None:
     if args.port:
         device_ids = {device_account(choose_port(args.port))}
     else:
-        from tinytouch_helper import known_device_ids
+        from tinytouch_helper import connected_device_ids
 
-        device_ids = known_device_ids()
+        device_ids = connected_device_ids()
+    if not device_ids:
+        raise ToolError(
+            "Connect the tinyTouch you want to repair, then run repair again."
+        )
     keychain = _keychain()
     accounts = []
     for account in sorted(device_ids):
@@ -637,7 +641,8 @@ def command_repair(args: argparse.Namespace) -> None:
     )
     try:
         for service, name in accounts:
-            keychain.authorize_executable(service, name, sys.executable)
+            if not keychain.can_read_password(service, name):
+                keychain.authorize_executable(service, name, sys.executable)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         raise ToolError(f"Keychain repair did not finish: {exc}") from exc
     install_helper()
@@ -655,12 +660,16 @@ def command_upgrade_helper(args: argparse.Namespace) -> None:
         install_helper()
     except HelperCredentialAccessError:
         say("The new CLI needs Keychain authorization. Starting repair...")
-        # One helper serves every paired device, even when OTA targets one port.
+        # Check all attached devices, even when OTA targets one port.
         command_repair(argparse.Namespace(port=None))
 
 
 def exchange_serial(
-    device, command: str, *, timeout: float, touch_prompt: str | None = None,
+    device,
+    command: str,
+    *,
+    timeout: float,
+    touch_prompt: str | None = None,
     lift_prompt: str | None = "Lift your finger from the sensor.",
     touch_again_prompt: str | None = None,
     wait_message: str | None = None,

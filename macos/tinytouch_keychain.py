@@ -163,6 +163,25 @@ def has_password(service: str, account: str) -> bool:
     return True
 
 
+def can_read_password(service: str, account: str) -> bool:
+    """Check unattended access and wipe the temporary credential copy."""
+    status = _SECURITY.SecKeychainSetUserInteractionAllowed(False)
+    if status != 0:
+        raise KeychainError("disable interaction", status)
+    value = None
+    try:
+        value = get_password_bytes(service, account)
+        return value is not None
+    except KeychainError as exc:
+        if exc.status in {-25293, -25308, -25315, -25320}:
+            return False
+        raise
+    finally:
+        if value is not None:
+            value[:] = b"\x00" * len(value)
+        _SECURITY.SecKeychainSetUserInteractionAllowed(not _BACKGROUND_MODE)
+
+
 def authorize_executable(service: str, account: str, executable: str) -> None:
     """Authorize a stable signed CLI without replacing its saved credential."""
     metadata = subprocess.run(
