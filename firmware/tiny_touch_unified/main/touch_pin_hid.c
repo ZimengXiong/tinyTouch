@@ -371,6 +371,10 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     static const uint8_t piv_pin[] = {'1', '1', '1', '1', '1', '1'};
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
     piv_note_user_presence();
+    if (!device_config_options().piv_auto_type) {
+      touch_pin_hid_log_event("piv_presence_granted", match.slot);
+      return;
+    }
     bool typed = type_ascii(piv_pin, sizeof(piv_pin));
     touch_pin_hid_log_event(typed ? "piv_pin_typed" : "piv_pin_failed", match.slot);
     if (!typed) ESP_LOGW(TAG, "PIV PIN typing failed");
@@ -462,7 +466,7 @@ static void touch_hid_task(void *arg) {
     if (match.slot == 0) {
       touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
-      vTaskDelay(pdMS_TO_TICKS(350));
+      vTaskDelay(pdMS_TO_TICKS(device_config_options().led_feedback_ms));
       fingerprint_led_idle();
       continue;
     }
@@ -470,7 +474,7 @@ static void touch_hid_task(void *arg) {
     touch_pin_hid_log_event("finger_matched", match.slot);
     // Keep result feedback bounded. Host communication must not leave the
     // sensor green when a helper, USB endpoint, or PIN field is unavailable.
-    vTaskDelay(pdMS_TO_TICKS(350));
+    vTaskDelay(pdMS_TO_TICKS(device_config_options().led_feedback_ms));
     fingerprint_led_idle();
     handle_fingerprint_match(match);
     auth_wait_for_lift(&runtime, xTaskGetTickCount());

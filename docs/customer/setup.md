@@ -22,10 +22,12 @@ curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/ins
 ## 2. Enroll your fingerprint
 
 ```sh
-tinytouch setup
+tinytouch
 ```
 
-Follow the prompts. Choose PIV for smart-card login or HID for password entry. Lift your finger between scans.
+Select **Set up this Mac** and follow the prompts. Choose PIV for smart-card login
+or HID for password entry. Lift your finger between scans. You can also start
+setup directly with `tinytouch setup`.
 
 For PIV, enter `111111` if macOS asks for a smart-card PIN. For HID, enter your Mac login password when prompted.
 

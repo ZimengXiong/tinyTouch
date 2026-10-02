@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import contextmanager
+import difflib
 import getpass
 import hashlib
 import json
@@ -71,6 +72,86 @@ class ToolError(RuntimeError):
 
 class SerialTimeout(ToolError):
     """The device did not return a terminal response."""
+
+
+LED_COLORS = {"off": 0, "blue": 1, "green": 2, "cyan": 3, "red": 4,
+              "purple": 5, "yellow": 6, "white": 7}
+LED_EFFECTS = {"breathe": 1, "flash": 2, "steady": 3, "fade-in": 5, "fade-out": 6}
+
+
+class SettingSpec:
+    def __init__(self, wire: str, label: str, description: str, default: str,
+                 minimum: int = 0, maximum: int = 0, *,
+                 choices: dict[str, int] | None = None, capability: str | None = None):
+        self.wire, self.label, self.description, self.default = wire, label, description, default
+        self.minimum, self.maximum = minimum, maximum
+        self.choices, self.capability = choices, capability
+
+    def allowed(self) -> str:
+        return ", ".join(self.choices) if self.choices else f"{self.minimum}–{self.maximum}"
+
+    def decode(self, value: str) -> str:
+        if self.choices:
+            if value in self.choices:
+                return value
+            return next((name for name, code in self.choices.items() if str(code) == value), value)
+        return value
+
+
+# One catalog drives validation, command help, current values and menu prompts.
+SETTINGS = {
+    "mode": SettingSpec("MODE", "Device mode", "HID password entry or PIV smart-card authentication; reconnect required.", "piv", choices={"piv": 0, "hid": 1}),
+    "led": SettingSpec("LED", "Sensor lighting", "Enable all lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
+    "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Delay after each HID key press and release.", "7", 1, 100),
+    "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after password or automatic PIV PIN entry.", "on", choices={"off": 0, "on": 1}),
+    "touch_cooldown_ms": SettingSpec("COOLDOWN", "Touch cooldown (ms)", "Minimum interval between touch actions.", "800", 100, 5000),
+    "led_idle_color": SettingSpec("LED_IDLE_COLOR", "Idle color", "Ring color while idle and during enrollment.", "blue", choices=LED_COLORS, capability="custom_config"),
+    "led_success_color": SettingSpec("LED_SUCCESS_COLOR", "Success color", "Ring color after a fingerprint match.", "green", choices=LED_COLORS, capability="custom_config"),
+    "led_failure_color": SettingSpec("LED_FAILURE_COLOR", "Failure color", "Ring color after an unsuccessful fingerprint match.", "red", choices=LED_COLORS, capability="custom_config"),
+    "led_idle_end_color": SettingSpec("LED_IDLE_END_COLOR", "Breathing end color", "End color for the breathing effect; other effects use the idle color.", "blue", choices=LED_COLORS, capability="custom_config"),
+    "led_idle_effect": SettingSpec("LED_IDLE_EFFECT", "Idle effect", "Animation while the idle ring is enabled.", "steady", choices=LED_EFFECTS, capability="custom_config"),
+    "led_idle_cycles": SettingSpec("LED_IDLE_CYCLES", "Animation repeats", "0 repeats continuously; 1–255 limits repeats. Ignored for steady lighting.", "0", 0, 255, capability="custom_config"),
+    "led_feedback_ms": SettingSpec("LED_FEEDBACK_MS", "Result feedback (ms)", "Duration of success or failure feedback; longer values delay touch processing.", "350", 50, 2000, capability="custom_config"),
+    "piv_auto_type": SettingSpec("PIV_AUTO_TYPE", "Automatic PIV PIN entry", "Type the PIV PIN after a match. Off still grants smart-card presence.", "on", choices={"off": 0, "on": 1}, capability="custom_config"),
+}
+
+LED_PRESETS = {
+    "default": ("blue", "blue", "green", "red", "steady"),
+    "ocean": ("blue", "cyan", "cyan", "red", "breathe"),
+    "neon": ("purple", "cyan", "green", "red", "breathe"),
+    "sunset": ("red", "yellow", "yellow", "purple", "breathe"),
+}
+
+
+def setting_name(value: str) -> str:
+    name = value.lower().replace("-", "_")
+    aliases = {"type_delay": "typing_delay_ms", "cooldown": "touch_cooldown_ms", "led_mode": "led"}
+    name = aliases.get(name, name)
+    if name not in SETTINGS:
+        match = difflib.get_close_matches(name, SETTINGS, n=1)
+        suggestion = f" Did you mean '{match[0]}'?" if match else ""
+        raise ToolError(f"Unknown setting '{value}'.{suggestion} Run 'tinytouch config list' for valid settings.")
+    return name
+
+
+def setting_value(name: str, value: str) -> str:
+    spec = SETTINGS[name]
+    text = value.strip().lower()
+    if spec.choices:
+        aliases = {"true": "on", "false": "off", "yes": "on", "no": "off", "magenta": "purple", "breathing": "breathe"}
+        text = aliases.get(text, text)
+        if text in spec.choices:
+            return str(spec.choices[text])
+        if text in {str(code) for code in spec.choices.values()}:
+            return text
+    else:
+        try:
+            number = int(text)
+            if spec.minimum <= number <= spec.maximum:
+                return str(number)
+        except ValueError:
+            pass
+    raise ToolError(f"Invalid value '{value}' for {name}. Use {spec.allowed()}. Example: tinytouch config {name} {spec.default}")
 
 
 def say(message: str = "") -> None:
@@ -380,13 +461,16 @@ def choose_port(explicit: str | None) -> str:
     if len(ports) == 1:
         return ports[0]
     if not ports:
-        raise ToolError("No tinyTouch USB serial device is connected.")
+        raise ToolError("No tinyTouch USB serial device is connected. Connect the device with a data-capable USB cable, then run 'tinytouch ports'. Use --port PATH to select a device explicitly.")
     say("Several USB serial devices are connected:")
     for index, port in enumerate(ports, 1):
         say(f"  {index}. {port}")
     answer = ask("Select tinyTouch: ")
     try:
-        return ports[int(answer) - 1]
+        index = int(answer)
+        if not 1 <= index <= len(ports):
+            raise ValueError()
+        return ports[index - 1]
     except (ValueError, IndexError) as exc:
         raise ToolError("Select one of the listed devices.") from exc
 
@@ -417,6 +501,8 @@ def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
 def is_terminal(command: str, line: str) -> bool:
     words = command.split()
     verb = words[0]
+    if line == "ERR COMMAND" or line == "ERR LINE" or line.startswith("ERR LOCKED"):
+        return True
     if verb == "PING":
         return line.startswith("PONG") or line.startswith("ERR PING")
     fields = line.split()
@@ -424,14 +510,16 @@ def is_terminal(command: str, line: str) -> bool:
         return False
     if fields[1] == verb:
         return True
-    # Protocol 6 groups live writes under SET, HOST, FINGER, RESET, and OTA.
-    grouped = {"SET", "HOST", "FINGER", "RESET", "OTA"}
+    # Protocol 6 groups live writes under SET, HOST, FINGER, RESET, OTA, and LED.
+    grouped = {"SET", "HOST", "FINGER", "RESET", "OTA", "LED"}
     return len(words) > 1 and verb in grouped and fields[1] == words[1]
 
 
 def human_error(line: str, *, touch_prompted: bool = False) -> str:
     """Turn compact device failures into the next useful user action."""
-    if line == "ERR AUTH":
+    if line in {"ERR AUTH", "ERR AUTH no_match", "ERR AUTH sensor=offline"}:
+        if line.endswith("sensor=offline"):
+            return "The fingerprint sensor is offline. Run 'tinytouch test' to check communication, then reconnect the device and retry."
         if touch_prompted:
             return (
                 "Fingerprint authorization expired without an enrolled match. "
@@ -439,6 +527,8 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
                 "and hold it still. If the sensor turns red before you touch, run "
                 "'tinytouch status'; it must report sensor=ready."
             )
+        if line.endswith("no_match"):
+            return "No enrolled fingerprint matched. Run the command again; wait for the touch prompt, then hold an enrolled finger still on the sensor."
         return (
             "Fingerprint authorization did not start because the sensor was busy or "
             "unavailable. Run 'tinytouch status'; it must report sensor=ready before retrying."
@@ -447,6 +537,14 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
         return "Update the tinyTouch CLI: enrollment now uses whole fingers instead of individual templates."
     if line == "ERR FINGER inventory_unavailable":
         return "Could not verify the sensor's occupied finger blocks. No enrollment was changed."
+    if line.startswith("ERR LOCKED"):
+        return "Fingerprint authorization expired. Run the command again and touch an enrolled finger when prompted."
+    if line.startswith("ERR SET"):
+        return "The device could not save or apply this setting. Check its value with 'tinytouch config'; reconnect and retry if the sensor is unavailable."
+    if line == "ERR COMMAND":
+        return "The firmware does not support this command. Run 'tinytouch update', then reconnect the device."
+    if line.startswith("ERR LED"):
+        return "The LED preview or idle restoration failed. Reconnect the device and check 'tinytouch led' before retrying."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -1138,6 +1236,44 @@ def command_mode(args: argparse.Namespace) -> None:
 
 
 def command_led(args: argparse.Namespace) -> None:
+    state = args.state
+    if state in {None, "show"}:
+        show_settings(args, led_only=True)
+        return
+    if state == "color":
+        if args.role is None or args.color is None:
+            raise ToolError("Specify a role and color. Example: tinytouch led color idle purple. Roles: idle, success, failure, end. Run 'tinytouch led --help' for colors.")
+        name = {"idle": "led_idle_color", "success": "led_success_color", "failure": "led_failure_color", "end": "led_idle_end_color"}[args.role]
+        command_config(argparse.Namespace(name=name, value=args.color, port=args.port, json=False))
+        return
+    if state == "effect":
+        if args.effect_name is None:
+            raise ToolError("Specify an effect. Example: tinytouch led effect breathe. Use steady, breathe, flash, fade-in, or fade-out.")
+        command_config(argparse.Namespace(name="led_idle_effect", value=args.effect_name, port=args.port, json=False))
+        return
+    if state == "preset":
+        if args.preset_name is None:
+            raise ToolError("Specify a preset: default, ocean, neon, or sunset. Example: tinytouch led preset ocean")
+        idle, end, success, failure, effect = LED_PRESETS[args.preset_name]
+        values = dict(zip(("led_idle_color", "led_idle_end_color", "led_success_color", "led_failure_color", "led_idle_effect"), (idle, end, success, failure, effect)))
+        values["led_idle_cycles"] = "0"
+        apply_settings(args.port, values)
+        say(f"Applied '{args.preset_name}' LED preset. Lighting mode is unchanged.")
+        return
+    if state == "preview":
+        if args.preview_color is None:
+            raise ToolError("Specify a color. Example: tinytouch led preview purple --effect breathe")
+        color = setting_value("led_idle_color", args.preview_color)
+        effect = setting_value("led_idle_effect", args.effect)
+        port = choose_port(args.port)
+        with foreground_session(port):
+            device = status(port)
+            protocol6(device)
+            require_setting_support(device, "led_idle_color")
+            unlock(port, reason="preview sensor lighting")
+            serial_command(port, f"LED PREVIEW {color} {effect} {args.duration_ms}", timeout=10)
+        say("LED preview complete. Saved preferences were preserved.")
+        return
     port = choose_port(args.port)
     with foreground_session(port):
         device = status(port)
@@ -1160,18 +1296,88 @@ def command_led(args: argparse.Namespace) -> None:
 
 
 def command_config(args: argparse.Namespace) -> None:
-    port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    if args.value is None:
-        say(json.dumps(device, indent=2, sort_keys=True))
+    if getattr(args, "json", False) and args.value is not None:
+        raise ToolError("--json applies to setting reads and 'config list'. Omit --json when changing a setting.")
+    if args.name == "list":
+        if args.value is not None:
+            raise ToolError("'config list' does not accept a value. Use 'tinytouch config NAME VALUE' to change a setting.")
+        if getattr(args, "json", False):
+            say(json.dumps({name: {"default": spec.default, "values": list(spec.choices) if spec.choices else {"minimum": spec.minimum, "maximum": spec.maximum}, "description": spec.description, "requires_new_firmware": bool(spec.capability)} for name, spec in SETTINGS.items()}, indent=2))
+            return
+        for name, spec in SETTINGS.items():
+            say(f"{name}: {spec.allowed()} (default: {spec.default})")
+            say(f"  {spec.description}")
         return
-    unlock(port, reason="change this setting")
-    names = {"typing_delay_ms": "TYPE_DELAY", "submit_enter": "SUBMIT_ENTER", "touch_cooldown_ms": "COOLDOWN"}
-    device_name = names.get(args.name, args.name.upper())
-    serial_command(port, f"SET {device_name} {args.value}", timeout=4)
-    fresh_status(port, {device_name.lower(): args.value})
-    say(f"Updated {args.name} to {args.value}.")
+    if args.name in {None, "show"}:
+        if args.value is not None:
+            raise ToolError("'config show' does not accept a value. Use 'tinytouch config NAME VALUE'.")
+        show_settings(args)
+        return
+    name = setting_name(args.name)
+    if args.value is None:
+        port = choose_port(args.port)
+        with foreground_session(port):
+            device = status(port)
+            protocol6(device)
+        if name not in device:
+            raise ToolError(f"This firmware does not report {name}. Run 'tinytouch update', then reconnect the device.")
+        value = SETTINGS[name].decode(device[name])
+        say(json.dumps({name: value}) if getattr(args, "json", False) else f"{name}={value}")
+        return
+    value = setting_value(name, args.value)
+    if name == "mode":
+        command_mode(argparse.Namespace(mode=SETTINGS[name].decode(value), port=args.port))
+    elif name == "led":
+        command_led(argparse.Namespace(state=SETTINGS[name].decode(value), port=args.port))
+    else:
+        apply_settings(args.port, {name: args.value})
+        say(f"Updated {name} to {SETTINGS[name].decode(value)}.")
+
+
+def require_setting_support(device: dict[str, str], name: str) -> None:
+    capability = SETTINGS[name].capability
+    if capability and device.get(capability) != "1":
+        raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update', then unplug and reconnect tinyTouch (firmware 0.1.31+ required).")
+
+
+def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
+    normalized = {name: setting_value(name, value) for name, value in values.items()}
+    port = choose_port(explicit_port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        for name in values:
+            require_setting_support(device, name)
+        unlock(port, reason="change device settings")
+        applied = []
+        try:
+            for name, value in normalized.items():
+                serial_command(port, f"SET {SETTINGS[name].wire} {value}", timeout=5)
+                applied.append(name)
+            if device.get("config_values") == "1":
+                fresh_status(port, normalized)
+        except ToolError:
+            if applied:
+                say("Settings acknowledged before the error: " + ", ".join(applied) + ". Run 'tinytouch config' to check saved values.")
+            raise
+
+
+def show_settings(args: argparse.Namespace, *, led_only: bool = False) -> None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+    specs = {name: spec for name, spec in SETTINGS.items() if not led_only or name.startswith("led")}
+    values = {name: spec.decode(device[name]) for name, spec in specs.items() if name in device}
+    if getattr(args, "json", False):
+        say(json.dumps(values, indent=2, sort_keys=True))
+        return
+    say(f"{'Setting':<24} {'Current':<16} Default")
+    for name, spec in specs.items():
+        say(f"{name:<24} {values.get(name, 'not reported'):<16} {spec.default}")
+    if any(name not in values for name in specs):
+        say("Some settings require newer firmware. Run 'tinytouch update', then reconnect the device.")
+    say("Use 'tinytouch config list' for values and effects; 'tinytouch config NAME VALUE' to change a setting.")
 
 
 def command_enroll(args: argparse.Namespace) -> None:
@@ -1673,83 +1879,476 @@ def command_pair(
     say("PIV is paired with this Mac.")
 
 
+def select_option(
+    title: str, options: list[tuple[str, str]], *, back: str = "Back",
+) -> str | None:
+    """Select an option by number or name; return None to leave this menu."""
+    while True:
+        say("")
+        say(terminal_style(title, "1"))
+        for index, (key, label) in enumerate(options, 1):
+            say(f"  {index}. {label} [{key}]")
+        say(f"  0. {back}")
+        answer = ask("Select a number or option name: ").lower()
+        if answer in {"0", "b", "back", "q", "quit", "exit"}:
+            return None
+        for index, (key, _label) in enumerate(options, 1):
+            if answer in {str(index), key.lower()}:
+                return key
+        say("Invalid selection. Use one of the listed options.")
+
+
+def interactive_finger(args: argparse.Namespace, action: str) -> list[str] | None:
+    """Read inventory before selecting a complete finger block."""
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        groups, available = finger_inventory(port, device)
+    say(f"Space for {available} additional fingers.")
+    if action == "delete":
+        candidates = sorted(groups)
+        if not candidates:
+            say("No fingers enrolled.")
+            return None
+    else:
+        # Supported blocks are contiguous. Limit empty choices to the capacity
+        # reported by the firmware rather than assuming a 40-template sensor.
+        empty = [finger for finger in range(1, 11) if finger not in groups][:available]
+        candidates = sorted([*groups, *empty])
+        if not candidates:
+            raise ToolError("No finger blocks are available on this sensor.")
+    options = []
+    for finger in candidates:
+        views = groups.get(finger)
+        description = "empty" if views is None else (
+            "cleanup pending; reconnect the device" if views == -1 else (
+                "enrolled; 4 views" if views == 4 else f"partially occupied; {views} of 4 views"
+            )
+        )
+        options.append((f"finger-{finger}", f"Finger {finger} — {description}"))
+    selected = select_option(
+        "Enroll or replace a fingerprint" if action == "enroll" else "Delete a fingerprint",
+        options,
+    )
+    if selected is None:
+        return None
+    finger = int(selected.split("-")[1])
+    if action == "delete":
+        if ask(f"Delete all views for finger {finger}? [y/N] ").lower() not in {"y", "yes"}:
+            say("Deletion cancelled.")
+            return None
+    return [action, str(finger), "--port", port]
+
+
+def interactive_computer(args: argparse.Namespace) -> list[str] | None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        protocol6(status(port))
+        registered, _capacity = host_list(port)
+    if not registered:
+        say("No HID computers registered.")
+        return None
+    identifier = select_option("Remove a registered computer", [(host, host) for host in sorted(registered)])
+    if identifier is None:
+        return None
+    if ask(f"Remove computer {identifier}? [y/N] ").lower() not in {"y", "yes"}:
+        say("Removal cancelled.")
+        return None
+    return ["computers", "remove", identifier, "--port", port]
+
+
+def prompt_setting(name: str) -> list[str] | None:
+    spec = SETTINGS[name]
+    say(spec.description)
+    say(f"Default: {spec.default}. Values: {spec.allowed()}.")
+    if spec.choices:
+        selected = select_option(spec.label, [(key, key) for key in spec.choices])
+        return ["config", name, selected] if selected is not None else None
+    while True:
+        value = ask(f"{spec.label}; Enter to cancel: ")
+        if not value or value.lower() in {"b", "back", "q", "quit", "exit"}:
+            return None
+        try:
+            return ["config", name, setting_value(name, value)]
+        except ToolError as exc:
+            say(str(exc))
+
+
+def interactive_config() -> list[str] | None:
+    settings = {name: spec for name, spec in SETTINGS.items() if name not in {"mode", "led"}}
+    name = select_option("Configurable settings", [(name, spec.label) for name, spec in settings.items()])
+    if name is None:
+        return None
+    return prompt_setting(name)
+
+
+def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
+    """Resolve interactive parameters, then use the regular CLI parser and handler."""
+    global _sudo_session_ready, _setup_password
+    command = list(command)
+    if command[0] in {"setup", "mode"} and len(command) == 1:
+        mode = select_option("Device mode", [
+            ("hid", "HID — Type your Mac password into the active field"),
+            ("piv", "PIV — Use a smart card for supported macOS authentication"),
+        ])
+        if mode is None:
+            return
+        command.extend(["--mode", mode] if command[0] == "setup" else [mode])
+    elif command == ["led"]:
+        state = select_option("Sensor lighting", [
+            ("on", "On — Enable idle lighting and authentication feedback"),
+            ("off", "Off — Disable all sensor lighting"),
+            ("only-auth", "Authentication only — Show success and failure feedback"),
+        ])
+        if state is None:
+            return
+        command.append(state)
+    elif command == ["led", "preset"]:
+        preset = select_option("LED preset", [(key, key.title()) for key in LED_PRESETS])
+        if preset is None:
+            return
+        command.append(preset)
+    elif command == ["led", "preview"]:
+        color = select_option("Preview color", [(key, key.title()) for key in LED_COLORS])
+        if color is None:
+            return
+        effect = select_option("Preview effect", [(key, key.title()) for key in LED_EFFECTS])
+        if effect is None:
+            return
+        command.extend([color, "--effect", effect])
+    elif command[0] in {"enroll", "delete"}:
+        selected = interactive_finger(args, command[0])
+        if selected is None:
+            return
+        command = selected
+    elif command == ["computers", "remove"]:
+        selected = interactive_computer(args)
+        if selected is None:
+            return
+        command = selected
+    elif command[0] == "config":
+        if len(command) > 1 and command[1] in {"show", "list"}:
+            selected = command
+        else:
+            selected = prompt_setting(command[1]) if len(command) > 1 else interactive_config()
+        if selected is None:
+            return
+        command = selected
+    global_options = ["--verbose"] if args.verbose else []
+    if args.port:
+        global_options.extend(["--port", args.port])
+    selected_args = parser().parse_args([*global_options, *command])
+    say("")
+    say(terminal_style(f"── {selected_args.command.replace('-', ' ').title()} ──", "2"))
+    # Each menu action gets the same credential lifetime as a standalone command.
+    _sudo_session_ready = False
+    try:
+        selected_args.func(selected_args)
+    finally:
+        if _setup_password is not None:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
+
+
+INTERACTIVE_MENUS = {
+    "home": ("tinyTouch", (
+        ("setup", "Set up this Mac", ["setup"]),
+        ("fingers", "Manage fingerprints", "fingers"),
+        ("settings", "Device settings", "settings"),
+        ("computers", "Manage registered computers", "computers"),
+        ("status", "Device status", ["status"]),
+        ("test", "Test device connection", ["test"]),
+        ("update", "Update CLI and firmware", ["update"]),
+        ("advanced", "Diagnostics and recovery", "advanced"),
+    )),
+    "fingers": ("Fingerprints", (
+        ("list", "List enrolled fingerprints", ["fingers"]),
+        ("enroll", "Enroll or replace a fingerprint", ["enroll"]),
+        ("delete", "Delete a fingerprint", ["delete"]),
+    )),
+    "settings": ("Device settings", (
+        ("show", "Show current settings and defaults", ["config", "show"]),
+        ("mode", "Change HID / PIV mode", ["mode"]),
+        ("led", "Sensor colors and effects", "lighting"),
+        ("config", "Configure a setting", ["config"]),
+        ("list", "List settings, limits and effects", ["config", "list"]),
+    )),
+    "lighting": ("Sensor colors and effects", (
+        ("show", "Show current lighting settings", ["led", "show"]),
+        ("mode", "Enable, disable or show authentication only", ["led"]),
+        ("colors", "Set idle, success and failure colors", "colors"),
+        ("effect", "Set idle animation", ["config", "led_idle_effect"]),
+        ("cycles", "Set animation repeats", ["config", "led_idle_cycles"]),
+        ("feedback", "Set result feedback duration", ["config", "led_feedback_ms"]),
+        ("preset", "Apply a color preset", ["led", "preset"]),
+        ("preview", "Preview a color and effect without saving", ["led", "preview"]),
+    )),
+    "colors": ("LED colors", (
+        ("idle", "Idle and enrollment color", ["config", "led_idle_color"]),
+        ("success", "Fingerprint match color", ["config", "led_success_color"]),
+        ("failure", "Fingerprint failure color", ["config", "led_failure_color"]),
+        ("end", "Breathing end color", ["config", "led_idle_end_color"]),
+    )),
+    "computers": ("Registered computers", (
+        ("list", "List registered HID computers", ["computers", "list"]),
+        ("add", "Set up HID on this Mac", ["setup", "--mode", "hid"]),
+        ("remove", "Remove a registered computer", ["computers", "remove"]),
+    )),
+    "advanced": ("Diagnostics and recovery", (
+        ("ports", "List USB serial device paths", ["ports"]),
+        ("logs", "Device event log", ["logs"]),
+        ("keys", "Create a PIV identity", ["keys"]),
+        ("pair", "Pair PIV with this Mac", ["pair"]),
+        ("rom", "ROM bootloader instructions", ["rom"]),
+        ("enroll-demo", "Preview fingerprint enrollment", ["enroll-demo"]),
+        ("factory-reset", "Factory reset — Clear device and local configuration", ["factory-reset"]),
+    )),
+}
+
+
+def interactive_menu(args: argparse.Namespace, name: str = "home") -> None:
+    title, entries = INTERACTIVE_MENUS[name]
+    while True:
+        try:
+            selected = select_option(title, [(key, label) for key, label, _target in entries],
+                                     back="Exit" if name == "home" else "Back")
+        except KeyboardInterrupt:
+            say("\nCancelled.")
+            return
+        if selected is None:
+            return
+        try:
+            target = next(target for key, _label, target in entries if key == selected)
+            if isinstance(target, str):
+                interactive_menu(args, target)
+            else:
+                interactive_command(args, target)
+        except KeyboardInterrupt:
+            say("\nCancelled.")
+        except ToolError as exc:
+            # EOF closes the entire menu session, including nested menus.
+            if isinstance(exc.__cause__, EOFError):
+                raise
+            say(f"Error: {exc}")
+
+
+def command_menu(args: argparse.Namespace) -> None:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        parser().print_help()
+        return
+    say("Select an action. Existing commands remain available; use 'tinytouch --help' to list them.")
+    if args.port:
+        say(f"Selected device: {args.port}")
+    try:
+        interactive_menu(args)
+    except ToolError as exc:
+        if not isinstance(exc.__cause__, EOFError):
+            raise
+    say("Session closed.")
+
+
+class FriendlyArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        suggestion = ""
+        choice = re.search(r"invalid choice: '([^']+)' \(choose from (.+)\)", message)
+        if choice:
+            candidates = re.findall(r"'([^']+)'", choice[2])
+            matches = difflib.get_close_matches(choice[1], candidates, n=1)
+            if matches:
+                suggestion = f"Did you mean '{matches[0]}'?\n"
+        self.exit(2, f"Error: {message}\n{suggestion}Run '{self.prog} --help' for syntax and examples.\n")
+
+
+def bounded_integer(minimum: int, maximum: int):
+    def parse(value: str) -> int:
+        try:
+            number = int(value)
+            if minimum <= number <= maximum:
+                return number
+        except ValueError:
+            pass
+        raise argparse.ArgumentTypeError(f"use an integer from {minimum} to {maximum}; received '{value}'")
+    return parse
+
+
+def command_ports(args: argparse.Namespace) -> None:
+    ports = detect_ports()
+    if args.json:
+        say(json.dumps(ports))
+    elif ports:
+        for port in ports:
+            say(port)
+        say("Select a device with 'tinytouch --port PATH'.")
+    else:
+        say("No USB serial devices found. Connect tinyTouch with a data-capable USB cable and retry.")
+
+
+def command_help(args: argparse.Namespace) -> None:
+    if args.topic:
+        parser().parse_args([args.topic, "--help"])
+    else:
+        parser().print_help()
+
+
 def parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tinytouch")
-    parser.add_argument("--verbose", action="store_true")
+    parser = FriendlyArgumentParser(
+        prog="tinytouch",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Configure tinyTouch. Run without a command to open the interactive menu.",
+        epilog=("Examples:\n  tinytouch                         Open the interactive menu\n"
+                "  tinytouch config                  Show saved settings\n"
+                "  tinytouch config list             List values and limits\n"
+                "  tinytouch led preset ocean        Apply an LED theme\n"
+                "  tinytouch led color idle purple   Set the idle ring color\n"
+                "  tinytouch enroll 2                 Enroll one complete finger\n"
+                "  tinytouch --verbose test           Diagnose a connection\n\n"
+                "Run 'tinytouch COMMAND --help' for command syntax and examples.\n"
+                "Changes require fingerprint approval after enrollment. New lighting controls require firmware 0.1.31+."),
+    )
+    parser.add_argument("--verbose", action="store_true", help="print command and device diagnostics")
+    parser.add_argument("--port", help="use this serial device for commands or the interactive menu")
     parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
-    sub = parser.add_subparsers(dest="command", required=True)
-    setup = sub.add_parser("setup")
-    setup.add_argument("--mode", choices=("hid", "piv"))
-    setup.add_argument("--port")
-    setup.add_argument("--skip-enroll", action="store_true")
+    parser.set_defaults(func=command_menu)
+    sub = parser.add_subparsers(dest="command", title="commands", metavar="COMMAND")
+    menu = sub.add_parser("menu", help="open the interactive menu")
+    menu.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    menu.set_defaults(func=command_menu)
+    setup = sub.add_parser("setup", help="set up fingerprints and HID or PIV on this Mac")
+    setup.add_argument("--mode", choices=("hid", "piv"), help="HID password entry or PIV smart-card authentication; prompts when omitted")
+    setup.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    setup.add_argument("--skip-enroll", action="store_true", help="skip first-time enrollment and preserve existing fingerprints")
     setup.add_argument("--no-pair", action="store_true", help="do not run macOS PIV pairing")
     setup.set_defaults(func=command_setup)
-    mode = sub.add_parser("mode")
+    mode = sub.add_parser("mode", help="switch between HID and PIV mode")
     mode.add_argument("mode", choices=("hid", "piv"))
-    mode.add_argument("--port")
+    mode.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     mode.set_defaults(func=command_mode)
-    led = sub.add_parser("led", help="set sensor lighting: on, off, or authentication feedback only")
-    led.add_argument("state", choices=("on", "off", "only-auth"))
-    led.add_argument("--port")
+    led = sub.add_parser("led", help="configure sensor colors, effects, presets and previews",
+                         formatter_class=argparse.RawDescriptionHelpFormatter,
+                         description="View or customize the sensor ring. Existing on/off/only-auth commands remain supported.",
+                         epilog="Colors: " + ", ".join(LED_COLORS) + "\nEffects: " + ", ".join(LED_EFFECTS) +
+                         "\nExamples:\n  tinytouch led on\n  tinytouch led color idle purple\n  tinytouch led effect breathe\n  tinytouch led preset ocean\n  tinytouch led preview cyan --effect flash --duration-ms 2000\n\n"
+                         "Presets preserve lighting mode. Preview restores saved lighting without saving changes.\n"
+                         "Use 'tinytouch config led_idle_cycles 0' for continuous animation. Colors are fixed RGB combinations; arbitrary hex colors and brightness are not supported by this command format.")
+    led.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     led.set_defaults(func=command_led)
-    config = sub.add_parser("config")
-    config.add_argument("name")
-    config.add_argument("value", nargs="?")
-    config.add_argument("--port")
+    led_actions = led.add_subparsers(dest="state", metavar="ACTION")
+    for action, description in (("on", "enable the ring"), ("off", "disable all sensor lighting"),
+                                ("only-auth", "show success and failure feedback only"),
+                                ("show", "show current lighting preferences"),
+                                ("color", "set a color by role"), ("effect", "set the idle animation"),
+                                ("preset", "apply a saved color theme"), ("preview", "temporarily display a color and effect")):
+        entry = led_actions.add_parser(action, help=description, description=description)
+        entry.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+        if action == "color":
+            entry.add_argument("role", choices=("idle", "success", "failure", "end"))
+            entry.add_argument("color", choices=tuple(LED_COLORS), help="fixed RGB color")
+        elif action == "effect":
+            entry.add_argument("effect_name", choices=tuple(LED_EFFECTS))
+        elif action == "preset":
+            entry.add_argument("preset_name", choices=tuple(LED_PRESETS))
+        elif action == "preview":
+            entry.add_argument("preview_color", choices=tuple(LED_COLORS))
+            entry.add_argument("--effect", choices=tuple(LED_EFFECTS), default="steady")
+            entry.add_argument("--duration-ms", type=bounded_integer(100, 5000), default=1500, help="preview duration, 100–5000 ms (default: 1500)")
+    config_help = "Settings (name: values; default):\n" + "\n".join(
+        f"  {name}: {spec.allowed()}; {spec.default}\n    {spec.description}" for name, spec in SETTINGS.items())
+    config = sub.add_parser("config", aliases=["settings"], help="show, list, read or change device preferences",
+                            formatter_class=argparse.RawDescriptionHelpFormatter,
+                            description="No arguments: show current settings. 'list': list all settings without connecting a device. NAME: read a setting. NAME VALUE: change it.",
+                            epilog=config_help + "\n\nExamples:\n  tinytouch config --json\n  tinytouch config led_idle_color purple\n  tinytouch config submit_enter off\n  tinytouch config piv_auto_type off\n  tinytouch config typing_delay_ms 7")
+    config.add_argument("name", nargs="?", help="setting name, show, or list")
+    config.add_argument("value", nargs="?", help="new value; omit to read the setting")
+    config.add_argument("--json", action="store_true", help="output current values as JSON")
+    config.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     config.set_defaults(func=command_config)
-    enroll_cmd = sub.add_parser("enroll")
-    enroll_cmd.add_argument("finger", type=int, choices=range(1, 11))
+    enroll_cmd = sub.add_parser("enroll", help="enroll all four views for a finger (1–10)")
+    enroll_cmd.add_argument("finger", type=int, choices=range(1, 11), help="finger block; each block contains four views of one finger")
     enroll_cmd.add_argument("--replace", action="store_true", help="replace this finger without a confirmation prompt")
-    enroll_cmd.add_argument("--port")
+    enroll_cmd.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     enroll_cmd.set_defaults(func=command_enroll)
-    delete = sub.add_parser("delete")
-    delete.add_argument("finger", type=int, choices=range(1, 11))
-    delete.add_argument("--port")
+    delete = sub.add_parser("delete", help="delete all views for a finger (1–10)")
+    delete.add_argument("finger", type=int, choices=range(1, 11), help="delete all templates in this finger block")
+    delete.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     delete.set_defaults(func=command_delete)
     fingers = sub.add_parser("fingers", help="list occupied finger blocks and available capacity")
-    fingers.add_argument("--port")
+    fingers.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     fingers.set_defaults(func=command_fingers)
-    computers = sub.add_parser("computers")
+    computers = sub.add_parser("computers", help="list or remove registered HID computers")
     computers.add_argument("action", choices=("list", "remove"), nargs="?", default="list")
     computers.add_argument("host_id", nargs="?")
     computers.add_argument("--remove", dest="remove_flag")
-    computers.add_argument("--port")
+    computers.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     def normalize_computers(args: argparse.Namespace) -> None:
         args.remove = args.remove_flag or args.host_id
         if args.action == "list" and args.remove:
             raise ToolError("Use 'tinytouch computers remove HOST_ID'.")
+        if args.action == "remove" and not args.remove:
+            raise ToolError("Specify a registered computer: 'tinytouch computers remove HOST_ID'.")
         command_computers(args)
     computers.set_defaults(func=normalize_computers)
-    reset = sub.add_parser("factory-reset")
-    reset.add_argument("--port")
+    reset = sub.add_parser("factory-reset", help="clear fingerprints, keys, hosts, and settings")
+    reset.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     reset.set_defaults(func=command_factory_reset)
-    update = sub.add_parser("update")
-    update.add_argument("--port")
+    update = sub.add_parser("update", help="update the CLI, HID helper, and firmware")
+    update.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
     update.add_argument("--release-version", help=argparse.SUPPRESS)
     update.set_defaults(func=command_update)
     rom = sub.add_parser("rom", aliases=["bootloader"], help="prepare a physical ROM flash")
-    rom.add_argument("--port")
+    rom.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     rom.set_defaults(func=command_rom)
-    status_cmd = sub.add_parser("status")
-    status_cmd.add_argument("--port")
+    status_cmd = sub.add_parser("status", help="print device status as JSON")
+    status_cmd.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     status_cmd.set_defaults(func=command_status)
     logs = sub.add_parser("logs", help="show the device event log without probing the sensor")
-    logs.add_argument("--port")
+    logs.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     logs.set_defaults(func=command_logs)
-    test = sub.add_parser("test")
-    test.add_argument("--port")
+    test = sub.add_parser("test", help="check the USB serial connection")
+    test.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     test.set_defaults(func=command_test)
-    keys = sub.add_parser("keys")
-    keys.add_argument("--port")
+    keys = sub.add_parser("keys", help="create a PIV identity on the device")
+    keys.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     keys.set_defaults(func=command_keys)
-    pair = sub.add_parser("pair")
-    pair.add_argument("--port")
+    pair = sub.add_parser("pair", help="pair PIV with the current macOS user")
+    pair.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
     pair.set_defaults(func=command_pair)
-    hid_smoke = sub.add_parser("hid-smoke")
+    hid_smoke = sub.add_parser("hid-smoke", help="test the HID helper without a physical device")
     hid_smoke.set_defaults(func=command_hid_smoke)
-    enroll_demo = sub.add_parser("enroll-demo", help=argparse.SUPPRESS)
+    enroll_demo = sub.add_parser("enroll-demo", help="preview fingerprint enrollment without a device")
     enroll_demo.set_defaults(func=command_enroll_demo)
+    ports = sub.add_parser("ports", help="list USB serial ports without opening a device")
+    ports.add_argument("--json", action="store_true", help="output port paths as JSON")
+    ports.set_defaults(func=command_ports)
+    help_cmd = sub.add_parser("help", help="show general or command-specific help")
+    help_cmd.add_argument("topic", nargs="?", help="command to explain")
+    help_cmd.set_defaults(func=command_help)
+    examples = {
+        "menu": ("Open the interactive menu. Select options by number or name; 0 returns or exits.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
+        "setup": ("Configure this Mac and enroll a fingerprint if the sensor is empty. Existing enrollment is preserved.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
+        "mode": ("Change device mode after fingerprint approval. Reconnect when prompted; the command verifies the active mode.", "tinytouch mode hid\ntinytouch mode piv"),
+        "enroll": ("Enroll left, right, top and center views of the same finger. Occupied blocks require replacement confirmation.", "tinytouch enroll 2\ntinytouch enroll 2 --replace"),
+        "delete": ("Delete the entire selected finger block after fingerprint approval. Other blocks are preserved.", "tinytouch delete 2"),
+        "fingers": ("Read occupied blocks, partial enrollment, pending cleanup and remaining capacity. Does not change enrollment.", "tinytouch fingers"),
+        "computers": ("List or remove registered HID computers. To add this Mac, use HID setup. Removing the last host selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
+        "factory-reset": ("Clear fingerprints, identities, registered computers, device preferences and local pairing. Requires confirmation and fingerprint approval.", "tinytouch factory-reset"),
+        "update": ("Update the CLI, HID helper and firmware from one verified release. Reconnect after firmware staging.", "tinytouch update"),
+        "rom": ("Print instructions for entering the physical ROM bootloader. The command does not flash the device.", "tinytouch rom"),
+        "status": ("Read device status as JSON. Use config for a readable settings table and ports to inspect USB serial paths.", "tinytouch status\ntinytouch --port /dev/cu.usbmodem101 status"),
+        "test": ("Check USB serial communication and device status. Use --verbose for protocol diagnostics.", "tinytouch test\ntinytouch --verbose test\ntinytouch ports"),
+        "logs": ("Read recent touch and HID events without initiating fingerprint capture.", "tinytouch logs"),
+        "keys": ("Create a PIV identity after fingerprint approval. Use setup for the complete macOS configuration sequence.", "tinytouch keys"),
+        "pair": ("Pair the PIV identity with the current macOS user. Requires macOS administrator and fingerprint approval.", "tinytouch pair"),
+        "enroll-demo": ("Preview the enrollment interface without a device. Tab simulates a tap; q exits.", "tinytouch enroll-demo"),
+        "ports": ("List candidate USB serial paths without connecting to a device. Use --port PATH with a device command.", "tinytouch ports\ntinytouch ports --json\ntinytouch --port /dev/cu.usbmodem101 status"),
+    }
+    for name, (description, commands) in examples.items():
+        entry = sub.choices[name]
+        entry.description = description
+        entry.epilog = "Examples:\n" + "\n".join(f"  {line}" for line in commands.splitlines())
+        entry.formatter_class = argparse.RawDescriptionHelpFormatter
     return parser
 
 
@@ -1772,14 +2371,15 @@ def main() -> int:
         return 0
     args = parser().parse_args()
     VERBOSE = args.verbose
-    show_startup_mark(args.command)
+    if args.command != "help" and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
+        show_startup_mark(args.command or "menu")
     try:
         args.func(args)
     except KeyboardInterrupt:
         say("Cancelled.")
         return 130
     except ToolError as exc:
-        say(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
 

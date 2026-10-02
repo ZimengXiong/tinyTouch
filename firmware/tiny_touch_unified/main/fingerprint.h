@@ -16,6 +16,8 @@ bool fingerprint_recover(void);
 bool fingerprint_present_hint(void);
 void fingerprint_led_idle(void);
 bool fingerprint_set_led_mode(device_led_mode_t mode);
+bool fingerprint_set_option(device_option_t option, uint16_t value);
+bool fingerprint_preview_led(uint8_t color, uint8_t effect, uint16_t duration_ms);
 fingerprint_match_t fingerprint_authorize_poll_match(void);
 bool fingerprint_authorize_prompted(void (*prompt)(void));
 bool fingerprint_prompted_authorization_active(void);

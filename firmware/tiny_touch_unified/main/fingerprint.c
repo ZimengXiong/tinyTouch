@@ -208,18 +208,33 @@ static void fp_give(void) {
   if (fp_mutex) xSemaphoreGive(fp_mutex);
 }
 
-static bool set_aura(uint8_t color) {
-  device_led_mode_t mode = device_config_led_mode();
-  if (mode == DEVICE_LED_OFF || (mode == DEVICE_LED_ONLY_AUTH && color == FP_LED_BLUE))
-    color = 0;
-  uint8_t params[] = {FP_LED_FUNC_STEADY, color, color, 0};
+static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles) {
+  // Hi-Link PS_ControlBLN (0x3c), ordinary RGB format. Extended brightness,
+  // speed and marquee formats are sensor-specific and are not sent here.
+  uint8_t params[] = {effect, start, end, cycles};
   uint8_t confirm = 0xff;
   return fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) && confirm == 0x00;
 }
 
+static bool set_aura(uint8_t color) {
+  device_led_mode_t mode = device_config_led_mode();
+  // Determine the role before mapping colors. A blue success color must still
+  // show in ONLY_AUTH mode, and an idle red color must remain suppressed.
+  bool idle = color == FP_LED_BLUE;
+  if (mode == DEVICE_LED_OFF || (mode == DEVICE_LED_ONLY_AUTH && color == FP_LED_BLUE))
+    return aura_command(FP_LED_FUNC_STEADY, 0, 0, 0);
+  device_options_t value = device_config_options();
+  if (idle) return aura_command(value.led_idle_effect, value.led_idle_color,
+                               value.led_idle_effect == 1 ? value.led_idle_end_color : value.led_idle_color,
+                               value.led_idle_cycles);
+  if (color == FP_LED_GREEN) color = value.led_success_color;
+  else if (color == FP_LED_RED) color = value.led_failure_color;
+  return aura_command(FP_LED_FUNC_STEADY, color, color, 0);
+}
+
 static void show_result(bool ok) {
   set_aura(ok ? FP_LED_GREEN : FP_LED_RED);
-  vTaskDelay(pdMS_TO_TICKS(350));
+  vTaskDelay(pdMS_TO_TICKS(device_config_options().led_feedback_ms));
   set_aura(FP_LED_BLUE);
 }
 
@@ -243,6 +258,30 @@ bool fingerprint_set_led_mode(device_led_mode_t mode) {
   }
   fp_give();
   return ok;
+}
+
+bool fingerprint_set_option(device_option_t option, uint16_t value) {
+  if (!fp_take(1000)) return false;
+  bool ok = device_config_set_option(option, value);
+  if (ok) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      ok = set_aura(FP_LED_BLUE);
+      if (ok) break;
+      if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(50));
+    }
+  }
+  fp_give(); return ok;
+}
+
+bool fingerprint_preview_led(uint8_t color, uint8_t effect, uint16_t duration_ms) {
+  if (color > 7 || (effect != 1 && effect != 2 && effect != 3 && effect != 5 && effect != 6) ||
+      duration_ms < 100 || duration_ms > 5000 || !fp_take(1000)) return false;
+  // Explicit preview can illuminate an otherwise disabled ring. It never saves
+  // preferences and always restores the configured idle state before returning.
+  bool ok = aura_command(effect, color, color, 0);
+  if (ok) vTaskDelay(pdMS_TO_TICKS(duration_ms));
+  bool restored = set_aura(FP_LED_BLUE);
+  fp_give(); return ok && restored;
 }
 
 static bool finger_present(void) {
