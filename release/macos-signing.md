@@ -78,6 +78,9 @@ helper cannot read saved credentials. This check applies to every prior version.
 Repair includes connected devices and disconnected devices recorded on this Mac.
 If approval is denied, the working helper stays installed and firmware is not
 staged. The installer also keeps the existing CLI command until the check passes.
+Legacy CLIs such as `0.1.25-prod` and `0.1.26-prod` reject stable version strings
+without `-prod` before downloading an installer. Those users must run the current
+release's installer once; their old `update` command cannot perform this migration.
 
 ## Repair an existing HID installation
 

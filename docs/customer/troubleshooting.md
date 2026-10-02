@@ -66,7 +66,18 @@ tail -n 100 "$HOME/Library/Logs/tinyTouch/helper.err"
 tinytouch logs
 ```
 
-To recreate credentials and the helper, run `tinytouch setup --mode hid --skip-enroll`. HID supports passwords up to 160 UTF-8 bytes and characters available in the active ASCII-capable keyboard layout.
+If the logs report a Keychain access error after an upgrade, run:
+
+```sh
+tinytouch repair
+```
+
+Approve the macOS Keychain dialogs. Repair preserves saved credentials and installs
+the current helper after checking its access. For an older CLI without `repair`,
+follow [Upgrade an older CLI](/customer/update#upgrade-an-older-cli).
+
+If credentials are missing, run `tinytouch setup --mode hid --skip-enroll`.
+HID supports passwords up to 160 UTF-8 bytes and characters available in the active ASCII-capable keyboard layout.
 
 ## Flashing fails
 
