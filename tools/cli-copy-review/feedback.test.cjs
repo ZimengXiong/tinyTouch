@@ -45,3 +45,52 @@ test('JSON round trip retains a manual draft without changing the catalog', () =
   assert.equal(JSON.stringify(catalog), before);
   assert.match(feedbackText(catalog, state), /<script>literal text<\/script>/);
 });
+
+test('suggested rewrites stay out of feedback until reviewed, edited, or commented on', () => {
+  const entry = {...catalog.entries[0], proposed: 'Touch with finger {finger} now.'};
+  const review = {...catalog, entries: [entry]};
+  assert.equal(hasFeedback(entry), false);
+  assert.doesNotMatch(feedbackText(review, {general: '', entries: {}}), /TT-1/);
+  assert.equal(hasFeedback(entry, {reviewed: true}), true);
+  assert.match(feedbackText(review, {general: '', entries: {'TT-1': {reviewed: true}}}), /Proposed:\nTouch with finger \{finger\} now\./);
+  assert.equal(hasFeedback(entry, {reviewed: true, proposed: entry.original}), false);
+  assert.match(feedbackText(review, {general: '', entries: {'TT-1': {comment: 'Explain the timing.'}}}), /Explain the timing\./);
+});
+test('combined occurrences remain searchable and appear in every applicable category', () => {
+  const entry = {...catalog.entries[0], occurrences: [{group: 'Setup', context: 'first-time setup'}]};
+  assert.deepEqual(filterEntries([entry], {}, {query: 'first-time', group: 'Setup'}).map(e => e.id), ['TT-1']);
+});
+test('old duplicate comments and alternative edits survive draft migration', () => {
+  const {restoreDraft} = require('./site/app.js');
+  const entry = {...catalog.entries[0], proposed: 'Suggested rewrite.', legacyIds: ['old-1', 'old-2']};
+  const migrated = restoreDraft({...catalog, entries: [entry]}, {general: 'General note', entries: {
+    'old-1': {proposed: 'First edit.', comment: 'First comment'},
+    'old-2': {proposed: 'Second edit.', comment: 'Second comment'},
+    'short-line': {comment: 'Keep the short label.'},
+  }});
+  assert.equal(migrated.entries['TT-1'].proposed, 'First edit.');
+  assert.match(migrated.entries['TT-1'].comment, /First comment/);
+  assert.match(migrated.entries['TT-1'].comment, /Second comment/);
+  assert.match(migrated.entries['TT-1'].comment, /Second edit\./);
+  assert.match(migrated.general, /Keep the short label\./);
+});
+test('old reviewed wording does not silently approve a new suggested rewrite', () => {
+  const {restoreDraft} = require('./site/app.js');
+  const entry = {...catalog.entries[0], proposed: 'Suggested rewrite.', legacyIds: ['old-1']};
+  const migrated = restoreDraft({...catalog, entries: [entry]}, {entries: {'old-1': {reviewed: true}}});
+  assert.equal(migrated.entries['TT-1'].proposed, entry.original);
+  assert.equal(hasFeedback(entry, migrated.entries['TT-1']), false);
+});
+test('unchanged excluded wording is not exported as an earlier edit request', () => {
+  const {restoreDraft} = require('./site/app.js');
+  const migrated = restoreDraft({...catalog, legacyOriginals: {'short-line': 'Back'}}, {entries: {'short-line': {proposed: 'Back', reviewed: true}}});
+  assert.equal(migrated.general, '');
+});
+test('legacy menu numbering does not turn an unchanged draft into a copy edit', () => {
+  const {restoreDraft} = require('./site/app.js');
+  const entry = {...catalog.entries[0], original: 'Preview a color and effect without saving', proposed: 'Preview a color and effect without saving changes.', legacyIds: ['old-menu']};
+  const original = '  1. Preview a color and effect without saving [preview]';
+  const migrated = restoreDraft({...catalog, entries: [entry], legacyOriginals: {'old-menu': original}}, {entries: {'old-menu': {proposed: original, reviewed: true}}});
+  assert.equal(migrated.entries['TT-1'].proposed, entry.original);
+  assert.equal(hasFeedback(entry, migrated.entries['TT-1']), false);
+});

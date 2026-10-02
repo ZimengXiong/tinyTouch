@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import redirect_stderr, redirect_stdout
+import hashlib
 import importlib.util
-import io
 import json
 import re
 import subprocess
@@ -20,7 +19,7 @@ COVERAGE: list[dict] = []
 
 
 def add(text: str, group: str, context: str, source: str = '', kind: str = 'copy') -> None:
-    # Keep each visible line independently editable, including repeated occurrences.
+    # Extract occurrences first; the sentence catalog below combines duplicates.
     for index, line in enumerate(text.split('\n'), 1):
         if not line.strip():
             continue
@@ -118,6 +117,8 @@ def extract_python(path: str) -> None:
         metadata = owner == 'parser' or (owner == 'module metadata' and path == 'macos/cli.py')
         group = group_for(owner, path) if visible and not metadata else 'Technical appendix'
         kind = 'template' if isinstance(node, ast.JoinedStr) else 'copy'
+        if any(isinstance(p, ast.keyword) and p.arg == 'reason' for p in ancestors):
+            kind = 'fragment'
         if group == 'Technical appendix':
             kind = 'technical'
         add(value, group, context, f'{path}:{node.lineno}', kind)
@@ -192,50 +193,24 @@ def generated_copy(cli) -> list[dict]:
             return
         seen[id(parser)] = path
         routes.append(dict(path=path, target='Command help and runtime handler'))
-        add(parser.format_help(), 'Command help', path + ' --help', kind='help')
-        # Parse invalid syntax only. No command handler or device code is invoked.
-        base = []
-        for action in parser._actions:
-            if not action.option_strings and not isinstance(action, argparse._SubParsersAction) and action.nargs not in {'?', '*'}:
-                base.append(str(next(iter(action.choices))) if action.choices else '1')
-        cases = [('unknown option', base + ['--unknown-option'])]
-        if base:
-            cases.append(('missing required argument', []))
-        for action in parser._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                cases.append(('unknown command', base + ['unknown-command']))
-                first = next(iter(action.choices), '')
-                if first:
-                    cases.append(('command typo suggestion', base + [first + 'x']))
-                continue
-            if isinstance(action, (argparse._HelpAction, argparse._VersionAction)):
-                continue
-            if action.option_strings and action.nargs != 0:
-                cases.append((f'missing value for {action.option_strings[0]}', base + [action.option_strings[0]]))
-            if action.choices is not None or action.type is not None:
-                if action.option_strings:
-                    invalid = base + [action.option_strings[0], 'invalid-value']
-                    numeric = base + [action.option_strings[0], '999999']
+        # Read help metadata before argparse wraps it into partial display lines.
+        if parser.description:
+            add(parser.description, 'Command help', path + ' --help · description', kind='help')
+        if parser.epilog:
+            for line in parser.epilog.splitlines():
+                if line.lstrip().startswith('tinytouch'):
+                    parts = re.split(r'\s{2,}', line.strip(), maxsplit=1)
+                    if len(parts) == 2:
+                        add(parts[1], 'Command help', path + ' --help · example description', kind='help')
                 else:
-                    positionals = [a for a in parser._actions if not a.option_strings and not isinstance(a, argparse._SubParsersAction)]
-                    index = positionals.index(action)
-                    invalid = base[:]
-                    while len(invalid) <= index:
-                        invalid.append('1')
-                    invalid[index] = 'invalid-value'
-                    numeric = invalid[:]
-                    numeric[index] = '999999'
-                cases.append((f'invalid {action.dest}', invalid))
-                if action.type is not None:
-                    cases.append((f'out-of-range {action.dest}', numeric))
-        for label, argv in cases:
-            stderr, stdout = io.StringIO(), io.StringIO()
-            with redirect_stderr(stderr), redirect_stdout(stdout):
-                try:
-                    parser.parse_args(argv)
-                except SystemExit as exc:
-                    if exc.code:
-                        add(stderr.getvalue() + stdout.getvalue(), 'Argument errors', path + ' · ' + label, kind='example')
+                    add(line, 'Command help', path + ' --help · explanation', kind='help')
+        for action in parser._actions:
+            if action.help and action.help != argparse.SUPPRESS:
+                add(action.help, 'Command help', path + ' --help · ' + action.dest, kind='help')
+            if isinstance(action, argparse._SubParsersAction):
+                for option in action._choices_actions:
+                    if option.help and option.help != argparse.SUPPRESS:
+                        add(option.help, 'Command help', path + ' --help · ' + option.dest, kind='help')
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
                 for name, child in action.choices.items():
@@ -252,7 +227,62 @@ def generated_copy(cli) -> list[dict]:
     return routes
 
 
+def canonical(text: str) -> str:
+    text = re.sub(r'^\s*\d+\.\s+', '', text)
+    text = re.sub(r'\s+\[[\w-]+\]\s*$', '', text)
+    return re.sub(r'\s+', ' ', text).strip().removeprefix('. ')
+
+
+def word_count(text: str) -> int:
+    # A template expression is one displayed value, not several prose words.
+    text = re.sub(r'\{[^{}]*\}|\$\([^)]*\)', 'VALUE', text)
+    return sum(bool(re.search(r"\w", token)) for token in text.split())
+
+
+def sentence_catalog(previous: dict) -> tuple[list[dict], dict]:
+    wording = json.loads((HERE / 'wording.json').read_text())
+    selected = {}
+    stats = dict(extracted=len(ENTRIES), duplicates=0, omitted=0, minimumWords=6)
+    excluded = {'Technical appendix', 'Device diagnostics', 'External and dynamic output', 'Argument errors'}
+    for occurrence in ENTRIES:
+        text = canonical(occurrence['original'])
+        if (occurrence['group'] in excluded or word_count(text) < 6
+                or text.startswith(('Default:', 'Colors:', 'Effects:', 'Settings (', 'display notification ', 'sensor=', 'EV ', 'EV2 '))
+                or re.match(r'^\w+: (?:off|breathe|on),', text)
+                or text == 'password will be required after next SmartCard login'):
+            stats['omitted'] += 1
+            continue
+        key = text.casefold().rstrip('.: ')
+        where = {name: occurrence[name] for name in ['group', 'context', 'source']}
+        if key in selected:
+            stats['duplicates'] += 1
+            if where not in selected[key]['occurrences']:
+                selected[key]['occurrences'].append(where)
+            continue
+        # IDs are content-based, so adding/removing other sentences does not
+        # detach comments from surviving wording.
+        entry = dict(occurrence, id='TT-' + hashlib.sha256(key.encode()).hexdigest()[:10],
+                     original=text, occurrences=[where], wordCount=word_count(text), legacyIds=[])
+        entry['proposed'] = wording.get(text, text)
+        selected[key] = entry
+    for old in previous.get('entries', []):
+        key = canonical(old['original']).casefold().rstrip('.: ')
+        if key in selected:
+            selected[key]['legacyIds'] = [item for item in dict.fromkeys(selected[key]['legacyIds'] + old.get('legacyIds', []) + [old['id']]) if item != selected[key]['id']]
+    stats['retained'] = len(selected)
+    return list(selected.values()), stats
+
+
 def main() -> None:
+    catalog_path = HERE / 'site/catalog.json'
+    previous = json.loads(catalog_path.read_text()) if catalog_path.exists() else {}
+    legacy_originals = previous.get('legacyOriginals')
+    if legacy_originals is None:
+        try:
+            committed = json.loads(subprocess.check_output(['git', 'show', 'HEAD:tools/cli-copy-review/site/catalog.json'], cwd=ROOT, text=True))
+            legacy_originals = {entry['id']: entry['original'] for entry in committed.get('entries', [])}
+        except (subprocess.CalledProcessError, json.JSONDecodeError):
+            legacy_originals = {}
     cli = load_cli()
     routes = generated_copy(cli)
     for path in ['macos/cli.py', 'macos/tinytouch_helper.py', 'macos/tinytouch_runtime.py',
@@ -278,12 +308,18 @@ def main() -> None:
         ('Helper diagnostics', '[Diagnostic JSON fields and event values; see the technical appendix]'),
     ]:
         add(value, 'External and dynamic output', context, kind='external')
-    payload = dict(title='tinyTouch CLI copy review', version=cli.CLI_VERSION,
-                   commit=subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, text=True).strip(),
-                   entries=ENTRIES, routes=routes, coverage=COVERAGE)
-    (HERE / 'site/catalog.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
-    print(f'Built {len(ENTRIES)} editable lines, {len(routes)} command/menu paths and {len(COVERAGE)} audited files.')
-    print(f'{sum(e["group"] != "Technical appendix" for e in ENTRIES)} primary lines; {sum(e["group"] == "Technical appendix" for e in ENTRIES)} appendix lines.')
+    entries, stats = sentence_catalog(previous)
+    legacy_key = f'tinytouch-copy-review:{previous.get("commit")}:{len(previous.get("entries", []))}'
+    payload = dict(title='tinyTouch CLI sentence review', version=cli.CLI_VERSION,
+                   commit=subprocess.check_output(['git', 'log', '-1', '--format=%h', '--', 'macos/cli.py'], cwd=ROOT, text=True).strip(),
+                   entries=entries, routes=routes, coverage=COVERAGE, selection=stats,
+                   legacyStorageKey=previous.get('legacyStorageKey', legacy_key),
+                   legacyOriginals=legacy_originals,
+                   style='Approximately 80% AES technical English: direct instructions, short sentences, consistent terminology, and explicit results and recovery steps.')
+    (HERE / 'site/original-catalog.json').write_text(json.dumps(dict(entries=ENTRIES, coverage=COVERAGE), ensure_ascii=False, indent=2) + '\n')
+    catalog_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+    print(f'Built {len(entries)} unique sentences and longer phrases (six or more words).')
+    print(f'Combined {stats["duplicates"]} duplicates; omitted {stats["omitted"]} short or technical entries.')
 
 
 if __name__ == '__main__':
