@@ -77,6 +77,20 @@ class SerialTimeout(ToolError):
 LED_COLORS = {"off": 0, "blue": 1, "green": 2, "cyan": 3, "red": 4,
               "purple": 5, "yellow": 6, "white": 7}
 LED_EFFECTS = {"breathe": 1, "flash": 2, "steady": 3, "fade-in": 5, "fade-out": 6}
+MODE_OPTIONS = (
+    ("hid", "HID (Types your password into the active field and works passwords are accepted)"),
+    ("piv", "PIV (Acts as a smart card. It works only with supported login, sudo, and System Settings prompts)"),
+)
+COMMAND_TITLES = {
+    "menu": "tinyTouch", "setup": "Set up this Mac", "mode": "Device mode",
+    "led": "Sensor lighting", "config": "Device settings", "settings": "Device settings",
+    "enroll": "Fingerprint enrollment", "enroll-demo": "Fingerprint enrollment demo",
+    "fingers": "Fingerprints", "delete": "Delete a fingerprint", "computers": "Registered computers",
+    "factory-reset": "Factory reset", "update": "Update tinyTouch", "rom": "ROM bootloader",
+    "bootloader": "ROM bootloader", "status": "Device status", "logs": "Device event log",
+    "test": "Connection test", "keys": "PIV identity", "pair": "PIV pairing",
+    "hid-smoke": "HID helper test", "ports": "USB serial devices", "help": "Command help",
+}
 
 
 class SettingSpec:
@@ -100,19 +114,19 @@ class SettingSpec:
 
 # One catalog drives validation, command help, current values and menu prompts.
 SETTINGS = {
-    "mode": SettingSpec("MODE", "Device mode", "HID password entry or PIV smart-card authentication; reconnect required.", "piv", choices={"piv": 0, "hid": 1}),
-    "led": SettingSpec("LED", "Sensor lighting", "Enable all lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
-    "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Delay after each HID key press and release.", "7", 1, 100),
-    "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after password or automatic PIV PIN entry.", "on", choices={"off": 0, "on": 1}),
+    "mode": SettingSpec("MODE", "Device mode", "Select HID password entry or PIV smart card authentication. Reconnect the device after changing the mode.", "piv", choices={"piv": 0, "hid": 1}),
+    "led": SettingSpec("LED", "Sensor lighting", "Enable all sensor lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
+    "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Set the delay after each HID key press and release.", "7", 1, 100),
+    "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after typing the password or the automatic PIV PIN.", "on", choices={"off": 0, "on": 1}),
     "touch_cooldown_ms": SettingSpec("COOLDOWN", "Touch cooldown (ms)", "Minimum interval between touch actions.", "800", 100, 5000),
-    "led_idle_color": SettingSpec("LED_IDLE_COLOR", "Idle color", "Ring color while idle and during enrollment.", "blue", choices=LED_COLORS, capability="custom_config"),
-    "led_success_color": SettingSpec("LED_SUCCESS_COLOR", "Success color", "Ring color after a fingerprint match.", "green", choices=LED_COLORS, capability="custom_config"),
-    "led_failure_color": SettingSpec("LED_FAILURE_COLOR", "Failure color", "Ring color after an unsuccessful fingerprint match.", "red", choices=LED_COLORS, capability="custom_config"),
-    "led_idle_end_color": SettingSpec("LED_IDLE_END_COLOR", "Breathing end color", "End color for the breathing effect; other effects use the idle color.", "blue", choices=LED_COLORS, capability="custom_config"),
-    "led_idle_effect": SettingSpec("LED_IDLE_EFFECT", "Idle effect", "Animation while the idle ring is enabled.", "steady", choices=LED_EFFECTS, capability="custom_config"),
-    "led_idle_cycles": SettingSpec("LED_IDLE_CYCLES", "Animation repeats", "0 repeats continuously; 1–255 limits repeats. Ignored for steady lighting.", "0", 0, 255, capability="custom_config"),
-    "led_feedback_ms": SettingSpec("LED_FEEDBACK_MS", "Result feedback (ms)", "Duration of success or failure feedback; longer values delay touch processing.", "350", 50, 2000, capability="custom_config"),
-    "piv_auto_type": SettingSpec("PIV_AUTO_TYPE", "Automatic PIV PIN entry", "Type the PIV PIN after a match. Off still grants smart-card presence.", "on", choices={"off": 0, "on": 1}, capability="custom_config"),
+    "led_idle_color": SettingSpec("LED_IDLE_COLOR", "Idle color", "Set the sensor ring color for idle operation and enrollment.", "blue", choices=LED_COLORS, capability="custom_config"),
+    "led_success_color": SettingSpec("LED_SUCCESS_COLOR", "Success color", "Set the sensor ring color after a fingerprint match.", "green", choices=LED_COLORS, capability="custom_config"),
+    "led_failure_color": SettingSpec("LED_FAILURE_COLOR", "Failure color", "Set the sensor ring color after a failed fingerprint match.", "red", choices=LED_COLORS, capability="custom_config"),
+    "led_idle_end_color": SettingSpec("LED_IDLE_END_COLOR", "Breathing end color", "Set the end color for the breathing effect. Other effects use the idle color.", "blue", choices=LED_COLORS, capability="custom_config"),
+    "led_idle_effect": SettingSpec("LED_IDLE_EFFECT", "Idle effect", "Set the animation while the idle sensor ring is enabled.", "steady", choices=LED_EFFECTS, capability="custom_config"),
+    "led_idle_cycles": SettingSpec("LED_IDLE_CYCLES", "Animation repeats", "Set 0 for continuous animation or 1–255 for a limited number of repeats. Steady lighting ignores this setting.", "0", 0, 255, capability="custom_config"),
+    "led_feedback_ms": SettingSpec("LED_FEEDBACK_MS", "Result feedback (ms)", "Set the duration of success and failure feedback. Longer durations delay touch processing.", "350", 50, 2000, capability="custom_config"),
+    "piv_auto_type": SettingSpec("PIV_AUTO_TYPE", "Automatic PIV PIN entry", "Type the PIV PIN after a fingerprint match. When off, a match still grants smart card presence.", "on", choices={"off": 0, "on": 1}, capability="custom_config"),
 }
 
 LED_PRESETS = {
@@ -130,7 +144,7 @@ def setting_name(value: str) -> str:
     if name not in SETTINGS:
         match = difflib.get_close_matches(name, SETTINGS, n=1)
         suggestion = f" Did you mean '{match[0]}'?" if match else ""
-        raise ToolError(f"Unknown setting '{value}'.{suggestion} Run 'tinytouch config list' for valid settings.")
+        raise ToolError(f"Unknown setting '{value}'.{suggestion} Run 'tinytouch config list' to list valid settings.")
     return name
 
 
@@ -226,8 +240,8 @@ def fingerprint_oval(active: str | None, tap_index: int = 0) -> str:
 def introduce_enrollment() -> None:
     """Explain fingerprint enrollment before opening its full-screen view."""
     say("")
-    say("Next, we’ll enroll different views of your fingerprint.")
-    say("Follow the instructions on the next screen.")
+    say("Enroll different views of the same fingerprint.")
+    say("Follow the instructions shown on the next screen.")
     ask("Press Enter to continue.")
 
 
@@ -239,23 +253,20 @@ def show_enrollment_view(
     sys.stdout.write("\033[2J\033[H")
     say(terminal_style("Fingerprint enrollment", "1"))
     say(
-        f"View {view_index + 1} of {len(ENROLLMENT_VIEWS)}"
-        f"  ·  Tap {tap_index + 1} of 2"
+        f'View {view_index + 1} of {len(ENROLLMENT_VIEWS)} · Tap {tap_index + 1} of 2'
     )
     say("")
     say(fingerprint_oval(zone if active else None, tap_index))
     say("")
     if not active:
-        say("Lift your finger.")
+        say("Lift your finger away from the sensor.")
     elif tap_index == 0:
         say(
-            f"Tap the sensor with the {terminal_style(label, '1')} of your finger, "
-            "then lift it."
+            f"Tap the sensor with the {terminal_style(label, '1')} of your finger. Then lift your finger."
         )
     else:
         say(
-            f"Tap the sensor with the {terminal_style(label, '1')} "
-            "of your finger again."
+            f"Tap the sensor again with the {terminal_style(label, '1')} of the same finger."
         )
     if demo:
         say(terminal_style("Tab: simulate tap    q: exit", "2"))
@@ -276,7 +287,7 @@ def show_enrollment_event(view_index: int, event: str) -> None:
 def command_enroll_demo(_args: argparse.Namespace) -> None:
     """Preview fingerprint enrollment without opening a device."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        raise ToolError("The enrollment demo needs an interactive Terminal.")
+        raise ToolError("The enrollment demo requires an interactive terminal.")
     introduce_enrollment()
     view_index = 0
     tap_index = 0
@@ -321,7 +332,7 @@ def show_startup_mark(command: str) -> None:
         say(terminal_style(line, "36"))
     say(f"          tinyTouch {terminal_style(CLI_VERSION, '2')}")
     say("")
-    title = command.replace("-", " ").title()
+    title = COMMAND_TITLES.get(command, command.replace("-", " ").capitalize())
     say(terminal_style(f"── {title} ────────────────────", "2"))
     say("")
 
@@ -357,7 +368,7 @@ def authorize_macos() -> None:
     )
     if cached.returncode:
         say("Authorize macOS in this terminal.")
-        say("(Your typing is hidden, so no characters will appear.)")
+        say("Your typing is hidden. No characters appear while you type.")
         validated = subprocess.run(["sudo", "-v"], check=False)
         if validated.returncode:
             raise ToolError("macOS authorization failed.")
@@ -367,17 +378,17 @@ def authorize_macos() -> None:
 def prepare_hid_password() -> None:
     """Capture the HID password and unlock Keychain without requiring sudo."""
     global _setup_password
-    say("Please type your Mac password.")
-    say("(Your typing is hidden, so no characters will appear.)")
+    say("Type your Mac password.")
+    say("Your typing is hidden. No characters appear while you type.")
     entered = bytearray(getpass.getpass("Password: ").encode("utf-8"))
     if not entered:
-        raise ToolError("A Mac password is required for HID mode.")
+        raise ToolError("HID mode requires the password for this Mac.")
     try:
         try:
             _keychain().unlock_default_keychain(entered)
             _keychain().disable_user_interaction()
         except _keychain().KeychainError as exc:
-            raise ToolError("Mac password did not unlock the login Keychain.") from exc
+            raise ToolError("The Mac password did not unlock the login Keychain.") from exc
         _setup_password = bytearray(entered)
     finally:
         entered[:] = b"\x00" * len(entered)
@@ -391,14 +402,14 @@ def run_sudo(command: list[str]) -> None:
 
 def require_macos() -> None:
     if sys.platform != "darwin" and not os.environ.get("TINYTOUCH_ALLOW_NON_MACOS"):
-        raise ToolError("tinyTouch setup is supported on macOS.")
+        raise ToolError("tinyTouch setup is supported only on macOS.")
 
 
 def _keychain():
     try:
         import tinytouch_keychain  # type: ignore
     except ImportError as exc:
-        raise ToolError("The macOS Keychain helper is unavailable.") from exc
+        raise ToolError("The macOS Keychain helper is not available.") from exc
     return tinytouch_keychain
 
 
@@ -433,21 +444,21 @@ def ask(prompt: str) -> str:
     try:
         return input(prompt).strip()
     except EOFError as exc:
-        raise ToolError("This action needs an interactive Terminal.") from exc
+        raise ToolError("This action requires input from an interactive terminal.") from exc
 
 
 def choose_mode(value: str | None) -> str:
     if value in {"hid", "piv"}:
         return value
-    say("Choose mode:")
-    say("  HID — Types your password into the active field and works anywhere it is accepted.")
-    say("  PIV — Acts as a smart card. It works only with supported login, sudo, and System Settings prompts.")
+    say("Device mode:")
+    for _mode, description in MODE_OPTIONS:
+        say(f"  {description}")
     answer = ask("Mode [h/p]: ").lower()
     if answer in {"h", "hid"}:
         return "hid"
     if answer in {"p", "piv"}:
         return "piv"
-    raise ToolError("Choose HID or PIV.")
+    raise ToolError("Select HID or PIV.")
 
 
 def detect_ports() -> list[str]:
@@ -461,18 +472,18 @@ def choose_port(explicit: str | None) -> str:
     if len(ports) == 1:
         return ports[0]
     if not ports:
-        raise ToolError("No tinyTouch USB serial device is connected. Connect the device with a data-capable USB cable, then run 'tinytouch ports'. Use --port PATH to select a device explicitly.")
-    say("Several USB serial devices are connected:")
+        raise ToolError("No tinyTouch USB serial device is connected. Connect tinyTouch with a USB cable that supports data. Run 'tinytouch ports' to list devices. Use --port PATH to select a device.")
+    say("More than one USB serial device is connected:")
     for index, port in enumerate(ports, 1):
         say(f"  {index}. {port}")
-    answer = ask("Select tinyTouch: ")
+    answer = ask("Select a device number: ")
     try:
         index = int(answer)
         if not 1 <= index <= len(ports):
             raise ValueError()
         return ports[index - 1]
     except (ValueError, IndexError) as exc:
-        raise ToolError("Select one of the listed devices.") from exc
+        raise ToolError("Select one of the connected USB serial devices.") from exc
 
 
 def current_port(port: str) -> str:
@@ -489,13 +500,13 @@ def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
         if not disconnected:
             if port not in ports:
                 disconnected = True
-                say("Device disconnected. Waiting for it to reconnect...")
+                say("The device disconnected. Waiting for it to reconnect.")
         elif port in ports:
             return port
         elif len(ports) == 1:
             return ports[0]
         time.sleep(0.1)
-    raise ToolError("Timed out waiting for tinyTouch to be unplugged and reconnected.")
+    raise ToolError("Timed out waiting for tinyTouch to disconnect and reconnect.")
 
 
 def is_terminal(command: str, line: str) -> bool:
@@ -519,32 +530,28 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
     """Turn compact device failures into the next useful user action."""
     if line in {"ERR AUTH", "ERR AUTH no_match", "ERR AUTH sensor=offline"}:
         if line.endswith("sensor=offline"):
-            return "The fingerprint sensor is offline. Run 'tinytouch test' to check communication, then reconnect the device and retry."
+            return "The fingerprint sensor is offline. Run 'tinytouch test' to check communication. Then reconnect the device and try again."
         if touch_prompted:
             return (
-                "Fingerprint authorization expired without an enrolled match. "
-                "Keep your finger off the sensor until this prompt, then touch it once "
-                "and hold it still. If the sensor turns red before you touch, run "
-                "'tinytouch status'; it must report sensor=ready."
+                "Fingerprint approval expired without a match. Wait for the touch prompt with your finger off the sensor. Then touch once and hold your finger still. If the sensor turns red before you touch, run 'tinytouch status'. Check that it reports sensor=ready."
             )
         if line.endswith("no_match"):
-            return "No enrolled fingerprint matched. Run the command again; wait for the touch prompt, then hold an enrolled finger still on the sensor."
+            return "No enrolled fingerprint matched. Run the command again. Wait for the touch prompt. Then hold an enrolled finger still on the sensor."
         return (
-            "Fingerprint authorization did not start because the sensor was busy or "
-            "unavailable. Run 'tinytouch status'; it must report sensor=ready before retrying."
+            "Fingerprint approval did not start. The sensor was busy or unavailable. Run 'tinytouch status' and check that it reports sensor=ready before trying again."
         )
     if line == "ERR FINGER update_cli":
-        return "Update the tinyTouch CLI: enrollment now uses whole fingers instead of individual templates."
+        return "Update the tinyTouch CLI. Enrollment now uses complete fingerprint blocks instead of individual templates."
     if line == "ERR FINGER inventory_unavailable":
-        return "Could not verify the sensor's occupied finger blocks. No enrollment was changed."
+        return "Could not check the occupied fingerprint blocks. The existing enrollment was not changed."
     if line.startswith("ERR LOCKED"):
-        return "Fingerprint authorization expired. Run the command again and touch an enrolled finger when prompted."
+        return "Fingerprint approval expired. Run the command again. Touch an enrolled finger when prompted."
     if line.startswith("ERR SET"):
-        return "The device could not save or apply this setting. Check its value with 'tinytouch config'; reconnect and retry if the sensor is unavailable."
+        return "The device could not save or apply this setting. Run 'tinytouch config' to check the value. If the sensor is unavailable, reconnect and try again."
     if line == "ERR COMMAND":
-        return "The firmware does not support this command. Run 'tinytouch update', then reconnect the device."
+        return "The firmware does not support this command. Run 'tinytouch update'. Then reconnect the device."
     if line.startswith("ERR LED"):
-        return "The LED preview or idle restoration failed. Reconnect the device and check 'tinytouch led' before retrying."
+        return "The LED preview or lighting restore failed. Reconnect the device. Run 'tinytouch led' to check the saved lighting settings before trying again."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -638,12 +645,12 @@ def install_helper() -> None:
     atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
     load_helper()
     if not helper_loaded():
-        raise ToolError("The HID helper did not load.")
+        raise ToolError("The HID helper did not load successfully.")
 
 
 def exchange_serial(
     device, command: str, *, timeout: float, touch_prompt: str | None = None,
-    lift_prompt: str | None = "Lift your finger from the sensor.",
+    lift_prompt: str | None = "Lift your finger away from the sensor.",
     touch_again_prompt: str | None = None,
     wait_message: str | None = None,
     event_handler=None,
@@ -680,14 +687,14 @@ def exchange_serial(
                 if line == "EVENT TOUCH":
                     touch_prompted = True
             elif line == "EVENT TOUCH" and not touch_prompted:
-                say(touch_prompt or "Touch the fingerprint sensor now.")
+                say(touch_prompt or "Touch the fingerprint sensor.")
                 touch_prompted = True
             elif line == "EVENT LIFT" and lift_prompt:
                 say(lift_prompt)
             elif line == "EVENT TOUCH_AGAIN":
                 if touch_prompt:
                     say("")
-                say(touch_again_prompt or "Touch the same finger again now.")
+                say(touch_again_prompt or "Touch the sensor again with the same finger.")
             if is_terminal(command, line):
                 break
     finally:
@@ -707,7 +714,7 @@ def foreground_session(port: str):
     try:
         import serial  # type: ignore
     except ImportError as exc:
-        raise ToolError("pyserial is required. Run setup again.") from exc
+        raise ToolError("The pyserial package is required. Run setup again.") from exc
     was_loaded = unload_helper()
     deadline = time.monotonic() + 6.0
     last_error: Exception | None = None
@@ -729,10 +736,9 @@ def foreground_session(port: str):
     if device is None:
         if "Device not configured" in str(last_error):
             raise ToolError(
-                "tinyTouch's USB serial port did not become ready. Wait two seconds and run the command again; "
-                "do not unplug it unless 'tinytouch status' cannot find the device."
+                "The tinyTouch USB serial port is not ready. Wait two seconds and run the command again. Unplug the device only if 'tinytouch status' cannot find it."
             ) from last_error
-        raise ToolError(f"Could not communicate with tinyTouch on {port}: {last_error}") from last_error
+        raise ToolError(f'Could not communicate with tinyTouch on {port}. Error: {last_error}') from last_error
     _active_serial = device
     try:
         yield port
@@ -746,7 +752,7 @@ def foreground_session(port: str):
 def serial_command(
     port: str, command: str, *, timeout: float = 20.0,
     touch_prompt: str | None = None,
-    lift_prompt: str | None = "Lift your finger from the sensor.",
+    lift_prompt: str | None = "Lift your finger away from the sensor.",
     touch_again_prompt: str | None = None,
     wait_message: str | None = None,
     event_handler=None,
@@ -761,8 +767,7 @@ def serial_command(
         except Exception as exc:
             if "Device not configured" in str(exc):
                 raise ToolError(
-                    "tinyTouch's USB serial port reconnected during this command. "
-                    "No incomplete configuration was saved. Wait two seconds and run the command again."
+                    "The tinyTouch USB serial port reconnected during this command. No incomplete configuration was saved. Wait two seconds and run the command again."
                 ) from exc
             raise
     try:
@@ -775,9 +780,7 @@ def serial_command(
     except Exception as exc:
         if "Device not configured" in str(exc):
             raise ToolError(
-                "tinyTouch's USB serial port became unavailable while this command was starting. "
-                "No fingerprint result was recorded. Wait two seconds and run the command again; "
-                "do not unplug it unless 'tinytouch status' cannot find the device."
+                "The tinyTouch USB serial port became unavailable when this command started. No fingerprint result was recorded. Wait two seconds and run the command again. Unplug the device only if 'tinytouch status' cannot find it."
             ) from exc
         raise
 
@@ -802,18 +805,18 @@ def status(port: str) -> dict[str, str]:
 
 def protocol6(device: dict[str, str]) -> None:
     if not device.get("firmware"):
-        raise ToolError(f"The device did not report a firmware version. Flash it at {FACTORY_FLASH_URL}.")
+        raise ToolError(f'The device did not report a firmware version. Use the flasher at {FACTORY_FLASH_URL}.')
     try:
         protocol = int(device.get("protocol", "0"))
     except ValueError as exc:
         raise ToolError("The device reported an invalid protocol version.") from exc
     if protocol != CURRENT_PROTOCOL:
-        raise ToolError("This CLI requires protocol 6. Use the ROM flasher to upgrade this device.")
+        raise ToolError("This CLI requires protocol 6. Use the ROM flasher to update the device.")
 
 
 def sensor_ready(device: dict[str, str]) -> None:
     if device.get("sensor") not in {"ready", "ok"}:
-        raise ToolError("The fingerprint sensor is not ready. Resolve that before setup.")
+        raise ToolError("The fingerprint sensor is not ready. Run 'tinytouch test' to check communication before setup.")
 
 
 def unlock(
@@ -827,13 +830,13 @@ def unlock(
                 port,
                 "AUTH",
                 timeout=15,
-                touch_prompt=f"Touch the fingerprint sensor now with an already-enrolled finger to {reason}.",
+                touch_prompt=f'Touch the sensor with an enrolled finger to {reason}.',
             )
             if explain_pin:
                 explain_piv_pin()
             return
         except ToolError as exc:
-            if "USB serial port became unavailable while this command was starting" not in str(exc):
+            if "The USB serial port became unavailable when this command started." not in str(exc):
                 raise
             if time.monotonic() >= deadline:
                 raise
@@ -858,7 +861,7 @@ def fresh_status(port: str, expected: dict[str, str]) -> dict[str, str]:
             time.sleep(0.25)
     for key, value in expected.items():
         if current.get(key) != value:
-            raise ToolError(f"Live verification failed: {key} is {current.get(key)!r}, expected {value!r}.")
+            raise ToolError(f'Verification failed. {key} is {current.get(key)!r}. Expected {value!r}.')
     return current
 
 
@@ -869,14 +872,14 @@ def device_account(port: str) -> str:
     try:
         from tinytouch_ports import comports
     except ImportError as exc:
-        raise ToolError("pyserial is required to identify this tinyTouch device.") from exc
+        raise ToolError("The pyserial package is required to identify this tinyTouch device.") from exc
     for candidate in comports():
         if candidate.device != port:
             continue
         serial_number = re.sub(r"[^A-Za-z0-9_.-]", "", candidate.serial_number or "").upper()
         if serial_number:
             return serial_number
-    raise ToolError("tinyTouch did not expose a stable USB serial identity.")
+    raise ToolError("tinyTouch did not report a stable USB serial identity.")
 
 
 def host_id(key: bytes) -> str:
@@ -889,7 +892,7 @@ def password_for(account: str) -> str:
         try:
             value = _setup_password.decode("utf-8")
             if len(_setup_password) > 160:
-                raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
+                raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
             keychain_set(PASSWORD_SERVICE, account, value)
             return value
         finally:
@@ -898,9 +901,9 @@ def password_for(account: str) -> str:
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Password again: ")
     if not first or first != second:
-        raise ToolError("Passwords must be non-empty and match.")
+        raise ToolError("Enter matching passwords. Neither password can be empty.")
     if len(first.encode()) > 160:
-        raise ToolError("Password must be 160 UTF-8 bytes or fewer.")
+        raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
     keychain_set(PASSWORD_SERVICE, account, first)
     return first
 
@@ -915,15 +918,15 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
     registered, capacity = host_list(port)
     if identifier not in registered:
         if len(registered) >= capacity:
-            raise ToolError("This device has no free HID host slot. Remove an old host first.")
+            raise ToolError("This device has no available HID computer slot. Remove a registered computer before adding another.")
         serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
     keychain_set(PAIRING_SERVICE, account, key.hex())
     password_for(account)
     current = status(port)
     if current.get("hosts", "0") == "0":
-        raise ToolError("HID setup is incomplete: the device has no registered host.")
+        raise ToolError("HID setup is incomplete. The device has no registered computer.")
     if identifier not in host_list(port)[0]:
-        raise ToolError("HID setup is incomplete: the device has no registered host.")
+        raise ToolError("HID setup is incomplete. The device has no registered computer.")
 
 
 def command_hid_smoke(_: argparse.Namespace) -> None:
@@ -982,7 +985,7 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
         command_setup(argparse.Namespace(mode="hid", port=port, skip_enroll=True, no_pair=False))
         run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
         say(f"HID bridge password: {keychain_get(PASSWORD_SERVICE, device_id)}")
-        say("HID setup and bridge smoke test passed.")
+        say("HID setup and the helper communication test passed.")
     finally:
         stopped.set()
         worker.join(timeout=1)
@@ -1007,15 +1010,14 @@ def host_list(port: str) -> tuple[set[str], int]:
     try:
         capacity = int(data.get("capacity", "8"))
     except ValueError as exc:
-        raise ToolError("The device returned an invalid HID host capacity.") from exc
+        raise ToolError("The device returned an invalid HID computer capacity.") from exc
     return ids, capacity
 
 
 def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int], int]:
     if device.get("finger_groups") != "1":
         raise ToolError(
-            "This firmware needs an update for finger-based enrollment. Run "
-            "'tinytouch update', then unplug and reconnect tinyTouch."
+            "This firmware requires an update for fingerprint block enrollment. Run 'tinytouch update'. Then unplug and reconnect tinyTouch."
         )
     data = fields_from(serial_command(port, "FINGER LIST", timeout=6), "OK FINGER LIST")
     try:
@@ -1034,7 +1036,7 @@ def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int],
                 raise ValueError()
             groups[pending] = -1
     except (KeyError, ValueError) as exc:
-        raise ToolError("The device returned an invalid finger inventory.") from exc
+        raise ToolError("The device returned an invalid fingerprint inventory.") from exc
     return groups, available
 
 
@@ -1042,13 +1044,13 @@ def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool 
     groups, available = finger_inventory(port, device)
     occupied = finger in groups
     if occupied and not replace:
-        say(f"Finger {finger} already has enrollment data.")
-        say("Replacing it removes all existing prints in that finger's block.")
+        say(f'Finger {finger} already has fingerprint enrollment data.')
+        say("Replacement removes all existing views for this finger.")
         if ask(f"Replace finger {finger}? [y/N] ").lower() not in {"y", "yes"}:
             raise ToolError("Fingerprint enrollment was not changed.")
         replace = True
     if not occupied and available == 0:
-        raise ToolError("No empty finger blocks remain. Delete a finger before enrolling another.")
+        raise ToolError("No empty fingerprint blocks remain. Delete a finger before enrolling another.")
     visual = sys.stdout.isatty()
     if visual and sys.stdin.isatty():
         introduce_enrollment()
@@ -1063,30 +1065,30 @@ def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool 
                     raise ValueError()
             except ValueError as exc:
                 raise ToolError("The device returned an invalid enrollment step.") from exc
-            say(f"Finger {finger}: view {view_index + 1} of 4.")
+            say(f'Finger {finger}: View {view_index + 1} of 4.')
         elif visual:
             show_enrollment_event(view_index, event)
         elif event == "EVENT TOUCH":
-            say(f"Touch with the {ENROLLMENT_VIEWS[view_index][1]} of the same finger.")
+            say(f'Touch the sensor with the {ENROLLMENT_VIEWS[view_index][1]} of the same finger.')
         elif event == "EVENT TOUCH_AGAIN":
-            say(f"Touch with the {ENROLLMENT_VIEWS[view_index][1]} of that finger again.")
+            say(f'Touch the sensor again with the {ENROLLMENT_VIEWS[view_index][1]} of the same finger.')
         elif event == "EVENT LIFT":
-            say("Lift your finger from the sensor.")
+            say("Lift your finger away from the sensor.")
 
     unlock(port, reason=f"begin enrolling finger {finger}")
     command = f"FINGER ENROLL_GROUP {finger}" + (" REPLACE" if replace else "")
     try:
         serial_command(port, command, timeout=300, event_handler=event_handler)
     except (ToolError, KeyboardInterrupt):
-        say(f"Enrollment of finger {finger} did not finish. Other finger blocks were preserved.")
+        say(f'Enrollment of finger {finger} did not finish. The other fingerprint blocks were not changed.')
         if replace:
-            say(f"Finger {finger}'s previous prints may have been removed; enroll it again.")
+            say(f'The previous views for finger {finger} may have been removed. Enroll this finger again.')
         raise
     current = status(port)
     groups, _available = finger_inventory(port, current)
     if groups.get(finger) != 4:
-        raise ToolError("Live verification failed: the complete finger was not reported.")
-    say(f"Finger {finger} enrolled with all four views.")
+        raise ToolError("Verification failed. The device did not report all four fingerprint views.")
+    say(f'Finger {finger} is enrolled with all four views.')
 
 
 def enroll(port: str, skip: bool) -> None:
@@ -1096,9 +1098,9 @@ def enroll(port: str, skip: bool) -> None:
     current = status(port)
     count = int(current.get("fingerprints", "-1"))
     if count < 0:
-        raise ToolError("The fingerprint sensor is unavailable. Existing enrollment was preserved.")
+        raise ToolError("The fingerprint sensor is unavailable. The existing enrollment was not changed.")
     if count:
-        say("Existing fingerprint enrollment preserved. Use 'tinytouch enroll N' to add or replace a finger.")
+        say("The existing fingerprint enrollment was not changed. Run 'tinytouch enroll N' to add or replace a finger.")
         return
     enroll_finger(port, current, 1)
 
@@ -1125,7 +1127,7 @@ def command_setup(args: argparse.Namespace) -> None:
             and int(device.get("fingerprints", "0")) > 0
             and paired_piv_identities()
         ):
-            say("PIV is already set up on this Mac.")
+            say("PIV setup is already complete on this Mac.")
             explain_piv_pin()
             return
         if device.get("mode") != mode:
@@ -1141,7 +1143,7 @@ def command_setup(args: argparse.Namespace) -> None:
         else:
             if device.get("piv") != "ready":
                 say("")
-                say("Setting up PIV certificates. This may take up to 30 seconds.")
+                say("Setting up PIV certificates. This can take up to 30 seconds.")
                 paired, available = piv_identities()
                 previous_piv_identities = set(paired + available)
                 unlock(
@@ -1153,8 +1155,7 @@ def command_setup(args: argparse.Namespace) -> None:
                     "PIV CREATE",
                     timeout=45,
                     wait_message=(
-                        "Creating PIV identities. This may take up to 30 seconds. "
-                        "Please do not touch the sensor."
+                        "Creating PIV identities. This can take up to 30 seconds. Keep your finger off the sensor."
                     ),
                 )
                 piv_rescan_needed = True
@@ -1165,13 +1166,13 @@ def command_setup(args: argparse.Namespace) -> None:
             sensor_ready(device)
             device = status(port)
     if mode_changed:
-        notify("tinyTouch mode changed", "Reconnect tinyTouch for the new mode to apply.")
+        notify("tinyTouch mode changed", "Reconnect tinyTouch to apply the new device mode.")
         say(f"{mode.upper()} mode was selected.")
         say("")
-        say("Please unplug and reconnect tinyTouch to apply the new mode.")
-        say("Waiting for the device to disconnect...")
+        say("Unplug and reconnect tinyTouch to apply the new device mode.")
+        say("Waiting for the device to disconnect from USB.")
         reconnected_port = wait_for_reconnect(port)
-        say("Device reconnected. Continuing setup...")
+        say("The device reconnected. Continuing setup.")
         say("")
         resumed = argparse.Namespace(**vars(args))
         resumed.mode = mode
@@ -1184,8 +1185,7 @@ def command_setup(args: argparse.Namespace) -> None:
             timeout=30.0,
             excluding=previous_piv_identities,
             message=(
-                "Waiting for macOS to discover your PIV identity. "
-                "Please do not touch the sensor."
+                "Waiting for macOS to detect the PIV identity. Keep your finger off the sensor."
             ),
         )
         device = fresh_status(port, {"piv": "ready"})
@@ -1194,11 +1194,11 @@ def command_setup(args: argparse.Namespace) -> None:
         protocol6(device)
         sensor_ready(device)
     if mode == "piv" and device.get("piv") != "ready":
-        raise ToolError("PIV setup is incomplete: the identity is not ready.")
+        raise ToolError("PIV setup is incomplete. The identity is not ready.")
     if mode == "hid":
         install_helper()
         if not helper_loaded():
-            raise ToolError("HID setup is incomplete: the helper is not loaded.")
+            raise ToolError("HID setup is incomplete. The helper is not loaded.")
     if mode == "piv" and not args.no_pair:
         command_pair(
             args,
@@ -1207,9 +1207,9 @@ def command_setup(args: argparse.Namespace) -> None:
         )
     say("")
     if mode == "piv":
-        say("tinyTouch is ready in PIV mode.")
+        say("tinyTouch is ready to use in PIV mode.")
     else:
-        say("tinyTouch is ready in HID mode.")
+        say("tinyTouch is ready to use in HID mode.")
 
 
 def command_mode(args: argparse.Namespace) -> None:
@@ -1223,11 +1223,11 @@ def command_mode(args: argparse.Namespace) -> None:
     serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
     if args.mode == "piv":
         remove_helper()
-    notify("tinyTouch mode changed", "Reconnect tinyTouch for the new mode to apply.")
+    notify("tinyTouch mode changed", "Reconnect tinyTouch to apply the new device mode.")
     say(f"{args.mode.upper()} mode was selected.")
     say("")
-    say("Please unplug and reconnect tinyTouch to apply the new mode.")
-    say("Waiting for the device to disconnect...")
+    say("Unplug and reconnect tinyTouch to apply the new device mode.")
+    say("Waiting for the device to disconnect from USB.")
     reconnected_port = wait_for_reconnect(port)
     fresh_status(reconnected_port, {"mode": args.mode.lower()})
     if args.mode == "hid":
@@ -1242,27 +1242,27 @@ def command_led(args: argparse.Namespace) -> None:
         return
     if state == "color":
         if args.role is None or args.color is None:
-            raise ToolError("Specify a role and color. Example: tinytouch led color idle purple. Roles: idle, success, failure, end. Run 'tinytouch led --help' for colors.")
+            raise ToolError("Select a role and color. Example: tinytouch led color idle purple. Valid roles: idle, success, failure, end. Run 'tinytouch led --help' to list colors.")
         name = {"idle": "led_idle_color", "success": "led_success_color", "failure": "led_failure_color", "end": "led_idle_end_color"}[args.role]
         command_config(argparse.Namespace(name=name, value=args.color, port=args.port, json=False))
         return
     if state == "effect":
         if args.effect_name is None:
-            raise ToolError("Specify an effect. Example: tinytouch led effect breathe. Use steady, breathe, flash, fade-in, or fade-out.")
+            raise ToolError("Select an effect: steady, breathe, flash, fade-in, or fade-out. Example: tinytouch led effect breathe.")
         command_config(argparse.Namespace(name="led_idle_effect", value=args.effect_name, port=args.port, json=False))
         return
     if state == "preset":
         if args.preset_name is None:
-            raise ToolError("Specify a preset: default, ocean, neon, or sunset. Example: tinytouch led preset ocean")
+            raise ToolError("Select a preset: default, ocean, neon, or sunset. Example: tinytouch led preset ocean.")
         idle, end, success, failure, effect = LED_PRESETS[args.preset_name]
         values = dict(zip(("led_idle_color", "led_idle_end_color", "led_success_color", "led_failure_color", "led_idle_effect"), (idle, end, success, failure, effect)))
         values["led_idle_cycles"] = "0"
         apply_settings(args.port, values)
-        say(f"Applied '{args.preset_name}' LED preset. Lighting mode is unchanged.")
+        say(f"Applied the '{args.preset_name}' LED preset. The lighting mode did not change.")
         return
     if state == "preview":
         if args.preview_color is None:
-            raise ToolError("Specify a color. Example: tinytouch led preview purple --effect breathe")
+            raise ToolError("Select a preview color. Example: tinytouch led preview purple --effect breathe.")
         color = setting_value("led_idle_color", args.preview_color)
         effect = setting_value("led_idle_effect", args.effect)
         port = choose_port(args.port)
@@ -1272,7 +1272,7 @@ def command_led(args: argparse.Namespace) -> None:
             require_setting_support(device, "led_idle_color")
             unlock(port, reason="preview sensor lighting")
             serial_command(port, f"LED PREVIEW {color} {effect} {args.duration_ms}", timeout=10)
-        say("LED preview complete. Saved preferences were preserved.")
+        say("The LED preview is complete. The saved settings were not changed.")
         return
     port = choose_port(args.port)
     with foreground_session(port):
@@ -1280,27 +1280,25 @@ def command_led(args: argparse.Namespace) -> None:
         protocol6(device)
         if "led" not in device:
             raise ToolError(
-                "This firmware does not support LED control. Run 'tinytouch update', "
-                "then unplug and reconnect tinyTouch before trying again."
+                "This firmware does not support LED control. Run 'tinytouch update'. Then unplug and reconnect tinyTouch before trying again."
             )
         if args.state == "only-auth" and device.get("led_only_auth") != "1":
             raise ToolError(
-                "This firmware does not support authentication-only lighting. Run 'tinytouch update', "
-                "then unplug and reconnect tinyTouch before trying again."
+                "This firmware does not support authentication-only lighting. Run 'tinytouch update'. Then unplug and reconnect tinyTouch before trying again."
             )
-        unlock(port, reason=f"set the sensor LED to {args.state}")
+        unlock(port, reason=f'set the sensor lighting to {args.state}')
         value = {"off": 0, "on": 1, "only-auth": 2}[args.state]
         serial_command(port, f"SET LED {value}", timeout=5)
         fresh_status(port, {"led": args.state})
-        say(f"Sensor LED is {args.state}. This setting is saved on tinyTouch.")
+        say(f'Sensor lighting mode: {args.state}. This setting is saved on tinyTouch.')
 
 
 def command_config(args: argparse.Namespace) -> None:
     if getattr(args, "json", False) and args.value is not None:
-        raise ToolError("--json applies to setting reads and 'config list'. Omit --json when changing a setting.")
+        raise ToolError("Use --json when reading settings or running 'config list'. Omit --json when changing a setting.")
     if args.name == "list":
         if args.value is not None:
-            raise ToolError("'config list' does not accept a value. Use 'tinytouch config NAME VALUE' to change a setting.")
+            raise ToolError("'config list' does not accept a value. Run 'tinytouch config NAME VALUE' to change a setting.")
         if getattr(args, "json", False):
             say(json.dumps({name: {"default": spec.default, "values": list(spec.choices) if spec.choices else {"minimum": spec.minimum, "maximum": spec.maximum}, "description": spec.description, "requires_new_firmware": bool(spec.capability)} for name, spec in SETTINGS.items()}, indent=2))
             return
@@ -1310,7 +1308,7 @@ def command_config(args: argparse.Namespace) -> None:
         return
     if args.name in {None, "show"}:
         if args.value is not None:
-            raise ToolError("'config show' does not accept a value. Use 'tinytouch config NAME VALUE'.")
+            raise ToolError("'config show' does not accept a value. Run 'tinytouch config NAME VALUE' to change a setting.")
         show_settings(args)
         return
     name = setting_name(args.name)
@@ -1320,7 +1318,7 @@ def command_config(args: argparse.Namespace) -> None:
             device = status(port)
             protocol6(device)
         if name not in device:
-            raise ToolError(f"This firmware does not report {name}. Run 'tinytouch update', then reconnect the device.")
+            raise ToolError(f"This firmware does not report {name}. Run 'tinytouch update'. Then reconnect the device.")
         value = SETTINGS[name].decode(device[name])
         say(json.dumps({name: value}) if getattr(args, "json", False) else f"{name}={value}")
         return
@@ -1337,7 +1335,7 @@ def command_config(args: argparse.Namespace) -> None:
 def require_setting_support(device: dict[str, str], name: str) -> None:
     capability = SETTINGS[name].capability
     if capability and device.get(capability) != "1":
-        raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update', then unplug and reconnect tinyTouch (firmware 0.1.31+ required).")
+        raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update' to install firmware 0.1.31 or later. Then unplug and reconnect tinyTouch.")
 
 
 def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
@@ -1358,7 +1356,7 @@ def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
                 fresh_status(port, normalized)
         except ToolError:
             if applied:
-                say("Settings acknowledged before the error: " + ", ".join(applied) + ". Run 'tinytouch config' to check saved values.")
+                say("Settings acknowledged before the error: " + ", ".join(applied) + ". Run 'tinytouch config' to check the saved values.")
             raise
 
 
@@ -1376,8 +1374,8 @@ def show_settings(args: argparse.Namespace, *, led_only: bool = False) -> None:
     for name, spec in specs.items():
         say(f"{name:<24} {values.get(name, 'not reported'):<16} {spec.default}")
     if any(name not in values for name in specs):
-        say("Some settings require newer firmware. Run 'tinytouch update', then reconnect the device.")
-    say("Use 'tinytouch config list' for values and effects; 'tinytouch config NAME VALUE' to change a setting.")
+        say("Some settings require newer firmware. Run 'tinytouch update'. Then reconnect the device.")
+    say("Run 'tinytouch config list' to list allowed values and effects. Run 'tinytouch config NAME VALUE' to change a setting.")
 
 
 def command_enroll(args: argparse.Namespace) -> None:
@@ -1389,6 +1387,17 @@ def command_enroll(args: argparse.Namespace) -> None:
         enroll_finger(port, device, args.finger, args.replace)
 
 
+def finger_description(views: int | None) -> str:
+    """Use the same inventory labels in commands and interactive selection."""
+    if views is None:
+        return "Empty."
+    if views == -1:
+        return "Cleanup pending. Reconnect the device."
+    if views == 4:
+        return "Enrolled: 4 fingerprint views."
+    return f"Partially enrolled: {views} of 4 fingerprint views."
+
+
 def command_fingers(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     with foreground_session(port):
@@ -1396,12 +1405,9 @@ def command_fingers(args: argparse.Namespace) -> None:
         protocol6(device)
         groups, available = finger_inventory(port, device)
         for finger, views in sorted(groups.items()):
-            description = "cleanup pending; reconnect the device" if views == -1 else (
-                "occupied" if views == 4 else "partially occupied; reserved"
-            )
-            say(f"Finger {finger}: {description}")
+            say(f"Finger {finger}: {finger_description(views)}")
         if not groups:
-            say("No fingers enrolled.")
+            say("No fingerprints enrolled.")
         say(f"Space for {available} additional fingers.")
 
 
@@ -1415,7 +1421,7 @@ def command_delete(args: argparse.Namespace) -> None:
         serial_command(port, f"FINGER DELETE_GROUP {args.finger}", timeout=25)
         groups, _available = finger_inventory(port, status(port))
         if args.finger in groups:
-            raise ToolError("Live verification failed after deleting the finger.")
+            raise ToolError("Verification failed after deleting the fingerprint block.")
         say(f"Finger {args.finger} was deleted.")
 
 
@@ -1432,11 +1438,11 @@ def command_computers(args: argparse.Namespace) -> None:
     if args.remove:
         identifier = args.remove.lower()
         if identifier not in registered:
-            raise ToolError(f"HID host {args.remove} is not registered on this device.")
+            raise ToolError(f'HID computer {args.remove} is not registered on this device.')
         unlock(port, reason="remove this computer")
         serial_command(port, f"HOST REMOVE {identifier}", timeout=5)
         if identifier in host_list(port)[0]:
-            raise ToolError("Live verification failed: the HID host is still registered.")
+            raise ToolError("Verification failed. The HID computer is still registered.")
         account = device_account(port)
         local = keychain_get(PAIRING_SERVICE, account)
         if local:
@@ -1452,7 +1458,7 @@ def command_factory_reset(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
     device = status(port)
     protocol6(device)
-    if ask("Factory reset clears fingerprints, keys, hosts, and settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
+    if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
         raise ToolError("Factory reset cancelled.")
     remove_helper()
     unlock(port, reason="confirm the factory reset")
@@ -1472,19 +1478,19 @@ def command_factory_reset(args: argparse.Namespace) -> None:
         if key == "piv" and key not in cleared:
             continue
         if cleared.get(key) != expected:
-            raise ToolError(f"Factory reset verification failed: {key}={cleared.get(key)!r}.")
+            raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
     remove_helper()
     account = device_account(port)
     keychain_delete(PAIRING_SERVICE, account)
     keychain_delete(PASSWORD_SERVICE, account)
-    say("Factory reset completed.")
+    say("Factory reset complete.")
 
 
 def response_next(lines: list[str], verb: str) -> int:
     line = next((item for item in reversed(lines) if item.startswith(f"OK {verb}")), "")
     match = re.search(r"(?:^| )next=(\d+)(?: |$)", line)
     if not match:
-        raise ToolError(f"The device returned an invalid {verb} response.")
+        raise ToolError(f'The device returned an invalid response to {verb}.')
     return int(match.group(1))
 
 
@@ -1492,7 +1498,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
     try:
         import serial  # type: ignore
     except ImportError as exc:
-        raise ToolError("pyserial is required for OTA.") from exc
+        raise ToolError("The pyserial package is required for firmware updates.") from exc
     # An interrupted older client may have left an incomplete upload active.
     # Aborting is safe because committed firmware is already in another slot.
     try:
@@ -1504,7 +1510,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
         port,
         "AUTH",
         timeout=15,
-        touch_prompt="Touch the fingerprint sensor now to approve the firmware update.",
+        touch_prompt="Touch the fingerprint sensor to approve the firmware update.",
     )
     token = secrets.token_hex(16)
     was_loaded = unload_helper()
@@ -1546,7 +1552,7 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
             load_helper()
     line = next((item for item in commit if item.startswith("OK OTA STAGED")), "")
     if "power_cycle=required" not in line:
-        raise ToolError("The firmware did not confirm the OTA slot was staged safely.")
+        raise ToolError("The firmware did not confirm that the OTA slot was staged safely.")
 
 
 def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
@@ -1587,13 +1593,13 @@ def download(url: str) -> bytes:
         with urllib.request.urlopen(request, timeout=20, context=TLS) as response:
             return response.read()
     except OSError as exc:
-        raise ToolError("Could not download the tinyTouch release.") from exc
+        raise ToolError("Could not download the selected tinyTouch release.") from exc
 
 
 def release_root(version: str) -> str:
     """Return the immutable asset root for a validated production version."""
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
-        raise ToolError("The release manifest has an invalid production version.")
+        raise ToolError("The release manifest contains an invalid production version.")
     return f"{RELEASE_DOWNLOAD_URL}/v{version}"
 
 
@@ -1606,12 +1612,12 @@ def update_release(version: str | None = None) -> tuple[str, dict]:
         )
         version = latest.get("version") if isinstance(latest, dict) else None
         if not isinstance(version, str):
-            raise ToolError("The release manifest has no valid version.")
+            raise ToolError("The release manifest contains no valid version.")
 
     root = release_root(version)
     manifest = json.loads(download(f"{root}/release-manifest.json").decode())
     if not isinstance(manifest, dict) or manifest.get("version") != version:
-        raise ToolError("The release assets do not match the selected version.")
+        raise ToolError("The release files do not match the selected version.")
     return root, manifest
 
 
@@ -1629,12 +1635,12 @@ def network_test() -> None:
     try:
         root, manifest = update_release()
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ToolError("release manifest is not valid JSON") from exc
+        raise ToolError("The release manifest contains invalid JSON data.") from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
-        raise ToolError("release manifest is incomplete")
+        raise ToolError("The release manifest is incomplete.")
     ota = manifest.get("ota")
     if not isinstance(ota, dict):
-        raise ToolError("release manifest has no OTA asset")
+        raise ToolError("The release manifest contains no OTA firmware file.")
     filename = ota.get("file")
     size = ota.get("size")
     digest = str(ota.get("sha256", ""))
@@ -1650,10 +1656,10 @@ def network_test() -> None:
         or size <= 0
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
-        raise ToolError("release manifest has an invalid OTA asset")
+        raise ToolError("The release manifest contains an invalid OTA firmware file.")
     image = download(f"{root}/{filename}")
     if len(image) != size or hashlib.sha256(image).hexdigest() != digest:
-        raise ToolError("release OTA asset does not match its manifest")
+        raise ToolError("The OTA firmware file does not match the release manifest.")
     say("network ok")
 
 
@@ -1667,10 +1673,10 @@ def command_update(args: argparse.Namespace) -> None:
         environment["TINYTOUCH_RELEASE_ROOT"] = root
         result = subprocess.run(["/bin/sh"], input=installer, check=False, env=environment)
         if result.returncode != 0:
-            raise ToolError("The CLI update failed. Firmware was not changed.")
+            raise ToolError("The CLI update failed. The firmware was not changed.")
         executable = shutil.which("tinytouch")
         if executable is None:
-            raise ToolError("The new CLI was installed but is not on this terminal's PATH.")
+            raise ToolError("The new CLI is installed, but it is not on this terminal's PATH.")
         installed = subprocess.run(
             [executable, "--version"], capture_output=True, check=False, text=True
         )
@@ -1696,23 +1702,23 @@ def command_update(args: argparse.Namespace) -> None:
     protocol6(device)
     metadata = manifest.get("ota") if isinstance(manifest, dict) else None
     if not isinstance(metadata, dict) or not metadata.get("file") or not metadata.get("sha256"):
-        raise ToolError("The release manifest has no verified firmware asset.")
+        raise ToolError("The release manifest contains no verified firmware file.")
     image = download(f"{root}/{metadata['file']}")
     digest = hashlib.sha256(image).hexdigest()
     if digest != metadata["sha256"]:
-        raise ToolError("The downloaded firmware digest does not match the release manifest.")
+        raise ToolError("The downloaded firmware checksum does not match the release manifest.")
     stage_ota(port, image, digest)
-    notify("tinyTouch update staged", "Unplug tinyTouch, reconnect it, then run tinytouch status.")
-    say("OTA firmware is staged in the inactive slot.")
-    say("Unplug tinyTouch and reconnect it once to boot the new firmware.")
+    notify("tinyTouch update staged", "Unplug and reconnect tinyTouch. Then run 'tinytouch status'.")
+    say("The OTA firmware update is staged in the inactive slot.")
+    say("Unplug and reconnect tinyTouch once to start the new firmware.")
 
 
 def command_rom(args: argparse.Namespace) -> None:
     if args.port:
         say(f"Selected device: {args.port}")
-    notify("tinyTouch ROM mode", "Unplug tinyTouch, reconnect it in download mode, and flash it.")
-    say("ROM flashing requires a physical reconnect. Unplug tinyTouch, reconnect it in download mode, and flash it.")
-    say("After flashing, unplug and reconnect tinyTouch normally.")
+    notify("tinyTouch ROM mode", "Unplug tinyTouch. Reconnect it in download mode. Then flash the device.")
+    say("ROM flashing requires a physical reconnect. Unplug tinyTouch. Reconnect it in download mode. Then flash the device.")
+    say("After flashing, unplug tinyTouch and reconnect it normally.")
 
 
 def command_status(args: argparse.Namespace) -> None:
@@ -1742,7 +1748,7 @@ def command_keys(args: argparse.Namespace) -> None:
     unlock(port, reason="create the PIV identity")
     serial_command(port, "PIV CREATE", timeout=15)
     if status(port).get("piv") != "ready":
-        raise ToolError("Live verification failed: the PIV identity is not ready.")
+        raise ToolError("Verification failed. The PIV identity is not ready.")
     say("The PIV identity is ready.")
 
 
@@ -1762,15 +1768,14 @@ def paired_piv_identities() -> list[str]:
 
 
 def explain_piv_pin() -> None:
-    say("If macOS asks for the smart-card PIN, enter 111111.")
+    say("If macOS prompts for the smart card PIN, enter 111111.")
 
 
 def wait_for_piv_identities(
     timeout: float = 20.0,
     excluding: set[str] | None = None,
     message: str = (
-        "Configuring PIV. This may take up to 20 seconds. "
-        "Please do not touch the sensor."
+        "Configuring PIV. This can take up to 20 seconds. Keep your finger off the sensor."
     ),
 ) -> tuple[list[str], list[str]]:
     """Wait for macOS smart-card discovery with a compact terminal spinner."""
@@ -1811,14 +1816,14 @@ def command_pair(
         explain_piv_pin()
         return
     if not available:
-        raise ToolError("macOS has not discovered a PIV identity. Select PIV mode, then try again.")
+        raise ToolError("macOS has not detected a PIV identity. Select PIV mode and try again.")
     if len(available) > 1:
         if separate_identity_list:
             say("")
         say("Available PIV identities:")
         for index, identity in enumerate(available, 1):
             say(f"  {index}. {identity}")
-        say("If you are not sure, select 1.")
+        say("Select 1 if you are not sure which identity to use.")
         choice = ask("Identity [1]: ") or "1"
         try:
             identity = available[int(choice) - 1]
@@ -1859,8 +1864,7 @@ def command_pair(
         if identity not in paired_after:
             if "CryptoTokenKit error -8" in str(exc):
                 raise ToolError(
-                    "macOS rejected this PIV identity. Run 'tinytouch update', "
-                    "then run setup again."
+                    "macOS rejected this PIV identity. Run 'tinytouch update'. Then run setup again."
                 ) from exc
             raise
     if keychain_warning:
@@ -1873,10 +1877,9 @@ def command_pair(
             ]
         )
         raise ToolError(
-            "macOS could not finish Login Keychain setup. The incomplete "
-            "pairing was removed. Run setup again."
+            "macOS could not complete login Keychain setup. The incomplete pairing was removed. Run setup again."
         )
-    say("PIV is paired with this Mac.")
+    say("PIV pairing with this Mac is complete.")
 
 
 def select_option(
@@ -1887,15 +1890,15 @@ def select_option(
         say("")
         say(terminal_style(title, "1"))
         for index, (key, label) in enumerate(options, 1):
-            say(f"  {index}. {label} [{key}]")
+            say(f"  {index}. {label.removesuffix('.')} [{key}]")
         say(f"  0. {back}")
-        answer = ask("Select a number or option name: ").lower()
+        answer = ask("Select an option by number or name: ").lower()
         if answer in {"0", "b", "back", "q", "quit", "exit"}:
             return None
         for index, (key, _label) in enumerate(options, 1):
             if answer in {str(index), key.lower()}:
                 return key
-        say("Invalid selection. Use one of the listed options.")
+        say("Invalid selection. Select one of the listed options.")
 
 
 def interactive_finger(args: argparse.Namespace, action: str) -> list[str] | None:
@@ -1909,7 +1912,7 @@ def interactive_finger(args: argparse.Namespace, action: str) -> list[str] | Non
     if action == "delete":
         candidates = sorted(groups)
         if not candidates:
-            say("No fingers enrolled.")
+            say("No fingerprints enrolled.")
             return None
     else:
         # Supported blocks are contiguous. Limit empty choices to the capacity
@@ -1917,16 +1920,12 @@ def interactive_finger(args: argparse.Namespace, action: str) -> list[str] | Non
         empty = [finger for finger in range(1, 11) if finger not in groups][:available]
         candidates = sorted([*groups, *empty])
         if not candidates:
-            raise ToolError("No finger blocks are available on this sensor.")
+            raise ToolError("No fingerprint blocks are available on this sensor.")
     options = []
     for finger in candidates:
         views = groups.get(finger)
-        description = "empty" if views is None else (
-            "cleanup pending; reconnect the device" if views == -1 else (
-                "enrolled; 4 views" if views == 4 else f"partially occupied; {views} of 4 views"
-            )
-        )
-        options.append((f"finger-{finger}", f"Finger {finger} — {description}"))
+        description = finger_description(views).removesuffix(".")
+        options.append((f"finger-{finger}", f"Finger {finger} ({description})"))
     selected = select_option(
         "Enroll or replace a fingerprint" if action == "enroll" else "Delete a fingerprint",
         options,
@@ -1947,12 +1946,12 @@ def interactive_computer(args: argparse.Namespace) -> list[str] | None:
         protocol6(status(port))
         registered, _capacity = host_list(port)
     if not registered:
-        say("No HID computers registered.")
+        say("No HID computers are registered.")
         return None
     identifier = select_option("Remove a registered computer", [(host, host) for host in sorted(registered)])
     if identifier is None:
         return None
-    if ask(f"Remove computer {identifier}? [y/N] ").lower() not in {"y", "yes"}:
+    if ask(f"Remove HID computer {identifier}? [y/N] ").lower() not in {"y", "yes"}:
         say("Removal cancelled.")
         return None
     return ["computers", "remove", identifier, "--port", port]
@@ -1966,7 +1965,7 @@ def prompt_setting(name: str) -> list[str] | None:
         selected = select_option(spec.label, [(key, key) for key in spec.choices])
         return ["config", name, selected] if selected is not None else None
     while True:
-        value = ask(f"{spec.label}; Enter to cancel: ")
+        value = ask(f"{spec.label} (Enter to cancel): ")
         if not value or value.lower() in {"b", "back", "q", "quit", "exit"}:
             return None
         try:
@@ -1988,32 +1987,29 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
     global _sudo_session_ready, _setup_password
     command = list(command)
     if command[0] in {"setup", "mode"} and len(command) == 1:
-        mode = select_option("Device mode", [
-            ("hid", "HID — Type your Mac password into the active field"),
-            ("piv", "PIV — Use a smart card for supported macOS authentication"),
-        ])
+        mode = select_option("Device mode", list(MODE_OPTIONS))
         if mode is None:
             return
         command.extend(["--mode", mode] if command[0] == "setup" else [mode])
     elif command == ["led"]:
         state = select_option("Sensor lighting", [
-            ("on", "On — Enable idle lighting and authentication feedback"),
-            ("off", "Off — Disable all sensor lighting"),
-            ("only-auth", "Authentication only — Show success and failure feedback"),
+            ("on", "On (Enable idle lighting and authentication feedback)"),
+            ("off", "Off (Disable all sensor lighting)"),
+            ("only-auth", "Authentication only (Show success and failure feedback)"),
         ])
         if state is None:
             return
         command.append(state)
     elif command == ["led", "preset"]:
-        preset = select_option("LED preset", [(key, key.title()) for key in LED_PRESETS])
+        preset = select_option("LED preset", [(key, key.capitalize()) for key in LED_PRESETS])
         if preset is None:
             return
         command.append(preset)
     elif command == ["led", "preview"]:
-        color = select_option("Preview color", [(key, key.title()) for key in LED_COLORS])
+        color = select_option("Preview color", [(key, key.capitalize()) for key in LED_COLORS])
         if color is None:
             return
-        effect = select_option("Preview effect", [(key, key.title()) for key in LED_EFFECTS])
+        effect = select_option("Preview effect", [(key, key.capitalize()) for key in LED_EFFECTS])
         if effect is None:
             return
         command.extend([color, "--effect", effect])
@@ -2040,7 +2036,8 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
         global_options.extend(["--port", args.port])
     selected_args = parser().parse_args([*global_options, *command])
     say("")
-    say(terminal_style(f"── {selected_args.command.replace('-', ' ').title()} ──", "2"))
+    title = COMMAND_TITLES.get(selected_args.command, selected_args.command.replace("-", " ").capitalize())
+    say(terminal_style(f"── {title} ──", "2"))
     # Each menu action gets the same credential lifetime as a standalone command.
     _sudo_session_ready = False
     try:
@@ -2069,20 +2066,20 @@ INTERACTIVE_MENUS = {
     )),
     "settings": ("Device settings", (
         ("show", "Show current settings and defaults", ["config", "show"]),
-        ("mode", "Change HID / PIV mode", ["mode"]),
+        ("mode", "Change HID/PIV mode", ["mode"]),
         ("led", "Sensor colors and effects", "lighting"),
         ("config", "Configure a setting", ["config"]),
         ("list", "List settings, limits and effects", ["config", "list"]),
     )),
     "lighting": ("Sensor colors and effects", (
         ("show", "Show current lighting settings", ["led", "show"]),
-        ("mode", "Enable, disable or show authentication only", ["led"]),
-        ("colors", "Set idle, success and failure colors", "colors"),
+        ("mode", "Enable sensor lighting, disable it, or show authentication results only.", ["led"]),
+        ("colors", "Set the idle, success, and failure colors.", "colors"),
         ("effect", "Set idle animation", ["config", "led_idle_effect"]),
         ("cycles", "Set animation repeats", ["config", "led_idle_cycles"]),
         ("feedback", "Set result feedback duration", ["config", "led_feedback_ms"]),
         ("preset", "Apply a color preset", ["led", "preset"]),
-        ("preview", "Preview a color and effect without saving", ["led", "preview"]),
+        ("preview", "Preview a color and effect without saving changes.", ["led", "preview"]),
     )),
     "colors": ("LED colors", (
         ("idle", "Idle and enrollment color", ["config", "led_idle_color"]),
@@ -2092,7 +2089,7 @@ INTERACTIVE_MENUS = {
     )),
     "computers": ("Registered computers", (
         ("list", "List registered HID computers", ["computers", "list"]),
-        ("add", "Set up HID on this Mac", ["setup", "--mode", "hid"]),
+        ("add", "Set up HID password entry on this Mac.", ["setup", "--mode", "hid"]),
         ("remove", "Remove a registered computer", ["computers", "remove"]),
     )),
     "advanced": ("Diagnostics and recovery", (
@@ -2102,7 +2099,7 @@ INTERACTIVE_MENUS = {
         ("pair", "Pair PIV with this Mac", ["pair"]),
         ("rom", "ROM bootloader instructions", ["rom"]),
         ("enroll-demo", "Preview fingerprint enrollment", ["enroll-demo"]),
-        ("factory-reset", "Factory reset — Clear device and local configuration", ["factory-reset"]),
+        ("factory-reset", "Factory reset (Clear device and local configuration)", ["factory-reset"]),
     )),
 }
 
@@ -2137,7 +2134,7 @@ def command_menu(args: argparse.Namespace) -> None:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         parser().print_help()
         return
-    say("Select an action. Existing commands remain available; use 'tinytouch --help' to list them.")
+    say("Select an action. Existing commands remain available. Run 'tinytouch --help' to list commands.")
     if args.port:
         say(f"Selected device: {args.port}")
     try:
@@ -2149,6 +2146,14 @@ def command_menu(args: argparse.Namespace) -> None:
 
 
 class FriendlyArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._positionals.title = "Arguments"
+        self._optionals.title = "Options"
+        for action in self._actions:
+            if isinstance(action, argparse._HelpAction):
+                action.help = "Show the help text and exit the CLI."
+
     def error(self, message: str) -> None:
         self.print_usage(sys.stderr)
         suggestion = ""
@@ -2158,7 +2163,7 @@ class FriendlyArgumentParser(argparse.ArgumentParser):
             matches = difflib.get_close_matches(choice[1], candidates, n=1)
             if matches:
                 suggestion = f"Did you mean '{matches[0]}'?\n"
-        self.exit(2, f"Error: {message}\n{suggestion}Run '{self.prog} --help' for syntax and examples.\n")
+        self.exit(2, f"Error: {message}\n{suggestion}Run '{self.prog} --help' for syntax and command examples.\n")
 
 
 def bounded_integer(minimum: int, maximum: int):
@@ -2169,7 +2174,7 @@ def bounded_integer(minimum: int, maximum: int):
                 return number
         except ValueError:
             pass
-        raise argparse.ArgumentTypeError(f"use an integer from {minimum} to {maximum}; received '{value}'")
+        raise argparse.ArgumentTypeError(f"Use an integer from {minimum} to {maximum}. Received '{value}'.")
     return parse
 
 
@@ -2180,9 +2185,9 @@ def command_ports(args: argparse.Namespace) -> None:
     elif ports:
         for port in ports:
             say(port)
-        say("Select a device with 'tinytouch --port PATH'.")
+        say("Run 'tinytouch --port PATH' to select a device.")
     else:
-        say("No USB serial devices found. Connect tinyTouch with a data-capable USB cable and retry.")
+        say("No USB serial devices were found. Connect tinyTouch with a USB cable that supports data and try again.")
 
 
 def command_help(args: argparse.Namespace) -> None:
@@ -2196,55 +2201,46 @@ def parser() -> argparse.ArgumentParser:
     parser = FriendlyArgumentParser(
         prog="tinytouch",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Configure tinyTouch. Run without a command to open the interactive menu.",
-        epilog=("Examples:\n  tinytouch                         Open the interactive menu\n"
-                "  tinytouch config                  Show saved settings\n"
-                "  tinytouch config list             List values and limits\n"
-                "  tinytouch led preset ocean        Apply an LED theme\n"
-                "  tinytouch led color idle purple   Set the idle ring color\n"
-                "  tinytouch enroll 2                 Enroll one complete finger\n"
-                "  tinytouch --verbose test           Diagnose a connection\n\n"
-                "Run 'tinytouch COMMAND --help' for command syntax and examples.\n"
-                "Changes require fingerprint approval after enrollment. New lighting controls require firmware 0.1.31+."),
+        description="Configure tinyTouch. Run 'tinytouch' without a command to open the interactive menu.",
+        epilog=("Examples:\n  tinytouch                         Open the interactive menu\n  tinytouch config                  Show saved settings\n  tinytouch config list             List values and limits\n  tinytouch led preset ocean        Apply an LED theme\n  tinytouch led color idle purple   Set the idle ring color\n  tinytouch enroll 2                 Enroll one complete finger\n  tinytouch --verbose test           Diagnose a connection\n\nRun 'tinytouch COMMAND --help' for syntax and command examples.\nAfter enrollment, changes require fingerprint approval. The new lighting controls require firmware 0.1.31 or later."),
     )
-    parser.add_argument("--verbose", action="store_true", help="print command and device diagnostics")
-    parser.add_argument("--port", help="use this serial device for commands or the interactive menu")
-    parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}")
+    parser.add_argument("--verbose", action="store_true", help="Show command and device diagnostics.")
+    parser.add_argument("--port", help="Use this USB serial device for commands and the interactive menu.")
+    parser.add_argument("--version", action="version", version=f"tinyTouch CLI {CLI_VERSION}",
+                        help="Show the CLI version and exit the CLI.")
     parser.set_defaults(func=command_menu)
-    sub = parser.add_subparsers(dest="command", title="commands", metavar="COMMAND")
-    menu = sub.add_parser("menu", help="open the interactive menu")
-    menu.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    sub = parser.add_subparsers(dest="command", title="Commands", metavar="COMMAND")
+    menu = sub.add_parser("menu", help="Open the interactive menu.")
+    menu.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     menu.set_defaults(func=command_menu)
-    setup = sub.add_parser("setup", help="set up fingerprints and HID or PIV on this Mac")
-    setup.add_argument("--mode", choices=("hid", "piv"), help="HID password entry or PIV smart-card authentication; prompts when omitted")
-    setup.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
-    setup.add_argument("--skip-enroll", action="store_true", help="skip first-time enrollment and preserve existing fingerprints")
-    setup.add_argument("--no-pair", action="store_true", help="do not run macOS PIV pairing")
+    setup = sub.add_parser("setup", help="Set up fingerprints and HID or PIV authentication on this Mac.")
+    setup.add_argument("--mode", choices=("hid", "piv"), help="Select HID password entry or PIV smart card authentication. If omitted, the command prompts for a mode.")
+    setup.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
+    setup.add_argument("--skip-enroll", action="store_true", help="Skip initial enrollment and keep the existing fingerprints.")
+    setup.add_argument("--no-pair", action="store_true", help="Skip the macOS PIV pairing step during setup.")
     setup.set_defaults(func=command_setup)
-    mode = sub.add_parser("mode", help="switch between HID and PIV mode")
+    mode = sub.add_parser("mode", help="Switch the device between HID and PIV mode.")
     mode.add_argument("mode", choices=("hid", "piv"))
-    mode.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    mode.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     mode.set_defaults(func=command_mode)
-    led = sub.add_parser("led", help="configure sensor colors, effects, presets and previews",
+    led = sub.add_parser("led", help="Configure sensor ring colors, effects, presets, and previews.",
                          formatter_class=argparse.RawDescriptionHelpFormatter,
-                         description="View or customize the sensor ring. Existing on/off/only-auth commands remain supported.",
+                         description="View or change the sensor ring settings. The on, off, and only-auth commands remain available.",
                          epilog="Colors: " + ", ".join(LED_COLORS) + "\nEffects: " + ", ".join(LED_EFFECTS) +
-                         "\nExamples:\n  tinytouch led on\n  tinytouch led color idle purple\n  tinytouch led effect breathe\n  tinytouch led preset ocean\n  tinytouch led preview cyan --effect flash --duration-ms 2000\n\n"
-                         "Presets preserve lighting mode. Preview restores saved lighting without saving changes.\n"
-                         "Use 'tinytouch config led_idle_cycles 0' for continuous animation. Colors are fixed RGB combinations; arbitrary hex colors and brightness are not supported by this command format.")
-    led.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+                         "\nExamples:\n  tinytouch led on\n  tinytouch led color idle purple\n  tinytouch led effect breathe\n  tinytouch led preset ocean\n  tinytouch led preview cyan --effect flash --duration-ms 2000\n\nPresets keep the current lighting mode. Preview restores the saved lighting settings without saving changes.\nRun 'tinytouch config led_idle_cycles 0' for continuous animation. Colors use fixed RGB combinations. This command format does not support hex colors or brightness control.")
+    led.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     led.set_defaults(func=command_led)
     led_actions = led.add_subparsers(dest="state", metavar="ACTION")
-    for action, description in (("on", "enable the ring"), ("off", "disable all sensor lighting"),
-                                ("only-auth", "show success and failure feedback only"),
-                                ("show", "show current lighting preferences"),
-                                ("color", "set a color by role"), ("effect", "set the idle animation"),
-                                ("preset", "apply a saved color theme"), ("preview", "temporarily display a color and effect")):
+    for action, description in (("on", "Enable all sensor lighting."), ("off", "Disable all sensor lighting."),
+                                ("only-auth", "Show only success and failure feedback on the sensor ring."),
+                                ("show", "Show current lighting settings."),
+                                ("color", "Set a sensor ring color by role."), ("effect", "Set the idle sensor ring animation."),
+                                ("preset", "Apply an LED color preset."), ("preview", "Temporarily display a sensor ring color and effect.")):
         entry = led_actions.add_parser(action, help=description, description=description)
-        entry.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+        entry.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
         if action == "color":
             entry.add_argument("role", choices=("idle", "success", "failure", "end"))
-            entry.add_argument("color", choices=tuple(LED_COLORS), help="fixed RGB color")
+            entry.add_argument("color", choices=tuple(LED_COLORS), help="Select a fixed RGB color.")
         elif action == "effect":
             entry.add_argument("effect_name", choices=tuple(LED_EFFECTS))
         elif action == "preset":
@@ -2252,97 +2248,97 @@ def parser() -> argparse.ArgumentParser:
         elif action == "preview":
             entry.add_argument("preview_color", choices=tuple(LED_COLORS))
             entry.add_argument("--effect", choices=tuple(LED_EFFECTS), default="steady")
-            entry.add_argument("--duration-ms", type=bounded_integer(100, 5000), default=1500, help="preview duration, 100–5000 ms (default: 1500)")
+            entry.add_argument("--duration-ms", type=bounded_integer(100, 5000), default=1500, help="Set the preview duration to 100–5000 ms. The default is 1500 ms.")
     config_help = "Settings (name: values; default):\n" + "\n".join(
         f"  {name}: {spec.allowed()}; {spec.default}\n    {spec.description}" for name, spec in SETTINGS.items())
-    config = sub.add_parser("config", aliases=["settings"], help="show, list, read or change device preferences",
+    config = sub.add_parser("config", aliases=["settings"], help="Show, list, read, or change the device settings.",
                             formatter_class=argparse.RawDescriptionHelpFormatter,
-                            description="No arguments: show current settings. 'list': list all settings without connecting a device. NAME: read a setting. NAME VALUE: change it.",
+                            description="With no arguments, show the current settings. Use 'list' to list settings without connecting a device. Use NAME to read a setting. Use NAME VALUE to change it.",
                             epilog=config_help + "\n\nExamples:\n  tinytouch config --json\n  tinytouch config led_idle_color purple\n  tinytouch config submit_enter off\n  tinytouch config piv_auto_type off\n  tinytouch config typing_delay_ms 7")
-    config.add_argument("name", nargs="?", help="setting name, show, or list")
-    config.add_argument("value", nargs="?", help="new value; omit to read the setting")
-    config.add_argument("--json", action="store_true", help="output current values as JSON")
-    config.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    config.add_argument("name", nargs="?", help="Select a setting name, 'show', or 'list'.")
+    config.add_argument("value", nargs="?", help="Set a new value. Omit the value to read the current setting.")
+    config.add_argument("--json", action="store_true", help="Show current values as JSON.")
+    config.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     config.set_defaults(func=command_config)
-    enroll_cmd = sub.add_parser("enroll", help="enroll all four views for a finger (1–10)")
-    enroll_cmd.add_argument("finger", type=int, choices=range(1, 11), help="finger block; each block contains four views of one finger")
-    enroll_cmd.add_argument("--replace", action="store_true", help="replace this finger without a confirmation prompt")
-    enroll_cmd.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    enroll_cmd = sub.add_parser("enroll", help="Enroll all four views for a finger numbered 1–10.")
+    enroll_cmd.add_argument("finger", type=int, choices=range(1, 11), help="Select a fingerprint block. Each block contains four views of one finger.")
+    enroll_cmd.add_argument("--replace", action="store_true", help="Replace this fingerprint block without a confirmation prompt.")
+    enroll_cmd.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     enroll_cmd.set_defaults(func=command_enroll)
-    delete = sub.add_parser("delete", help="delete all views for a finger (1–10)")
-    delete.add_argument("finger", type=int, choices=range(1, 11), help="delete all templates in this finger block")
-    delete.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    delete = sub.add_parser("delete", help="Delete all views for a finger numbered 1–10.")
+    delete.add_argument("finger", type=int, choices=range(1, 11), help="Delete all fingerprint templates in the selected block.")
+    delete.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     delete.set_defaults(func=command_delete)
-    fingers = sub.add_parser("fingers", help="list occupied finger blocks and available capacity")
-    fingers.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    fingers = sub.add_parser("fingers", help="List occupied fingerprint blocks and available enrollment capacity.")
+    fingers.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     fingers.set_defaults(func=command_fingers)
-    computers = sub.add_parser("computers", help="list or remove registered HID computers")
+    computers = sub.add_parser("computers", help="List or remove the registered HID computers.")
     computers.add_argument("action", choices=("list", "remove"), nargs="?", default="list")
     computers.add_argument("host_id", nargs="?")
     computers.add_argument("--remove", dest="remove_flag")
-    computers.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    computers.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     def normalize_computers(args: argparse.Namespace) -> None:
         args.remove = args.remove_flag or args.host_id
         if args.action == "list" and args.remove:
             raise ToolError("Use 'tinytouch computers remove HOST_ID'.")
         if args.action == "remove" and not args.remove:
-            raise ToolError("Specify a registered computer: 'tinytouch computers remove HOST_ID'.")
+            raise ToolError("Specify a registered computer with 'tinytouch computers remove HOST_ID'.")
         command_computers(args)
     computers.set_defaults(func=normalize_computers)
-    reset = sub.add_parser("factory-reset", help="clear fingerprints, keys, hosts, and settings")
-    reset.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    reset = sub.add_parser("factory-reset", help="Clear fingerprints, keys, registered computers, and device settings.")
+    reset.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     reset.set_defaults(func=command_factory_reset)
-    update = sub.add_parser("update", help="update the CLI, HID helper, and firmware")
-    update.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    update = sub.add_parser("update", help="Update the CLI, HID helper, and device firmware.")
+    update.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
     update.add_argument("--release-version", help=argparse.SUPPRESS)
     update.set_defaults(func=command_update)
-    rom = sub.add_parser("rom", aliases=["bootloader"], help="prepare a physical ROM flash")
-    rom.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    rom = sub.add_parser("rom", aliases=["bootloader"], help="Show the physical ROM bootloader instructions.")
+    rom.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     rom.set_defaults(func=command_rom)
-    status_cmd = sub.add_parser("status", help="print device status as JSON")
-    status_cmd.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    status_cmd = sub.add_parser("status", help="Show device status as JSON.")
+    status_cmd.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     status_cmd.set_defaults(func=command_status)
-    logs = sub.add_parser("logs", help="show the device event log without probing the sensor")
-    logs.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    logs = sub.add_parser("logs", help="Show the device event log without starting fingerprint capture.")
+    logs.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     logs.set_defaults(func=command_logs)
-    test = sub.add_parser("test", help="check the USB serial connection")
-    test.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    test = sub.add_parser("test", help="Check the USB serial connection.")
+    test.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     test.set_defaults(func=command_test)
-    keys = sub.add_parser("keys", help="create a PIV identity on the device")
-    keys.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    keys = sub.add_parser("keys", help="Create a PIV identity on the device.")
+    keys.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     keys.set_defaults(func=command_keys)
-    pair = sub.add_parser("pair", help="pair PIV with the current macOS user")
-    pair.add_argument("--port", default=argparse.SUPPRESS, help="USB serial path; overrides the global --port")
+    pair = sub.add_parser("pair", help="Pair the PIV identity with the current macOS user.")
+    pair.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     pair.set_defaults(func=command_pair)
-    hid_smoke = sub.add_parser("hid-smoke", help="test the HID helper without a physical device")
+    hid_smoke = sub.add_parser("hid-smoke", help="Test the HID helper without connecting a physical device.")
     hid_smoke.set_defaults(func=command_hid_smoke)
-    enroll_demo = sub.add_parser("enroll-demo", help="preview fingerprint enrollment without a device")
+    enroll_demo = sub.add_parser("enroll-demo", help="Preview fingerprint enrollment without connecting a device.")
     enroll_demo.set_defaults(func=command_enroll_demo)
-    ports = sub.add_parser("ports", help="list USB serial ports without opening a device")
-    ports.add_argument("--json", action="store_true", help="output port paths as JSON")
+    ports = sub.add_parser("ports", help="List USB serial ports without opening a device connection.")
+    ports.add_argument("--json", action="store_true", help="Show USB serial paths as JSON.")
     ports.set_defaults(func=command_ports)
-    help_cmd = sub.add_parser("help", help="show general or command-specific help")
-    help_cmd.add_argument("topic", nargs="?", help="command to explain")
+    help_cmd = sub.add_parser("help", help="Show general or command help.")
+    help_cmd.add_argument("topic", nargs="?", help="Select a command to explain.")
     help_cmd.set_defaults(func=command_help)
     examples = {
-        "menu": ("Open the interactive menu. Select options by number or name; 0 returns or exits.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
-        "setup": ("Configure this Mac and enroll a fingerprint if the sensor is empty. Existing enrollment is preserved.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
-        "mode": ("Change device mode after fingerprint approval. Reconnect when prompted; the command verifies the active mode.", "tinytouch mode hid\ntinytouch mode piv"),
-        "enroll": ("Enroll left, right, top and center views of the same finger. Occupied blocks require replacement confirmation.", "tinytouch enroll 2\ntinytouch enroll 2 --replace"),
-        "delete": ("Delete the entire selected finger block after fingerprint approval. Other blocks are preserved.", "tinytouch delete 2"),
-        "fingers": ("Read occupied blocks, partial enrollment, pending cleanup and remaining capacity. Does not change enrollment.", "tinytouch fingers"),
-        "computers": ("List or remove registered HID computers. To add this Mac, use HID setup. Removing the last host selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
-        "factory-reset": ("Clear fingerprints, identities, registered computers, device preferences and local pairing. Requires confirmation and fingerprint approval.", "tinytouch factory-reset"),
-        "update": ("Update the CLI, HID helper and firmware from one verified release. Reconnect after firmware staging.", "tinytouch update"),
-        "rom": ("Print instructions for entering the physical ROM bootloader. The command does not flash the device.", "tinytouch rom"),
-        "status": ("Read device status as JSON. Use config for a readable settings table and ports to inspect USB serial paths.", "tinytouch status\ntinytouch --port /dev/cu.usbmodem101 status"),
-        "test": ("Check USB serial communication and device status. Use --verbose for protocol diagnostics.", "tinytouch test\ntinytouch --verbose test\ntinytouch ports"),
-        "logs": ("Read recent touch and HID events without initiating fingerprint capture.", "tinytouch logs"),
-        "keys": ("Create a PIV identity after fingerprint approval. Use setup for the complete macOS configuration sequence.", "tinytouch keys"),
-        "pair": ("Pair the PIV identity with the current macOS user. Requires macOS administrator and fingerprint approval.", "tinytouch pair"),
-        "enroll-demo": ("Preview the enrollment interface without a device. Tab simulates a tap; q exits.", "tinytouch enroll-demo"),
-        "ports": ("List candidate USB serial paths without connecting to a device. Use --port PATH with a device command.", "tinytouch ports\ntinytouch ports --json\ntinytouch --port /dev/cu.usbmodem101 status"),
+        "menu": ("Open the interactive menu. Select an option by number or name. Select 0 to return or exit.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
+        "setup": ("Configure this Mac. Enroll a fingerprint if the sensor is empty. Keep any existing fingerprint enrollment.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
+        "mode": ("Change the device mode after fingerprint approval. Reconnect when prompted. The command checks the active mode.", "tinytouch mode hid\ntinytouch mode piv"),
+        "enroll": ("Enroll the left, right, top, and center views of the same finger. Confirm replacement before using an occupied fingerprint block.", "tinytouch enroll 2\ntinytouch enroll 2 --replace"),
+        "delete": ("Delete all views in the selected fingerprint block after fingerprint approval. Keep the other fingerprint blocks.", "tinytouch delete 2"),
+        "fingers": ("Read occupied fingerprint blocks, partial enrollment, pending cleanup, and available capacity. Keep the existing enrollment.", "tinytouch fingers"),
+        "computers": ("List or remove registered HID computers. Use HID setup to add this Mac. Removing the last computer selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
+        "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and local pairing. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
+        "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
+        "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),
+        "status": ("Read the device status as JSON. Use 'config' for a readable settings table. Use 'ports' to list USB serial paths.", "tinytouch status\ntinytouch --port /dev/cu.usbmodem101 status"),
+        "test": ("Check USB serial communication and device status. Use --verbose to show protocol diagnostics.", "tinytouch test\ntinytouch --verbose test\ntinytouch ports"),
+        "logs": ("Read recent touch and HID events without starting fingerprint capture.", "tinytouch logs"),
+        "keys": ("Create a PIV identity after fingerprint approval. Use 'setup' for the full macOS configuration process.", "tinytouch keys"),
+        "pair": ("Pair the PIV identity with the current macOS user. Authorize macOS as an administrator and approve pairing with an enrolled fingerprint.", "tinytouch pair"),
+        "enroll-demo": ("Preview enrollment without connecting a device. Press Tab to simulate a tap. Press q to exit.", "tinytouch enroll-demo"),
+        "ports": ("List available USB serial paths without opening a device connection. Use --port PATH to select a device for a command.", "tinytouch ports\ntinytouch ports --json\ntinytouch --port /dev/cu.usbmodem101 status"),
     }
     for name, (description, commands) in examples.items():
         entry = sub.choices[name]

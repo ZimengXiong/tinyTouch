@@ -216,7 +216,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_json_write_is_rejected_before_device_access(self):
         with mock.patch.object(cli, "choose_port") as port:
-            with self.assertRaisesRegex(cli.ToolError, "--json applies to setting reads"):
+            with self.assertRaisesRegex(cli.ToolError, "Omit --json when changing a setting"):
                 self.invoke(["config", "led_idle_color", "purple", "--json"])
         port.assert_not_called()
 

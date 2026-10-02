@@ -27,17 +27,17 @@ release_file="$(plutil -extract "cli.$cli_key.file" raw -o - "$work_dir/release.
 release_sha256="$(plutil -extract "cli.$cli_key.sha256" raw -o - "$work_dir/release.json")"
 case "$version" in
   [0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*-*) ;;
-  *) echo 'The tinyTouch release version is invalid.' >&2; exit 1 ;;
+  *) echo 'The tinyTouch release version is not valid.' >&2; exit 1 ;;
 esac
 if [ "$release_file" != "$expected_file" ]; then
-  echo 'The tinyTouch CLI filename is invalid.' >&2
+  echo 'The tinyTouch CLI filename is not valid.' >&2
   exit 1
 fi
 case "$release_sha256" in
-  *[!0-9a-f]*|'') echo 'The tinyTouch CLI checksum is invalid.' >&2; exit 1 ;;
+  *[!0-9a-f]*|'') echo 'The tinyTouch CLI checksum is not valid.' >&2; exit 1 ;;
 esac
 if [ "${#release_sha256}" -ne 64 ]; then
-  echo 'The tinyTouch CLI checksum is invalid.' >&2
+  echo 'The tinyTouch CLI checksum is not valid.' >&2
   exit 1
 fi
 release_url="$release_root/$release_file"
@@ -70,8 +70,8 @@ if [ -z "${install_dir:-}" ]; then
 fi
 
 if [ -z "${install_dir:-}" ]; then
-  echo 'No safe install directory is present on this Terminal PATH.' >&2
-  echo 'Set TINYTOUCH_INSTALL_DIR to a directory already on PATH and run the installer again.' >&2
+  echo "No supported install directory is on this terminal's PATH." >&2
+  echo 'Set TINYTOUCH_INSTALL_DIR to a directory already on PATH. Then run the installer again.' >&2
   exit 1
 fi
 
@@ -79,7 +79,7 @@ echo 'Installing tinyTouch...'
 curl -fsSL "$release_url" -o "$work_dir/tinytouch.tar.gz"
 actual_sha256="$(shasum -a 256 "$work_dir/tinytouch.tar.gz" | awk '{print $1}')"
 if [ "$actual_sha256" != "$release_sha256" ]; then
-  echo 'Download checksum did not match. Stopping.' >&2
+  echo 'The download checksum did not match. Installation stopped.' >&2
   echo 'Contact tinytouch@alpacaengineer.ing if this continues.' >&2
   exit 1
 fi
@@ -107,7 +107,7 @@ if { [ -d "$install_dir" ] && [ -w "$install_dir" ]; } || \
   ln -sfn "$bundle/tinytouch" "$install_dir/.tinytouch.new"
   mv -f "$install_dir/.tinytouch.new" "$install_dir/tinytouch"
 else
-  echo "Installing to $install_dir requires your Mac administrator password."
+  echo "Installation in $install_dir requires your Mac administrator password."
   sudo mkdir -p "$install_dir"
   sudo ln -sfn "$bundle/tinytouch" "$install_dir/.tinytouch.new"
   sudo mv -f "$install_dir/.tinytouch.new" "$install_dir/tinytouch"

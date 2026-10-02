@@ -188,8 +188,8 @@ class InteractiveCliTests(unittest.TestCase):
         self.assertEqual(received.port, "selected")
         self.assertFalse(received.replace)
         text = self.output.getvalue()
-        self.assertIn("partially occupied; 1 of 4 views", text)
-        self.assertIn("cleanup pending", text)
+        self.assertIn("Partially enrolled: 1 of 4 fingerprint views", text)
+        self.assertIn("Cleanup pending", text)
 
     def test_enrollment_limits_empty_choices_to_device_capacity(self):
         self.inventory({1: 4}, 1)
@@ -269,7 +269,7 @@ class InteractiveCliTests(unittest.TestCase):
                 self.subTest(number=number),
                 mock.patch.object(cli, "detect_ports", return_value=["first", "last"]),
                 mock.patch("builtins.input", return_value=number),
-                self.assertRaisesRegex(cli.ToolError, "listed devices"),
+                self.assertRaisesRegex(cli.ToolError, "connected USB serial devices"),
             ):
                 cli.choose_port(None)
 

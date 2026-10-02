@@ -40,7 +40,7 @@ class ProtocolSixTests(unittest.TestCase):
                 session.assert_called_once_with("/dev/cu.TT")
                 unlock.assert_called_once()
                 command.assert_called_once_with("/dev/cu.TT", f"SET LED {value}", timeout=5)
-                self.assertIn(f"LED is {state}", output.call_args.args[0])
+                self.assertIn(f"Sensor lighting mode: {state}", output.call_args.args[0])
 
     def test_led_on_old_firmware_explains_update_before_authorization(self):
         with (
@@ -108,7 +108,7 @@ class ProtocolSixTests(unittest.TestCase):
         text = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("⣰⣷⣼⣇", text)
         self.assertIn(cli.CLI_VERSION, text)
-        self.assertIn("Factory Reset", text)
+        self.assertIn("Factory reset", text)
 
     def test_terminal_style_respects_no_color(self):
         with (
@@ -124,8 +124,8 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             self.assertEqual(cli.choose_mode(None), "hid")
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("HID — Types your password", text)
-        self.assertIn("PIV — Acts as a smart card", text)
+        self.assertIn("HID (Types your password", text)
+        self.assertIn("PIV (Acts as a smart card", text)
 
     def test_enrollment_runs_all_views_for_one_finger(self):
         responses = [
@@ -151,8 +151,8 @@ class ProtocolSixTests(unittest.TestCase):
         unlock.assert_called_once()
         text = "\n".join(call.args[0] for call in output.call_args_list)
         for view in ("left edge", "right edge", "top", "center"):
-            self.assertIn(f"Touch with the {view} of the same finger.", text)
-        self.assertIn("Finger 2 enrolled with all four views.", text)
+            self.assertIn(f"Touch the sensor with the {view} of the same finger.", text)
+        self.assertIn("Finger 2 is enrolled with all four views.", text)
 
     def test_partial_legacy_block_requires_replacement_confirmation(self):
         with (
@@ -296,8 +296,8 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.introduce_enrollment()
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("enroll different views of your fingerprint", text)
-        self.assertIn("instructions on the next screen", text)
+        self.assertIn("Enroll different views of the same fingerprint", text)
+        self.assertIn("instructions shown on the next screen", text)
         ask.assert_called_once_with("Press Enter to continue.")
 
     def test_enrollment_oval_has_no_repeat_badge(self):
@@ -565,7 +565,7 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_pair(args)
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("If you are not sure, select 1.", text)
+        self.assertIn("Select 1 if you are not sure which identity to use.", text)
 
     def test_new_piv_identity_wait_has_creation_guidance(self):
         args = SimpleNamespace(
@@ -615,11 +615,11 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("Waiting for macOS", wait.call_args.kwargs["message"])
         self.assertTrue(pair.call_args.kwargs["separate_identity_list"])
         self.assertIn(
-            "tinyTouch is ready in PIV mode.",
+            "tinyTouch is ready to use in PIV mode.",
             [call.args[0] for call in output.call_args_list],
         )
         self.assertIn(
-            "Setting up PIV certificates. This may take up to 30 seconds.",
+            "Setting up PIV certificates. This can take up to 30 seconds.",
             [call.args[0] for call in output.call_args_list],
         )
 
@@ -668,7 +668,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch the fingerprint sensor now with an already-enrolled finger to pair PIV with this Mac.",
+            "Touch the sensor with an enrolled finger to pair PIV with this Mac.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
@@ -702,7 +702,7 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_factory_reset(args)
         self.assertEqual(calls, ["RESET FACTORY"])
-        output.assert_called_once_with("Factory reset completed.")
+        output.assert_called_once_with("Factory reset complete.")
 
     def test_factory_reset_unpairs_the_live_piv_identity_before_erasing_it(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234")

@@ -30,6 +30,24 @@ Menu actions use the same handlers as explicit commands. Explicit commands retai
 their arguments, output formats, and exit codes. Without an interactive terminal,
 running `tinytouch` prints help and exits without prompting or accessing a device.
 
+## Prompts and results
+
+Setup and the interactive menu use the same HID and PIV mode descriptions.
+Options with descriptions use parentheses. Input prompts end with a colon;
+confirmation prompts use `[y/N]`, with **No** as the default.
+
+After enrollment, protected changes require fingerprint approval. For example,
+a settings change prompts:
+
+```text
+Touch the sensor with an enrolled finger to change device settings.
+```
+
+Keep your finger off the sensor until the touch prompt. Then touch once and hold
+it still. Lift your finger when prompted. An error states the problem and, when
+available, the next action. Settings messages distinguish a saved change from a
+preview that leaves saved settings unchanged.
+
 ## Global options
 
 ```text
@@ -40,10 +58,10 @@ tinytouch --help
 
 | Option | Description |
 |---|---|
-| `-h`, `--help` | Show help |
-| `--verbose` | Print subprocess, serial, and device-response diagnostics |
+| `-h`, `--help` | Show the help text and exit the CLI |
+| `--verbose` | Show command and device diagnostics |
 | `--port PATH` | Select a serial device for commands or the interactive menu |
-| `--version` | Print the installed CLI version and exit |
+| `--version` | Show the CLI version and exit the CLI |
 
 Global options must precede the command:
 
@@ -65,9 +83,8 @@ standard error. Explicit commands use exit codes `1` for operation errors,
 tinytouch ports [--json]
 ```
 
-Lists candidate USB serial paths without opening a device. Select a path with
-`tinytouch --port PATH`. If no paths appear, connect tinyTouch with a data-capable
-USB cable and retry.
+Lists available USB serial paths without opening a device connection. Select a path with
+`tinytouch --port PATH`. If no paths appear, connect tinyTouch with a USB cable that supports data and retry.
 
 ## `setup`
 
@@ -98,13 +115,13 @@ tinytouch led preset {default,ocean,neon,sunset} [--port PATH]
 tinytouch led preview COLOR [--effect EFFECT] [--duration-ms MS] [--port PATH]
 ```
 
-Without an action, shows current lighting preferences and defaults.
+Without an action, shows current lighting settings and defaults.
 `on` enables the sensor ring. `off` disables it, including authentication feedback.
 `only-auth` disables idle lighting and keeps configured authentication feedback
 (CLI and firmware 0.1.30+).
 
 Custom colors, effects, presets and previews require firmware from this branch
-(0.1.31+, `custom_config=1`). Older firmware still supports its existing LED modes.
+(0.1.31+, `custom_config=1`). Older firmware still supports its existing lighting modes.
 
 Colors: `off`, `blue`, `green`, `cyan`, `red`, `purple`, `yellow`, `white`.
 Effects: `steady`, `breathe`, `flash`, `fade-in`, `fade-out`.
@@ -121,13 +138,13 @@ tinytouch led preview purple --effect breathe --duration-ms 2000
 ```
 
 Presets set idle, breathing end, success and failure colors, idle effect, and
-continuous animation. They preserve LED mode and feedback duration. Preset writes
+continuous animation. They preserve lighting mode and feedback duration. Preset writes
 run in one authorized session; if a write fails, the CLI lists fields acknowledged
 before the failure. Read `tinytouch led` to inspect the saved state.
 
 Preview requires fingerprint approval, displays a temporary effect for 100–5000 ms
 (default: 1500), and restores the saved idle lighting. It does not save preferences.
-An explicit preview can illuminate the ring even when saved LED mode is `off`.
+An explicit preview can illuminate the ring even when saved lighting mode is `off`.
 
 The standard sensor command uses fixed RGB combinations. Arbitrary hex colors,
 brightness, animation speed and marquee effects are not exposed because they
@@ -148,10 +165,10 @@ Prints JSON containing:
 | `build` | First 12 characters of the source commit, or `development` |
 | `mode` | `piv` or `hid` |
 | `piv` | `ready` or `unconfigured` |
-| `led` | Saved sensor LED setting: `on`/`off` (0.1.29+) or `only-auth` (0.1.30+) |
+| `led` | Saved sensor lighting setting: `on`/`off` (0.1.29+) or `only-auth` (0.1.30+) |
 | `led_only_auth` | `1` when authentication-only lighting is supported (firmware 0.1.30+) |
 | `sensor` | `ready` or `offline` after a live UART probe |
-| `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for finger blocks |
+| `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for fingerprint blocks |
 | `finger_groups` | `1` when whole-finger commands are supported (firmware 0.1.29+) |
 | `config_values` | `1` when saved settings are returned for readback verification (0.1.31+) |
 | `custom_config` | `1` when custom LED preferences, previews and automatic PIV entry control are supported (0.1.31+) |
@@ -199,9 +216,11 @@ tinytouch enroll 3 --port /dev/cu.usbmodem101
 tinytouch fingers [--port PATH]
 ```
 
-Lists occupied and partially occupied finger blocks and space for additional
-fingers. With existing templates 1–5, fingers 1 and 2 are occupied and eight blocks
-remain available. No changes or fingerprint authorization are needed to list them.
+Lists fingerprint blocks and space for additional fingers. The command and
+interactive menu use the same status descriptions: **Enrolled**, **Partially
+enrolled**, and **Cleanup pending**. Partial enrollment keeps the entire block
+reserved. With existing templates 1–5, fingers 1 and 2 are occupied and eight blocks
+remain available. No changes or fingerprint approval are needed to list them.
 
 ## `delete`
 
@@ -224,7 +243,8 @@ tinytouch computers [list] [--port PATH]
 tinytouch computers remove HOST_ID [--port PATH]
 ```
 
-Lists or removes up to eight HID hosts. Removing the final host selects PIV mode. To add a host, run HID setup on that Mac.
+Lists or removes up to eight registered HID computers. Removing the last computer
+selects PIV mode. To add a computer, run HID setup on that Mac.
 
 ## `keys`
 
@@ -256,7 +276,13 @@ Updates the CLI, HID helper, and firmware. Reconnect the device after staging.
 tinytouch factory-reset [--port PATH]
 ```
 
-Removes fingerprints, keys, hosts, settings, local HID credentials, and PIV pairing. Requires confirmation and a fingerprint.
+Clears fingerprints, keys, registered computers, device settings, local HID
+credentials, and PIV pairing. Confirm the reset and approve it with an enrolled
+fingerprint. In **Diagnostics and recovery**, select:
+
+```text
+  7. Factory reset (Clear device and local configuration) [factory-reset]
+```
 
 ## `rom` / `bootloader`
 
@@ -276,9 +302,9 @@ tinytouch config NAME [VALUE] [--json] [--port PATH]
 tinytouch settings ...
 ```
 
-`settings` is an alias for `config`. Without a name, shows current preferences and
+`settings` is an alias for `config`. Without a name, shows current settings and
 defaults. `list` shows every setting, value range, default and effect without a
-device connection. With a name, reads that saved preference; with a value, writes
+device connection. With a name, reads that saved setting; with a value, writes
 it after fingerprint approval. `--json` applies to reads and `list`.
 
 ```sh
