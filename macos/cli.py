@@ -121,6 +121,7 @@ class SettingSpec:
 SETTINGS = {
     "mode": SettingSpec("MODE", "Device mode", "Select HID password entry or PIV smart card authentication. Reconnect the device after changing the mode.", "piv", choices={"piv": 0, "hid": 1}),
     "led": SettingSpec("LED", "Sensor lighting", "Enable all sensor lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
+    "piv_delay_ms": SettingSpec("PIV_DELAY", "PIV PIN delay (ms)", "Delay before automatic PIN entry after the smart card is ready.", "25", 0, 5000),
     "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Set the delay after each HID key press and release.", "7", 1, 100),
     "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after typing the password or the automatic PIV PIN.", "on", choices={"off": 0, "on": 1}),
     "touch_cooldown_ms": SettingSpec("COOLDOWN", "Touch cooldown (ms)", "Minimum interval between touch actions.", "800", 100, 5000),
@@ -156,6 +157,8 @@ def setting_name(value: str) -> str:
 def setting_value(name: str, value: str) -> str:
     spec = SETTINGS[name]
     text = value.strip().lower()
+    if name == "piv_delay_ms" and (not text.isascii() or not text.isdecimal() or not 0 <= int(text) <= 5000):
+        raise ToolError("piv_delay_ms must be an integer from 0 to 5000 milliseconds.")
     if spec.choices:
         aliases = {"true": "on", "false": "off", "yes": "on", "no": "off", "magenta": "purple", "breathing": "breathe"}
         text = aliases.get(text, text)
@@ -549,6 +552,8 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
         return "Update the tinyTouch CLI. Enrollment now uses complete fingerprint blocks instead of individual templates."
     if line == "ERR FINGER inventory_unavailable":
         return "Could not check the occupied fingerprint blocks. The existing enrollment was not changed."
+    if line == "ERR SET LED reconnect_required":
+        return "LED preference saved. Unplug tinyTouch and reconnect it to finish applying the lighting setting."
     if line.startswith("ERR LOCKED"):
         return "Fingerprint approval expired. Run the command again. Touch an enrolled finger when prompted."
     if line.startswith("ERR SET"):
@@ -1433,6 +1438,12 @@ def command_led(args: argparse.Namespace) -> None:
             raise ToolError(
                 "This firmware does not support LED control. Run 'tinytouch update'. Then unplug and reconnect tinyTouch before trying again."
             )
+        if args.state == "off" and "led_control" not in device:
+            raise ToolError(
+                "This firmware cannot disable the sensor's automatic authentication flashes. "
+                "Update the firmware before setting the LED fully off, then unplug and reconnect "
+                "tinyTouch when prompted."
+            )
         if args.state == "only-auth" and device.get("led_only_auth") != "1":
             raise ToolError(
                 "This firmware does not support authentication-only lighting. Run 'tinytouch update'. Then unplug and reconnect tinyTouch before trying again."
@@ -1440,8 +1451,34 @@ def command_led(args: argparse.Namespace) -> None:
         unlock(port, reason=f'set the sensor lighting to {args.state}')
         value = {"off": 0, "on": 1, "only-auth": 2}[args.state]
         serial_command(port, f"SET LED {value}", timeout=5)
-        fresh_status(port, {"led": args.state})
+        updated = fresh_status(port, {"led": args.state})
+        if updated.get("led_control") == "reconnect":
+            say(f"Sensor LED preference saved as {args.state}.")
+            say("Unplug tinyTouch and reconnect it to finish disabling the sensor's automatic lighting.")
+            return
+        if updated.get("led_control") not in (None, "manual") or updated.get("led_sync") == "pending":
+            raise ToolError("LED preference saved, but the sensor has not applied it. Check 'tinytouch status' and retry.")
         say(f'Sensor lighting mode: {args.state}. This setting is saved on tinyTouch.')
+
+
+def command_piv_touch(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        if "piv_touch" not in device:
+            raise ToolError(
+                "This firmware does not support touch-activated PIV. Run 'tinytouch update', "
+                "then unplug and reconnect tinyTouch before trying again."
+            )
+        unlock(port, reason=f"turn touch-activated PIV {args.state}")
+        serial_command(port, f"SET PIV_TOUCH {int(args.state == 'on')}", timeout=5)
+        fresh_status(port, {"piv_touch": args.state})
+    say(f"Touch-activated PIV is saved as {args.state}.")
+    say("Unplug and reconnect tinyTouch to apply this setting.")
+    if args.state == "on":
+        say("PIV stays hidden until touch, allowing password entry while idle. "
+            "Fingerprint login takes slightly longer while macOS discovers the card.")
 
 
 def command_config(args: argparse.Namespace) -> None:
@@ -1484,6 +1521,8 @@ def command_config(args: argparse.Namespace) -> None:
 
 
 def require_setting_support(device: dict[str, str], name: str) -> None:
+    if name == "piv_delay_ms" and "piv_delay_ms" not in device:
+        raise ToolError("This firmware does not support configurable PIV delay. Update its firmware first.")
     capability = SETTINGS[name].capability
     if capability and device.get(capability) != "1":
         raise ToolError(f"This firmware does not support {name}. Run 'tinytouch update' to install firmware 0.1.34 or later. Then unplug and reconnect tinyTouch.")
@@ -1503,7 +1542,7 @@ def apply_settings(explicit_port: str | None, values: dict[str, str]) -> None:
             for name, value in normalized.items():
                 serial_command(port, f"SET {SETTINGS[name].wire} {value}", timeout=5)
                 applied.append(name)
-            if device.get("config_values") == "1":
+            if device.get("config_values") == "1" or "piv_delay_ms" in normalized:
                 fresh_status(port, normalized)
         except ToolError:
             if applied:
@@ -1860,6 +1899,8 @@ def command_update(args: argparse.Namespace) -> None:
     notify("tinyTouch update staged", "Unplug and reconnect tinyTouch. Then run 'tinytouch status'.")
     say("The OTA firmware update is staged in the inactive slot.")
     say("Unplug and reconnect tinyTouch once to start the new firmware.")
+    if device.get("led") in ("off", "only-auth") and device.get("led_control") != "manual":
+        say(f"After it boots, run 'tinytouch led {device['led']}' and follow any additional reconnect prompt to finish the lighting update.")
 
 
 def command_rom(args: argparse.Namespace) -> None:
@@ -1959,6 +2000,8 @@ def command_pair(
     separate_identity_list: bool = False,
 ) -> None:
     require_macos()
+    port = choose_port(args.port)
+    prepare_piv_discovery(port)
     paired, available = identities or wait_for_piv_identities()
     if paired:
         say("PIV is already paired with this Mac.")
@@ -1983,13 +2026,23 @@ def command_pair(
     # Obtain sudo first, then grant fresh device presence. Enrollment and a
     # terminal password prompt can outlive firmware's short PIV authorization.
     authorize_macos()
-    port = choose_port(args.port)
+    # Selecting an identity or entering the macOS password can outlast the
+    # discovery window. Reopen first, then grant presence after the USB reset.
+    reopened = prepare_piv_discovery(port, refresh=True)
+    if reopened:
+        _, available_now = wait_for_piv_identities()
+        if identity not in available_now and identity not in paired_piv_identities():
+            raise ToolError("The selected PIV identity is no longer available. Try pairing again.")
     say("")
-    unlock(
-        port,
-        explain_pin=True,
-        reason="pair PIV with this Mac",
-    )
+    if reopened is not False:
+        unlock(
+            port,
+            explain_pin=True,
+            reason="pair PIV with this Mac",
+        )
+    else:
+        # Refresh authorized a card that was already visible, without a reset.
+        explain_piv_pin()
     keychain_warning = False
     try:
         result = run(
@@ -2149,6 +2202,11 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> None:
         if state is None:
             return
         command.append(state)
+    elif command == ["piv-touch"]:
+        state = select_option("Touch-activated PIV", [("on", "Enable"), ("off", "Disable")])
+        if state is None:
+            return
+        command.append(state)
     elif command == ["led", "preset"]:
         preset = select_option("LED preset", [(key, key.capitalize()) for key in LED_PRESETS])
         if preset is None:
@@ -2216,6 +2274,7 @@ INTERACTIVE_MENUS = {
     "settings": ("Device settings", (
         ("show", "Show current settings and defaults", ["config", "show"]),
         ("mode", "Change HID/PIV mode", ["mode"]),
+        ("piv-touch", "Show the smart card only after touch", ["piv-touch"]),
         ("led", "Sensor colors and effects", "lighting"),
         ("config", "Configure a setting", ["config"]),
         ("list", "List settings, limits and effects", ["config", "list"]),
@@ -2347,6 +2406,29 @@ def command_help(args: argparse.Namespace) -> None:
         parser().print_help()
 
 
+def prepare_piv_discovery(port: str, *, refresh: bool = False) -> bool | None:
+    """Expose for pairing; return whether USB resets, or None for legacy mode."""
+    with foreground_session(port):
+        device = status(port)
+        if device.get("piv_touch_active") != "on":
+            return None
+        if device.get("mode") != "piv" or device.get("piv") != "ready":
+            raise ToolError("Select PIV mode and create a PIV identity before pairing.")
+        visible = device.get("piv_visible") == "yes"
+        if visible and not refresh:
+            return False
+        unlock(port, reason="make the PIV identity available for pairing")
+        response = serial_command(port, "PIV OPEN", timeout=5)
+    # Visibility may have expired while AUTH waited for the user's finger.
+    # Use the device's decision at OPEN, not the earlier STATUS snapshot.
+    if not any("reconnect=required" in line for line in response):
+        return False
+    # The device deliberately drains its reply before disconnecting CDC.
+    time.sleep(1)
+    fresh_status(port, {"piv_visible": "yes"})
+    return True
+
+
 def parser() -> argparse.ArgumentParser:
     parser = FriendlyArgumentParser(
         prog="tinytouch",
@@ -2388,6 +2470,10 @@ def parser() -> argparse.ArgumentParser:
                          "\nExamples:\n  tinytouch led on\n  tinytouch led color idle purple\n  tinytouch led effect breathe\n  tinytouch led preset ocean\n  tinytouch led preview cyan --effect flash --duration-ms 2000\n\nPresets keep the current lighting mode. Preview restores the saved lighting settings without saving changes.\nRun 'tinytouch config led_idle_cycles 0' for continuous animation. Colors use fixed RGB combinations. This command format does not support hex colors or brightness control.")
     led.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     led.set_defaults(func=command_led)
+    piv_touch = sub.add_parser("piv-touch", help="allow password entry in PIV mode by hiding the card until touch")
+    piv_touch.add_argument("state", choices=("on", "off"))
+    piv_touch.add_argument("--port")
+    piv_touch.set_defaults(func=command_piv_touch)
     led_actions = led.add_subparsers(dest="state", metavar="ACTION")
     for action, description in (("on", "Enable all sensor lighting."), ("off", "Disable all sensor lighting."),
                                 ("only-auth", "Show only success and failure feedback on the sensor ring."),

@@ -16,6 +16,7 @@
 #include "mbedtls/md.h"
 #include "piv.h"
 #include "usb_descriptors.h"
+#include "usb_ccid.h"
 
 static const char *TAG = "touch_hid";
 static const uint8_t ascii_to_keycode[128][2] = {HID_ASCII_TO_KEYCODE};
@@ -369,7 +370,14 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     // The PIV applet accepts this PIN. Emit it only after a verified background
     // fingerprint match, so the macOS smart-card PIN field can complete login.
     static const uint8_t piv_pin[] = {'1', '1', '1', '1', '1', '1'};
+    if (!usb_ccid_wait_for_piv()) {
+      usb_ccid_touch_cancel();
+      touch_pin_hid_log_event("piv_discovery_timeout", match.slot);
+      return;
+    }
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
+    // Re-enumeration resets transport authorization. Grant presence only
+    // after enumeration and discovery have completed.
     piv_note_user_presence();
     if (!device_config_options().piv_auto_type) {
       touch_pin_hid_log_event("piv_presence_granted", match.slot);
@@ -423,6 +431,10 @@ static void touch_hid_task(void *arg) {
       }
     }
     bool present = fingerprint_present_hint();
+    // Prioritize a fresh touch, but keep retrying failed lighting cleanup while
+    // idle or waiting for lift, including after a foreground AUTH finishes.
+    if (runtime.state != AUTH_STATE_IDLE || !present || !runtime.presence_armed)
+      fingerprint_led_service();
 
     // Require an observed release before accepting the next asserted level.
     // This turns the touch signal into an edge, rather than continuously
@@ -438,8 +450,8 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
-    // Presence is the sole trigger for a capture. Idle operation never sends
-    // sensor commands and therefore never flashes a failure indication.
+    // Presence is the sole trigger for a capture. Idle lighting maintenance
+    // never captures or matches a fingerprint.
     if (!fingerprint_is_ready()) {
       // Recover in the background after a transient UART error. Throttle this
       // path so a disconnected sensor cannot monopolize the task.
@@ -462,8 +474,10 @@ static void touch_hid_task(void *arg) {
 
     runtime.presence_armed = false;
     touch_pin_hid_log_event("touch_detected", 0);
+    usb_ccid_touch_begin();
     fingerprint_match_t match = fingerprint_authorize_poll_match();
     if (match.slot == 0) {
+      usb_ccid_touch_cancel();
       touch_pin_hid_log_event("finger_no_match", 0);
       auth_wait_for_lift(&runtime, now);
       vTaskDelay(pdMS_TO_TICKS(device_config_options().led_feedback_ms));

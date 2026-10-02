@@ -73,3 +73,7 @@ typedef enum {
 
 device_options_t device_config_options(void);
 bool device_config_set_option(device_option_t option, uint16_t value);
+bool device_config_piv_touch_enabled(void);
+bool device_config_set_piv_touch_enabled(bool value);
+uint16_t device_config_piv_delay_ms(void);
+bool device_config_set_piv_delay_ms(uint16_t value);

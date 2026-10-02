@@ -6,9 +6,11 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 static const char *TAG = "fingerprint";
 
@@ -31,6 +33,19 @@ static finger_profiles_t profiles;
 static bool profiles_ready;
 static bool (*enrollment_connected)(void);
 static bool cleanup_pending_locked(void);
+
+// PS_BlnAmSw is persistent, but becomes effective only after sensor power loss.
+// Keep its migration separate from the user's LED preference and config blob.
+static uint8_t led_manual_stage; // 0: not requested, 1: reconnect needed, 2: cold boot observed
+static bool led_stage_loaded, led_stage_saved;
+static const char *led_control = "pending";
+static bool led_control_attempted;
+static unsigned led_manual_attempts;
+static TickType_t led_control_attempt_at;
+static uint8_t led_requested_color;
+static bool led_update_pending;
+static unsigned led_failures;
+static TickType_t led_attempt_at;
 
 static bool template_usable(uint16_t slot) {
   return profiles_ready && slot < FINGER_TEMPLATE_LIMIT &&
@@ -208,15 +223,126 @@ static void fp_give(void) {
   if (fp_mutex) xSemaphoreGive(fp_mutex);
 }
 
+static bool configure_manual_lighting(void) {
+  led_control_attempted = true;
+  led_control_attempt_at = xTaskGetTickCount();
+  nvs_handle_t handle;
+  if (!led_stage_loaded) {
+    esp_err_t result = nvs_open("tt_led", NVS_READWRITE, &handle);
+    if (result == ESP_OK) {
+      result = nvs_get_u8(handle, "manual", &led_manual_stage);
+      nvs_close(handle);
+      if (result == ESP_ERR_NVS_NOT_FOUND) { led_manual_stage = 0; result = ESP_OK; }
+    }
+    if (result != ESP_OK || led_manual_stage > 2) {
+      led_control = "storage-error";
+      return false;
+    }
+    led_stage_loaded = led_stage_saved = true;
+    if (led_manual_stage == 1 && esp_reset_reason() == ESP_RST_POWERON) {
+      // A software/OTA/watchdog reset does not cycle the external sensor.
+      led_manual_stage = 2;
+      led_stage_saved = false;
+    }
+  }
+  if (!led_manual_stage) {
+    // ZW111 manual, section 3.5.6: 0x60/0x00 disables the sensor's own
+    // success/failure animation after sensor power loss. A 0x3c off command
+    // alone cannot prevent a brief green flash during authentication.
+    const uint8_t manual = 0x00;
+    uint8_t confirm = 0xff;
+    bool was_ready = sensor_ready_snapshot();
+    led_manual_attempts++;
+    bool answered = fp_command(0x60, &manual, 1, &confirm, NULL, NULL, 200);
+    // Lighting support is not fingerprint transport health. A rejected or
+    // unsupported lighting command must not disable otherwise working unlocks.
+    set_sensor_ready(was_ready);
+    if (!answered || confirm != 0x00) {
+      // A packet error can be transient. Other negative confirmations need
+      // explicit retry/recovery; do not keep writing an unsupported setting.
+      led_control = answered && confirm != 0x01 ? "rejected" : "pending";
+      // A missing ACK could mean the write succeeded. Bound automatic retries
+      // to avoid repeatedly writing sensor flash on modules that never reply.
+      if (strcmp(led_control, "pending") == 0 && led_manual_attempts >= 3)
+        led_control = "unavailable";
+      ESP_LOGW(TAG, "manual LED control failed confirm=0x%02x", confirm);
+      return false;
+    }
+    led_manual_stage = 1;
+    led_stage_saved = false;
+  }
+  if (!led_stage_saved) {
+    esp_err_t result = nvs_open("tt_led", NVS_READWRITE, &handle);
+    if (result == ESP_OK) {
+      result = nvs_set_u8(handle, "manual", led_manual_stage);
+      if (result == ESP_OK) result = nvs_commit(handle);
+      nvs_close(handle);
+    }
+    if (result != ESP_OK) { led_control = "storage-error"; return false; }
+    led_stage_saved = true;
+  }
+  led_control = led_manual_stage == 1 ? "reconnect" : "manual";
+  return true;
+}
+
 static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles) {
   // Hi-Link PS_ControlBLN (0x3c), ordinary RGB format. Extended brightness,
   // speed and marquee formats are sensor-specific and are not sent here.
   uint8_t params[] = {effect, start, end, cycles};
   uint8_t confirm = 0xff;
-  return fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 1000) && confirm == 0x00;
+  bool was_ready = sensor_ready_snapshot();
+  bool ok = fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 200) && confirm == 0x00;
+  set_sensor_ready(was_ready);
+  led_attempt_at = xTaskGetTickCount();
+  led_update_pending = !ok;
+  if (ok) led_failures = 0;
+  else {
+    if (!led_failures) ESP_LOGW(TAG, "LED update pending confirm=0x%02x", confirm);
+    if (led_failures < 3) led_failures++;
+  }
+  return ok;
 }
 
+static bool apply_aura(void);
+
 static bool set_aura(uint8_t color) {
+  led_requested_color = color;
+  return apply_aura();
+}
+
+void fingerprint_led_service(void) {
+  // Called even while waiting for a finger to lift, so a rejected cleanup is
+  // not forgotten. One bounded command per pass; no UART traffic when settled.
+  if (!fp_take(0)) return;
+  TickType_t now = xTaskGetTickCount();
+  if (sensor_ready_snapshot() && (!led_stage_loaded || !led_manual_stage || !led_stage_saved) &&
+      strcmp(led_control, "rejected") != 0 &&
+      strcmp(led_control, "unavailable") != 0 &&
+      (!led_control_attempted || (TickType_t)(now - led_control_attempt_at) >= pdMS_TO_TICKS(2000))) {
+    (void)configure_manual_lighting();
+  } else if (sensor_ready_snapshot() && led_update_pending &&
+             (TickType_t)(now - led_attempt_at) >= pdMS_TO_TICKS(led_failures < 3 ? 100 : 2000)) {
+    (void)apply_aura();
+  }
+  fp_give();
+}
+
+const char *fingerprint_led_control_status(void) {
+  if (!fp_take(0)) return "busy";
+  const char *value = led_control;
+  fp_give();
+  return value;
+}
+
+bool fingerprint_led_update_pending(void) {
+  if (!fp_take(0)) return true;
+  bool value = led_update_pending;
+  fp_give();
+  return value;
+}
+
+static bool apply_aura(void) {
+  uint8_t color = led_requested_color;
   device_led_mode_t mode = device_config_led_mode();
   // Determine the role before mapping colors. A blue success color must still
   // show in ONLY_AUTH mode, and an idle red color must remain suppressed.
@@ -248,6 +374,8 @@ bool fingerprint_set_led_mode(device_led_mode_t mode) {
   if (!fp_take(1000)) return false;
   bool ok = device_config_set_led_mode(mode);
   if (ok) {
+    led_manual_attempts = 0;
+    bool controlled = configure_manual_lighting();
     // The sensor can discard a command while its own animation is running.
     // Reassert a steady colour and only report success after acknowledgment.
     for (int attempt = 0; attempt < 3; attempt++) {
@@ -255,6 +383,7 @@ bool fingerprint_set_led_mode(device_led_mode_t mode) {
       if (ok) break;
       if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(50));
     }
+    ok = ok && controlled;
   }
   fp_give();
   return ok;
@@ -374,11 +503,11 @@ fingerprint_match_t fingerprint_authorize_poll_match(void) {
   }
   fingerprint_match_t match = fingerprint_match_captured(true);
   device_led_mode_t mode = device_config_led_mode();
-  if (mode == DEVICE_LED_ONLY_AUTH && prompted_authorization_active) {
+  if (mode != DEVICE_LED_OFF && prompted_authorization_active) {
     // Foreground AUTH has no HID result timer to restore the idle light.
     show_result(match.slot != 0);
   } else if (match.slot) set_aura(FP_LED_GREEN);
-  else if (mode == DEVICE_LED_ONLY_AUTH) set_aura(FP_LED_RED);
+  else if (mode != DEVICE_LED_OFF) set_aura(FP_LED_RED);
   else if (mode == DEVICE_LED_OFF) set_aura(0);
   fp_give();
   return match;
@@ -409,6 +538,16 @@ void fingerprint_init(void) {
   fp_mutex = xSemaphoreCreateMutex();
   configASSERT(fp_mutex != NULL);
   profiles_ready = finger_profiles_load(&profiles);
+  led_manual_stage = 0;
+  led_stage_loaded = led_stage_saved = led_control_attempted = false;
+  led_control = "pending";
+  led_manual_attempts = 0;
+  // A later COUNT/STATUS probe can restore transport health without entering
+  // fingerprint_recover(). Keep idle lighting pending even if boot verify fails.
+  led_requested_color = FP_LED_BLUE;
+  led_update_pending = true;
+  led_attempt_at = xTaskGetTickCount();
+  led_failures = 0;
 
   uint8_t params[] = {0x00, 0x00, 0x00, 0x00};
   bool ok = false;
@@ -424,6 +563,7 @@ void fingerprint_init(void) {
   ESP_LOGI(TAG, "sensor verify: %s", ok ? "ok" : "failed");
   if (ok) {
     configASSERT(fp_take(1000));
+    (void)configure_manual_lighting();
     if (profiles_ready) (void)cleanup_pending_locked();
     fp_give();
     fingerprint_led_idle();
@@ -452,7 +592,11 @@ bool fingerprint_recover(void) {
     if (!ok && attempt < 2) vTaskDelay(pdMS_TO_TICKS(100));
   }
   set_sensor_ready(ok);
-  if (ok && device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
+  if (ok) {
+    led_manual_attempts = 0;
+    (void)configure_manual_lighting();
+    set_aura(FP_LED_BLUE);
+  }
   fp_give();
   return ok;
 }

@@ -39,6 +39,21 @@ class ProtocolSixTests(unittest.TestCase):
               mock.patch.object(cli.subprocess, "Popen") as start):
             cli.chime("Glass")
         start.assert_not_called()
+    def test_led_off_rejects_legacy_firmware_that_can_still_flash_green(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={
+                "protocol": "6", "firmware": "0.1.30", "led": "off", "led_only_auth": "1",
+            }),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "automatic authentication flashes"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
 
     def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
         for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
@@ -47,7 +62,7 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session") as session,
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"},
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "on", "led_only_auth": "1", "led_control": "manual"},
                     {"led": state},
                 ]),
                 mock.patch.object(cli, "unlock") as unlock,
@@ -74,6 +89,64 @@ class ProtocolSixTests(unittest.TestCase):
                 args.func(args)
             unlock.assert_not_called()
             command.assert_not_called()
+
+    def test_led_migration_requires_reconnect_without_claiming_light_is_off(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", side_effect=[
+                {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "reconnect"},
+                {"led": "off", "led_control": "reconnect", "led_sync": "synced"},
+            ]),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            args.func(args)
+            text = "\n".join(call.args[0] for call in output.call_args_list)
+            self.assertIn("Unplug tinyTouch and reconnect", text)
+            self.assertIn("preference saved", text)
+            self.assertNotIn("LED is off", text)
+
+    def test_led_reconnect_response_explains_saved_preference(self):
+        message = cli.human_error("ERR SET LED reconnect_required")
+        self.assertIn("preference saved", message)
+        self.assertIn("Unplug tinyTouch and reconnect", message)
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"}),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command", side_effect=cli.ToolError(message)),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "Unplug tinyTouch and reconnect"):
+                args.func(args)
+            output.assert_not_called()
+
+    def test_led_incomplete_control_or_cleanup_does_not_report_success(self):
+        for control, sync in (("rejected", "synced"), ("pending", "synced"),
+                              ("unavailable", "synced"),
+                              ("storage-error", "synced"), ("busy", "pending"),
+                              ("manual", "pending")):
+            with (
+                self.subTest(control=control, sync=sync),
+                mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+                mock.patch.object(cli, "foreground_session"),
+                mock.patch.object(cli, "status", side_effect=[
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"},
+                    {"led": "off", "led_control": control, "led_sync": sync},
+                ]),
+                mock.patch.object(cli, "unlock"),
+                mock.patch.object(cli, "serial_command"),
+                mock.patch.object(cli, "say") as output,
+            ):
+                args = cli.parser().parse_args(["led", "off"])
+                with self.assertRaisesRegex(cli.ToolError, "not applied"):
+                    args.func(args)
+                output.assert_not_called()
 
     def test_led_only_auth_on_old_firmware_requires_update_without_writing(self):
         with (
@@ -660,6 +733,7 @@ class ProtocolSixTests(unittest.TestCase):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         calls = []
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]
@@ -684,6 +758,7 @@ class ProtocolSixTests(unittest.TestCase):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -712,6 +787,7 @@ class ProtocolSixTests(unittest.TestCase):
             stderr="",
         )
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -730,6 +806,7 @@ class ProtocolSixTests(unittest.TestCase):
         identities = ["A" * 40, "B" * 40]
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], identities)

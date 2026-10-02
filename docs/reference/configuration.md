@@ -49,6 +49,8 @@ blob; missing or invalid extra preferences use defaults without rewriting creden
 |---|---:|---:|
 | Sensor lighting | On | Off, on, or authentication feedback only |
 | Mode | PIV | PIV or HID |
+| Touch-activated PIV | Off | Off or on |
+| PIV delay before PIN entry | 25 ms | 0–5000 ms |
 | Submit Enter after HID password | On | Off or on |
 | HID typing delay | 7 ms | 1–100 ms |
 | Touch cooldown | 800 ms | 100–5000 ms |
@@ -86,6 +88,62 @@ The ordinary RGB packet does not include brightness or period controls. Extended
 speed, brightness and marquee formats require sensor-specific support and are
 not exposed. UART pins, baud rate, sensor address, fingerprint block size, PIV
 authentication windows and protocol identifiers remain implementation parameters.
+## Brief green flash with LED off
+
+Older firmware sends an off command after authentication, but the sensor's
+automatic mode can illuminate green during a match. Manual sensor lighting
+removes that animation. The setting is written once and takes effect after
+physically disconnecting USB and reconnecting the device.
+
+After installing firmware with this fix, run `tinytouch led off`. Follow any
+reconnect instruction, then check `tinytouch status`: `led=off`,
+`led_control=manual`, and `led_sync=synced`.
+
+The [ZW111 manufacturer manual, section 3.5.6](https://r0.hlktech.com/download/HLK-ZW111/1/%E6%8C%87%E7%BA%B9%E6%A8%A1%E7%BB%84%E4%BA%A7%E5%93%81%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C_V1.5.1.pdf)
+specifies the manual-lighting command and required sensor power cycle.
+
+## Password entry in PIV mode
+
+This development release adds `tinytouch piv-touch on`. After authorizing the change,
+unplug and reconnect tinyTouch. PIV mode then hides its smart-card interface
+while idle, so macOS can offer password entry at the login or lock screen.
+
+Touching the sensor exposes the card for up to 20 seconds. A matching
+fingerprint is still required to use the private key. The card hides after the
+login and Login Keychain operations finish transferring their responses to
+macOS, or after a failed match. Login takes slightly longer because macOS must
+discover the card before the device types its dummy PIN. The timeout returns to
+password entry if login does not complete. Configuration commands and firmware
+transfers finish before an automatic USB reconnect.
+
+The setting is off by default, survives reconnects, and does not change HID
+authentication. Run `tinytouch piv-touch off`, then unplug and reconnect, to
+restore continuous PIV visibility. Factory reset restores the default. Upgrading
+preserves the existing configuration and pairings.
+
+`tinytouch pair` can temporarily expose the card for setup after fingerprint
+authorization. This discovery window lasts 60 seconds; it does not grant
+private-key access by itself. A Mac policy requiring smart cards still applies.
+
+### Delay before PIN entry
+
+After macOS selects the PIV applet and USB/HID are ready, tinyTouch waits
+25 ms before typing its dummy PIN. Set a different delay with:
+
+```sh
+tinytouch config piv_delay_ms 25
+```
+
+The range is 0–5000 ms. Fingerprint approval is required. The setting persists
+across reconnects and applies to the next touch login without a reboot.
+`tinytouch status` reports the saved value as `piv_delay_ms`.
+The scheduler uses 10 ms ticks, so PIN entry can start up to one tick after the
+configured delay. Existing saved delays are retained when firmware is updated.
+
+The device cannot confirm when macOS finishes switching the login field. Test
+25 ms on your Mac, including after wake and reconnect. If PIN entry starts too
+early, increase the delay. Use the previous one-second delay with
+`tinytouch config piv_delay_ms 1000`.
 
 ## Fingers and existing enrollment
 
@@ -164,6 +222,10 @@ Removing the last registered computer selects PIV mode.
 ## PIV state
 
 `piv=ready` means the device has a private key and certificate. Run `sc_auth identities` to check macOS pairing.
+With touch activation enabled, an idle card is hidden from discovery; use
+`tinytouch pair` to discover it for pairing. `piv_touch` reports the saved setting,
+`piv_touch_active` reports the setting applied at boot, and `piv_visible` reports
+current USB visibility.
 
 ## macOS paths
 

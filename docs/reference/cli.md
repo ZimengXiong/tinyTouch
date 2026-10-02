@@ -121,7 +121,7 @@ Without an action, shows current lighting settings and defaults.
 (CLI and firmware 0.1.30+).
 
 Custom colors, effects, presets and previews require firmware from this branch
-(0.1.31+, `custom_config=1`). Older firmware still supports its existing lighting modes.
+(0.1.34-dev.1+, `custom_config=1`). Older firmware still supports its existing lighting modes.
 
 Colors: `off`, `blue`, `green`, `cyan`, `red`, `purple`, `yellow`, `white`.
 Effects: `steady`, `breathe`, `flash`, `fade-in`, `fade-out`.
@@ -149,6 +149,35 @@ An explicit preview can illuminate the ring even when saved lighting mode is `of
 The standard sensor command uses fixed RGB combinations. Arbitrary hex colors,
 brightness, animation speed and marquee effects are not exposed because they
 require different sensor variants or command formats.
+Full `off` mode also disables the sensor's automatic success/failure animations.
+The first update that adds manual sensor lighting requires a physical unplug and
+reconnect after the manual-mode command is saved. A software reset is insufficient.
+The CLI reports the required reconnect instead of claiming the light is already off.
+Older firmware can clear the LED after authentication but can still flash green;
+update firmware before using full `off` mode.
+
+`tinytouch status` reports `led_control=manual` when the migration is complete and
+`led_sync=synced` when the latest LED command was acknowledged. `reconnect` means
+sensor power must be cycled. Fingerprint matching remains enabled in all LED modes.
+
+## `piv-touch`
+
+```text
+tinytouch piv-touch {on,off} [--port PATH]
+```
+
+Enables or disables touch activation for PIV mode. Requires firmware 0.1.34-dev.1 or
+later and fingerprint approval on an enrolled device. Unplug and reconnect to
+apply the saved setting.
+
+When enabled, the smart-card interface stays hidden until touch, keeping
+password entry available while idle. A fingerprint match still authorizes PIV
+authentication. Discovery adds a short login delay. The card hides after login
+and Login Keychain responses reach macOS, after a failed match, or after a
+20-second timeout. The default is `off`.
+
+See [Device configuration](/reference/configuration#password-entry-in-piv-mode)
+for setup behavior and visibility windows.
 
 ## `status`
 
@@ -167,15 +196,19 @@ Prints JSON containing:
 | `piv` | `ready` or `unconfigured` |
 | `led` | Saved sensor lighting setting: `on`/`off` (0.1.29+) or `only-auth` (0.1.30+) |
 | `led_only_auth` | `1` when authentication-only lighting is supported (firmware 0.1.30+) |
+| `piv_touch` | Saved touch activation preference: `on` or `off` (firmware 0.1.30+) |
+| `piv_touch_active` | Touch activation setting applied at boot: `on` or `off` |
+| `piv_delay_ms` | Saved delay before PIN entry after PIV selection and USB/HID readiness, in milliseconds |
+| `piv_visible` | Whether USB currently exposes the smart-card interface: `yes` or `no` |
 | `sensor` | `ready` or `offline` after a live UART probe |
 | `fingerprints` | Raw template count, retained for compatibility; use `tinytouch fingers` for fingerprint blocks |
 | `finger_groups` | `1` when whole-finger commands are supported (firmware 0.1.29+) |
-| `config_values` | `1` when saved settings are returned for readback verification (0.1.31+) |
-| `custom_config` | `1` when custom LED preferences, previews and automatic PIV entry control are supported (0.1.31+) |
+| `config_values` | `1` when saved settings are returned for readback verification (0.1.34-dev.1+) |
+| `custom_config` | `1` when custom LED preferences, previews and automatic PIV entry control are supported (0.1.34-dev.1+) |
 | `hosts` | Number of registered HID computers |
 | `ota` | `idle`, `writing`, or `staged` |
 
-Firmware 0.1.31+ also reports all preference fields in the [configuration table](/reference/configuration#user-preferences).
+Firmware 0.1.34-dev.1+ also reports all preference fields in the [configuration table](/reference/configuration#user-preferences).
 LED colors and effects are numeric in raw status; `tinytouch config` converts them
 to names.
 
@@ -261,6 +294,8 @@ tinytouch pair [--port PATH]
 ```
 
 Pairs the PIV identity with the current macOS user. Requires administrator and fingerprint approval.
+When touch activation is enabled, this command temporarily exposes the PIV
+identity for discovery and renews the setup window before pairing.
 
 ## `update`
 
@@ -330,3 +365,19 @@ Current firmware reports values and the CLI verifies writes against live status.
 Older firmware can still accept typing delay, Enter and cooldown writes; these
 use the device's `SET` acknowledgement. Unavailable reads display `not reported`
 or an update instruction. The CLI does not substitute defaults for missing values.
+| Name | Range | Default | Effect |
+|---|---:|---:|---|
+| `typing_delay_ms` | 1–100 | 7 | Delay after HID key press and release |
+| `piv_delay_ms` | 0–5000 | 25 | Delay before touch-login PIN entry after PIV selection and USB/HID readiness |
+| `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
+| `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
+
+`STATUS` reports `piv_delay_ms`, so the CLI verifies that setting after saving it.
+It applies to the next touch login without reconnecting. The other settings are also returned by `STATUS` and verified after saving.
+
+## Developer commands
+
+| Command | Action |
+|---|---|
+| `tinytouch hid-smoke` | Test HID setup against a simulated device on macOS |
+| `tinytouch enroll-demo` | Preview enrollment in an interactive terminal |
