@@ -410,7 +410,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "notify"),
         ):
             cli.command_update(args)
-        install_helper.assert_called_once_with()
+        install_helper.assert_called_once_with(check_saved=True)
         repair.assert_not_called()
 
     def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
@@ -453,6 +453,24 @@ class ProtocolSixTests(unittest.TestCase):
         repair.assert_called_once()
         self.assertIsNone(repair.call_args.args[0].port)
         self.assertEqual(activity, ["repair", "ota"])
+
+    def test_offline_upgrade_checks_saved_credentials_before_replacing_service(self):
+        with (
+            mock.patch.object(cli, "FROZEN", True),
+            mock.patch.object(
+                cli, "ensure_helper_environment", return_value=Path("/new/cli")
+            ),
+            mock.patch.object(
+                cli.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+            ) as run,
+            mock.patch.object(cli, "unload_helper") as unload,
+        ):
+            with self.assertRaises(cli.HelperCredentialAccessError):
+                cli.install_helper(check_saved=True)
+        self.assertEqual(
+            run.call_args.args[0][-2:], ["--check-credentials", "--include-saved"]
+        )
+        unload.assert_not_called()
 
     def test_upgrade_of_one_device_repairs_access_for_the_shared_helper(self):
         with (

@@ -93,6 +93,22 @@ class CredentialPreflightTests(unittest.TestCase):
                 helper.check_credentials()
             load.assert_not_called()
 
+    def test_upgrade_checks_denied_saved_credentials_while_disconnected(self):
+        with (
+            mock.patch.object(
+                helper, "known_device_ids", return_value={"TT-123456ABCDEF"}
+            ),
+            mock.patch.object(helper, "device_endpoints", return_value=[]),
+            mock.patch.object(helper, "credentials_exist", return_value=True),
+            mock.patch.object(
+                helper,
+                "load_passwords",
+                side_effect=helper.KeychainError("read", -25293),
+            ),
+        ):
+            with self.assertRaises(helper.KeychainError):
+                helper.check_credentials(include_saved=True)
+
     def test_pairing_denial_wipes_password_and_blocks_preflight(self):
         password = bytearray(b"test password")
         with (

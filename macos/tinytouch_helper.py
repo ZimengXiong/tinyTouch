@@ -718,9 +718,10 @@ def known_device_ids() -> set[str]:
     return device_ids
 
 
-def check_credentials() -> None:
+def check_credentials(*, include_saved: bool = False) -> None:
     """Check unattended access without opening a device or typing a password."""
-    for device_id in sorted(connected_device_ids()):
+    device_ids = known_device_ids() if include_saved else connected_device_ids()
+    for device_id in sorted(device_ids):
         if not credentials_exist(device_id):
             continue
         passwords: dict[int, bytearray] = {}
@@ -995,12 +996,13 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--check-credentials", action="store_true")
+    parser.add_argument("--include-saved", action="store_true")
     args = parser.parse_args()
 
     set_background_mode()
     if args.check_credentials:
         try:
-            check_credentials()
+            check_credentials(include_saved=args.include_saved)
         except Exception as exc:
             # Never include credential values or arbitrary exception messages.
             diagnostic(

@@ -524,7 +524,7 @@ def ensure_helper_environment() -> Path:
     return python
 
 
-def install_helper() -> None:
+def install_helper(*, check_saved: bool = False) -> None:
     global _helper_suppressed
     python = ensure_helper_environment()
     arguments = (
@@ -534,9 +534,12 @@ def install_helper() -> None:
     )
     # Keychain access depends on the executable's identity. Check the exact
     # replacement process before stopping a helper that can still read secrets.
+    credential_check = [*arguments, "--check-credentials"]
+    if check_saved:
+        credential_check.append("--include-saved")
     try:
         candidate = subprocess.run(
-            [*arguments, "--check-credentials"],
+            credential_check,
             check=False,
             timeout=15,
             stdin=subprocess.DEVNULL,
@@ -562,8 +565,11 @@ def install_helper() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
-        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+        "Label": "com.tinytouch.helper",
+        "ProgramArguments": arguments,
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Interactive",
         "ThrottleInterval": 1,
         "StandardOutPath": str(LOG_DIR / "helper.log"),
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
@@ -670,10 +676,10 @@ def command_upgrade_helper(args: argparse.Namespace) -> None:
         return
     say("Updating the HID background service...")
     try:
-        install_helper()
+        install_helper(check_saved=True)
     except HelperCredentialAccessError:
         say("The new CLI needs Keychain authorization. Starting repair...")
-        # Check all attached devices, even when OTA targets one port.
+        # Repair saved devices too, including upgrades while USB is disconnected.
         command_repair(argparse.Namespace(port=None))
 
 
