@@ -700,6 +700,31 @@ def credentials_exist(device_id: str) -> bool:
     return all(has_password(service, device_id) for service in (PAIRING_SERVICE, SERVICE))
 
 
+def check_credentials() -> None:
+    """Check unattended access without opening a device or typing a password."""
+    device_ids = {endpoint.device_id for endpoint in device_endpoints()}
+    # Include previously used devices while they are disconnected.
+    for prefix in ("state-", "settings-"):
+        for path in STATE_DIR.glob(f"{prefix}TT-*.json"):
+            device_id = path.stem[len(prefix):]
+            if re.fullmatch(r"TT-[0-9A-Fa-f]{12}", device_id):
+                device_ids.add(normalize_serial(device_id))
+    for device_id in sorted(device_ids):
+        if not credentials_exist(device_id):
+            continue
+        passwords: dict[int, bytearray] = {}
+        pairing_key = bytearray()
+        try:
+            passwords = load_passwords(device_id)
+            pairing_key = pairing_keychain_get(device_id)
+            if len(pairing_key) != 32:
+                raise ValueError("The saved pairing key has an invalid length")
+        finally:
+            for password in passwords.values():
+                password[:] = b"\x00" * len(password)
+            pairing_key[:] = b"\x00" * len(pairing_key)
+
+
 class Worker:
     def __init__(self, endpoint: DeviceEndpoint):
         self.endpoint = endpoint
@@ -958,9 +983,18 @@ def main() -> None:
     parser.add_argument("--device-id", required=False)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--check-credentials", action="store_true")
     args = parser.parse_args()
 
     set_background_mode()
+    if args.check_credentials:
+        try:
+            check_credentials()
+        except Exception as exc:
+            # Never include credential values or arbitrary exception messages.
+            diagnostic("credentials.failed", level="error", error_type=type(exc).__name__)
+            raise SystemExit(1) from None
+        return
     if args.self_test:
         if not args.device_id:
             raise SystemExit("--device-id is required for --self-test")

@@ -522,12 +522,28 @@ def ensure_helper_environment() -> Path:
 
 def install_helper() -> None:
     global _helper_suppressed
-    _helper_suppressed = False
     python = ensure_helper_environment()
+    arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
+    # Keychain access depends on the executable's identity. Check the exact
+    # replacement process before stopping a helper that can still read secrets.
+    try:
+        candidate = subprocess.run(
+            [*arguments, "--check-credentials"], check=False, timeout=15,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(
+            "Could not check the replacement HID helper. The existing service is unchanged."
+        ) from exc
+    if candidate.returncode != 0:
+        raise ToolError(
+            "The replacement HID helper cannot read the saved Keychain credentials "
+            "in the background. Run 'tinytouch repair' to authorize the current CLI "
+            "and reinstall its helper. The existing service is unchanged."
+        )
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
-    arguments = [str(python), str(HELPER)] if not FROZEN else [str(Path(sys.executable)), "_helper"]
     payload = {
         "Label": "com.tinytouch.helper", "ProgramArguments": arguments,
         "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
@@ -536,11 +552,61 @@ def install_helper() -> None:
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
         "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},
     }
-    unload_helper()
-    atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
-    load_helper()
-    if not helper_loaded():
-        raise ToolError("The HID helper did not load.")
+    previous = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
+    was_loaded = helper_loaded()
+    was_suppressed = _helper_suppressed
+    _helper_suppressed = False
+    try:
+        unload_helper()
+        atomic_write_bytes(LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644)
+        load_helper()
+        if not helper_loaded():
+            raise ToolError("The HID helper did not load.")
+    except Exception as exc:
+        try:
+            unload_helper()
+            if previous is None:
+                LAUNCH_AGENT.unlink(missing_ok=True)
+            else:
+                atomic_write_bytes(LAUNCH_AGENT, previous, mode=0o644)
+                if was_loaded:
+                    load_helper()
+                    if not helper_loaded():
+                        raise ToolError("The previous HID helper did not reload.")
+        except Exception as rollback_error:
+            raise ToolError(
+                "The replacement HID helper failed, and the previous service could not be restored."
+            ) from rollback_error
+        finally:
+            _helper_suppressed = was_suppressed
+        raise ToolError(
+            "The replacement HID helper failed. The previous service was restored."
+        ) from exc
+
+
+def command_repair(args: argparse.Namespace) -> None:
+    """Repair credential access and reinstall the helper from this CLI."""
+    require_macos()
+    if not FROZEN:
+        raise ToolError("Run repair from the certificate-signed standalone CLI.")
+    account = device_account(choose_port(args.port))
+    keychain = _keychain()
+    accounts = [(PAIRING_SERVICE, account), (PASSWORD_SERVICE, account)]
+    if not all(keychain.has_password(service, name) for service, name in accounts):
+        raise ToolError("This Mac has no complete HID pairing. Run 'tinytouch setup --mode hid'.")
+    accounts.extend(
+        (PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
+        for slot in range(1, 6)
+        if keychain.has_password(PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
+    )
+    say("Repairing access for the current CLI. Approve macOS Keychain authorization if prompted.")
+    try:
+        for service, name in accounts:
+            keychain.authorize_executable(service, name, sys.executable)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        raise ToolError(f"Keychain repair did not finish: {exc}") from exc
+    install_helper()
+    say("Current HID helper reinstalled. Saved passwords and pairing keys are unchanged.")
 
 
 def exchange_serial(
@@ -1684,6 +1750,9 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--skip-enroll", action="store_true")
     setup.add_argument("--no-pair", action="store_true", help="do not run macOS PIV pairing")
     setup.set_defaults(func=command_setup)
+    repair = sub.add_parser("repair", help="repair Keychain access and reinstall the current HID helper")
+    repair.add_argument("--port")
+    repair.set_defaults(func=command_repair)
     mode = sub.add_parser("mode")
     mode.add_argument("mode", choices=("hid", "piv"))
     mode.add_argument("--port")
