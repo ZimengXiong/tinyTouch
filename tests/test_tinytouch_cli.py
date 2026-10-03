@@ -877,7 +877,9 @@ class ProtocolSixTests(unittest.TestCase):
             ):
                 cli.command_pair(args)
 
-    def test_piv_pair_removes_pairing_when_keychain_wrapping_is_unavailable(self):
+    def test_piv_pair_preserves_verified_pairing_when_keychain_wrapping_is_unavailable(
+        self,
+    ):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         result = SimpleNamespace(
@@ -897,11 +899,17 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "run", return_value=result) as run,
+            mock.patch.object(cli, "user_piv_identities", return_value=[identity]),
+            mock.patch.object(cli, "say") as output,
         ):
-            with self.assertRaisesRegex(cli.ToolError, "incomplete pairing was removed"):
-                cli.command_pair(args)
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("unpair", run.call_args.args[0])
+            cli.command_pair(args)
+        run.assert_called_once()
+        self.assertIn("pair", run.call_args.args[0])
+        text = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("PIV pairing with this Mac is complete.", text)
+        self.assertIn(
+            "Keychain needs your Mac password after the next PIV login.", text
+        )
 
     def test_piv_identity_selection_recommends_the_default(self):
         identities = ["A" * 40, "B" * 40]

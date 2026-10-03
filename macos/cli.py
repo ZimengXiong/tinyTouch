@@ -2120,6 +2120,24 @@ def paired_piv_identities() -> list[str]:
     return piv_identities()[0]
 
 
+def user_piv_identities() -> list[str]:
+    """Return smart-card identities registered to the current Mac user."""
+    result = subprocess.run(
+        ["sc_auth", "list", "-u", getpass.getuser()],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise ToolError("Could not read PIV pairings.")
+    return [
+        identity.upper()
+        for identity in re.findall(
+            r"(?m)^Hash:[ \t]+([0-9A-Fa-f]{40})\b", result.stdout
+        )
+    ]
+
+
 def explain_piv_pin() -> None:
     say("If macOS prompts for the smart card PIN, enter 111111.")
 
@@ -2233,18 +2251,17 @@ def command_pair(
                 ) from exc
             raise
     if keychain_warning:
-        # Do not retain a pairing that cannot unlock the Login Keychain. The
-        # user would otherwise receive a password prompt after every PIV login.
-        run(
-            [
-                "sudo", "-n", "sc_auth", "unpair", "-u", getpass.getuser(),
-                "-h", identity,
-            ]
-        )
-        raise ToolError(
-            "macOS could not complete login Keychain setup. The incomplete pairing was removed. Run setup again."
-        )
+        # macOS can complete login pairing without automatic Keychain unlock.
+        # Confirm the selected user's pairing before preserving that result.
+        if identity.upper() not in user_piv_identities():
+            raise ToolError("macOS could not confirm PIV pairing. Please try again.")
     say("PIV pairing with this Mac is complete.")
+    if keychain_warning:
+        say(
+            terminal_style(
+                "Keychain needs your Mac password after the next PIV login.", "33"
+            )
+        )
 
 
 def select_option(
