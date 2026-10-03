@@ -14,21 +14,22 @@ class ProtocolSixFirmwareTests(unittest.TestCase):
         self.assertNotIn("esp_restart", source)
         self.assertNotIn("RTC_CNTL_FORCE_DOWNLOAD_BOOT", source)
 
-    def test_protocol_six_has_one_stable_usb_descriptor(self) -> None:
+    def test_protocol_six_supports_optional_touch_visibility(self) -> None:
         cmake = self.source("CMakeLists.txt")
         usb = self.source("usb_ccid.c")
         descriptors = self.source("usb_descriptors.c")
         self.assertIn("TINYTOUCH_PROTOCOL_VERSION=6", cmake)
         self.assertIn("tiny_touch_configuration_descriptor", usb)
-        self.assertNotIn("tiny_touch_hid_configuration_descriptor", descriptors)
-        self.assertNotIn("tiny_touch_piv_configuration_descriptor", descriptors)
+        self.assertIn("idle_configuration", descriptors)
+        self.assertIn("piv_configuration", descriptors)
+        self.assertIn("device_config_piv_touch_enabled()", usb)
 
     def test_usb_resume_reenumerates_without_restarting_firmware(self) -> None:
         defaults = (MAIN.parent / "sdkconfig.defaults").read_text()
         usb = self.source("usb_ccid.c")
         self.assertIn("CONFIG_TINYUSB_RESUME_CALLBACK=y", defaults)
         self.assertIn("TINYUSB_EVENT_RESUMED", usb)
-        self.assertIn("resume_reconnect_task", usb)
+        self.assertIn("reconnect_on_usb_task", usb)
         self.assertIn("tud_disconnect();", usb)
         self.assertIn("tud_connect();", usb)
 

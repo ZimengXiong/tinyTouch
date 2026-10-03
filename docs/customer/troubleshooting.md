@@ -7,7 +7,7 @@ description: Diagnose USB, fingerprint sensor, PIV, HID helper, update, and flas
 
 ## Device not found
 
-1. Use a known data-capable USB cable.
+1. Use a known USB cable that supports data.
 2. Connect directly to the Mac.
 3. Unplug and reconnect tinyTouch in normal mode, without holding **BOOT**.
 4. Close Arduino, ESP-IDF monitor, `screen`, and other serial tools.
@@ -46,7 +46,7 @@ tinytouch setup --mode hid --skip-enroll
 
 ## PIV not found
 
-Reconnect the device, wait several seconds, then inspect the smart-card state:
+Reconnect the device, wait several seconds, then inspect the smart card state:
 
 ```sh
 system_profiler SPSmartCardsDataType

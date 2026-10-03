@@ -42,6 +42,6 @@ Recovery removes:
 - mode and timing settings;
 - OTA and configuration state stored in NVS.
 
-Recovery can't remove macOS Keychain items or smart-card pairing. Run setup again and manage stale pairing with `sc_auth`.
+Recovery can't remove macOS Keychain items or smart card pairing. Run setup again and manage stale pairing with `sc_auth`.
 
 To run recovery, follow [Recover tinyTouch](/customer/recovery).

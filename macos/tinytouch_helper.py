@@ -7,6 +7,7 @@ import argparse
 import ctypes
 from collections import deque
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import hmac
 import json
@@ -35,6 +36,7 @@ from tinytouch_runtime import (
     SerialFrameDecoder,
     atomic_write_json,
     diagnostic,
+    read_available,
 )
 from tinytouch_ports import comports
 
@@ -115,7 +117,7 @@ def port_identity(port_name: str) -> str:
                 return identity
     identity = normalize_serial(Path(port_name).name)
     if not identity:
-        raise RuntimeError(f"tinyTouch port {port_name} has no stable device identity")
+        raise RuntimeError(f'The tinyTouch port {port_name} has no stable device identity.')
     return identity
 
 
@@ -126,7 +128,7 @@ def keychain_set(password: str, device_id: str = ACCOUNT) -> None:
 def keychain_get(device_id: str = ACCOUNT) -> bytearray:
     value = get_password_bytes(SERVICE, device_id)
     if value is None:
-        raise KeyError(f"No Keychain password for {device_id}")
+        raise KeyError(f"No Keychain password is stored for {device_id}.")
     return value
 
 
@@ -137,7 +139,7 @@ def fingerprint_account(device_id: str, slot: int) -> str:
 def load_passwords(device_id: str) -> dict[int, bytearray]:
     passwords = {0: keychain_get(device_id)}
     try:
-        for slot in range(1, 6):
+        for slot in range(1, 41):
             account = fingerprint_account(device_id, slot)
             if has_password(SERVICE, account):
                 try:
@@ -164,7 +166,8 @@ def load_settings(device_id: str) -> dict[str, str]:
     return {"keyboard_layout": layout if layout in {"auto", "us"} else "auto"}
 
 
-def current_keyboard_output_map() -> dict[str, str]:
+@lru_cache(maxsize=1)
+def _keyboard_layout_libraries():
     hitoolbox = ctypes.CDLL(
         "/System/Library/Frameworks/Carbon.framework/Frameworks/"
         "HIToolbox.framework/HIToolbox"
@@ -177,6 +180,8 @@ def current_keyboard_output_map() -> dict[str, str]:
     hitoolbox.TISGetInputSourceProperty.restype = ctypes.c_void_p
     core_foundation.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
     core_foundation.CFDataGetBytePtr.restype = ctypes.c_void_p
+    core_foundation.CFDataGetLength.argtypes = [ctypes.c_void_p]
+    core_foundation.CFDataGetLength.restype = ctypes.c_ssize_t
     core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
     translate = hitoolbox.UCKeyTranslate
     translate.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16,
@@ -185,32 +190,50 @@ def current_keyboard_output_map() -> dict[str, str]:
                           ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint16)]
     translate.restype = ctypes.c_int32
     property_key = ctypes.c_void_p.in_dll(hitoolbox, "kTISPropertyUnicodeKeyLayoutData")
+    return hitoolbox, core_foundation, property_key
+
+
+def current_keyboard_output_map() -> dict[str, str]:
+    hitoolbox, core_foundation, property_key = _keyboard_layout_libraries()
     source = hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
     if not source:
-        raise RuntimeError("macOS did not provide a keyboard layout")
+        raise RuntimeError("macOS did not provide a keyboard layout.")
     try:
         data = hitoolbox.TISGetInputSourceProperty(source, property_key)
         layout = core_foundation.CFDataGetBytePtr(data) if data else None
         if not layout:
-            raise RuntimeError("macOS keyboard layout has no Unicode key map")
-        output_map: dict[str, str] = {}
-        for wire in (chr(value) for value in range(32, 127)):
-            base = _US_SHIFTED.get(wire, wire)
-            keycode = _MAC_KEYCODES.get(base.lower())
-            if keycode is None:
-                continue
-            modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
-            dead_key = ctypes.c_uint32(0)
-            actual = ctypes.c_uint32(0)
-            chars = (ctypes.c_uint16 * 4)()
-            status = translate(layout, keycode, 0, modifiers, 0, 1,
-                               ctypes.byref(dead_key), len(chars),
-                               ctypes.byref(actual), chars)
-            if status == 0 and actual.value == 1 and dead_key.value == 0:
-                output_map[chr(chars[0])] = wire
-        return output_map
+            raise RuntimeError("The macOS keyboard layout has no Unicode key map")
+        length = core_foundation.CFDataGetLength(data)
+        if length <= 0:
+            raise RuntimeError("The macOS keyboard layout has an empty Unicode key map")
+        layout_bytes = ctypes.string_at(layout, length)
     finally:
         core_foundation.CFRelease(source)
+    # Recheck the active source on every touch. Cache by its contents so layout
+    # changes (including edits with the same source ID) never use a stale map.
+    return _keyboard_output_map(layout_bytes).copy()
+
+
+@lru_cache(maxsize=8)
+def _keyboard_output_map(layout_bytes: bytes) -> dict[str, str]:
+    hitoolbox, _, _ = _keyboard_layout_libraries()
+    layout = ctypes.create_string_buffer(layout_bytes)
+    output_map: dict[str, str] = {}
+    for wire in (chr(value) for value in range(32, 127)):
+        base = _US_SHIFTED.get(wire, wire)
+        keycode = _MAC_KEYCODES.get(base.lower())
+        if keycode is None:
+            continue
+        modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
+        dead_key = ctypes.c_uint32(0)
+        actual = ctypes.c_uint32(0)
+        chars = (ctypes.c_uint16 * 4)()
+        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 1,
+                                        ctypes.byref(dead_key), len(chars),
+                                        ctypes.byref(actual), chars)
+        if status == 0 and actual.value == 1 and dead_key.value == 0:
+            output_map[chr(chars[0])] = wire
+    return output_map
 
 
 def translate_password(password: bytes, output_map: dict[str, str] | None) -> bytes:
@@ -223,10 +246,10 @@ def translate_password(password: bytes, output_map: dict[str, str] | None) -> by
             result = "".join(output_map[char] for char in text).encode("ascii")
         except KeyError as exc:
             raise ValueError(
-                f"character {exc.args[0]!r} is unavailable in this keyboard layout"
+                f'Character {exc.args[0]!r} is not available in this keyboard layout.'
             ) from exc
     if len(result) > MAX_PASSWORD_BYTES:
-        raise ValueError(f"password exceeds {MAX_PASSWORD_BYTES} typed characters")
+        raise ValueError(f"Password exceeds {MAX_PASSWORD_BYTES} typed characters.")
     return result
 
 
@@ -234,9 +257,9 @@ def parse_pairing_key(key_hex: str) -> bytes:
     try:
         key = bytes.fromhex(key_hex.strip())
     except ValueError as exc:
-        raise SystemExit("Pairing key must be 64 hex characters.") from exc
+        raise SystemExit("Use a pairing key of 64 hex characters.") from exc
     if len(key) != 32:
-        raise SystemExit("Pairing key must be exactly 32 bytes / 64 hex characters.")
+        raise SystemExit("Use a pairing key of exactly 32 bytes, represented by 64 hex characters.")
     return key
 
 
@@ -248,7 +271,7 @@ def pairing_keychain_set(key_hex: str, device_id: str) -> None:
 def pairing_keychain_get(device_id: str) -> bytearray:
     value = get_password_bytes(PAIRING_SERVICE, device_id)
     if value is None:
-        raise KeyError(f"No Keychain pairing key for {device_id}")
+        raise KeyError(f'No Keychain pairing key is stored for {device_id}.')
     try:
         return bytearray(parse_pairing_key(value.decode("ascii")))
     finally:
@@ -265,7 +288,7 @@ def session_key(pairing_key: bytes, nonce_hex: str) -> bytes:
 
 def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     if len(key) not in {16, 24, 32} or len(iv) != 16:
-        raise ValueError("AES-CTR requires a 16/24/32-byte key and a 16-byte IV")
+        raise ValueError("AES-CTR requires a 16, 24, or 32-byte key and a 16-byte IV.")
     try:
         common_crypto = _common_crypto()
     except OSError:
@@ -274,7 +297,7 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         except ImportError as exc:
-            raise RuntimeError("AES-CTR backend is unavailable") from exc
+            raise RuntimeError("The AES-CTR backend is unavailable.") from exc
         cipher = Cipher(algorithms.AES(key), modes.CTR(iv))
         encryptor = cipher.encryptor()
         return encryptor.update(data) + encryptor.finalize()
@@ -297,7 +320,7 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         ctypes.byref(cryptor),
     )
     if status != 0:
-        raise RuntimeError(f"CommonCrypto could not create AES-CTR context ({status})")
+        raise RuntimeError(f'CommonCrypto could not create an AES-CTR context. Status: {status}.')
     try:
         if not data:
             return b""
@@ -316,7 +339,7 @@ def aes_ctr_crypt(key: bytes, iv: bytes, data: bytes) -> bytes:
             ctypes.byref(moved),
         )
         if status != 0 or moved.value != len(data):
-            raise RuntimeError(f"CommonCrypto AES-CTR failed ({status})")
+            raise RuntimeError(f"CommonCrypto AES-CTR failed. Status: {status}.")
         return output_buffer.raw[:moved.value]
     finally:
         common_crypto.CCCryptorRelease(cryptor)
@@ -331,7 +354,7 @@ def encrypt_password(pairing_key: bytes, nonce_hex: str, password: bytes) -> tup
 def state_path(device_id: str) -> Path:
     suffix = normalize_serial(device_id)
     if not suffix:
-        raise ValueError("A stable tinyTouch device identity is required")
+        raise ValueError("A stable device identity is required for tinyTouch.")
     return STATE_DIR / f"state-{suffix}.json"
 
 
@@ -548,7 +571,7 @@ def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> Non
     ser.flush()
     deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        chunk = ser.read(256)
+        chunk = read_available(ser)
         if not chunk:
             continue
         for raw in decoder.feed(chunk):
@@ -559,7 +582,7 @@ def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> Non
             if line.startswith("OK STATUS "):
                 return
     diagnostic("worker.startup_status_failed", level="warning", device_id=device_id, port=port)
-    raise serial.SerialException(f"tinyTouch did not answer STATUS: {port}")
+    raise serial.SerialException(f'tinyTouch did not respond to STATUS on {port}.')
 
 
 def serve_port(
@@ -595,7 +618,7 @@ def serve_port(
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return
-                chunk = ser.read(256)
+                chunk = read_available(ser)
                 if not chunk:
                     # pyserial can leave a descriptor open after macOS removes
                     # the USB device during sleep.  In that state readline()
@@ -618,7 +641,7 @@ def serve_port(
                     if heartbeat_sent_at is not None:
                         if now - heartbeat_sent_at >= HEARTBEAT_TIMEOUT_SECONDS:
                             raise serial.SerialException(
-                                f"serial device stopped responding after sleep: {port}"
+                                f'The serial device stopped responding after sleep. Port: {port}.'
                             )
                     elif now - last_received >= HEARTBEAT_INTERVAL_SECONDS:
                         ser.write(b"PING\n")
@@ -659,7 +682,6 @@ def serve_port(
                         )
                         if once:
                             return
-                time.sleep(0.01)
     finally:
         for value in password.values():
             value[:] = b"\x00" * len(value)
@@ -938,7 +960,7 @@ def run(port: str | None, once: bool) -> None:
                 )
                 time.sleep(1)
     if once:
-        raise SystemExit("--once requires --port when multiple-device mode is active")
+        raise SystemExit("When multiple-device mode is active, --once requires --port.")
     run_manager()
 
 

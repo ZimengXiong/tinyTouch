@@ -16,6 +16,7 @@
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
 #include "touch_pin_hid.h"
+#include "usb_ccid.h"
 
 static const char *TAG = "piv";
 
@@ -79,6 +80,7 @@ static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
 static uint8_t user_presence_slots_used;
+static uint8_t user_presence_slots_succeeded;
 static uint8_t user_presence_operations_left;
 static bool user_presence_allows_repeated_slots;
 static TickType_t user_presence_window_ticks;
@@ -668,7 +670,14 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   off += sig_len;
   *response_len = off;
   touch_pin_hid_log_event("piv_crypto_ok", apdu[3]);
-  return append_sw(response, response_len, response_cap, 0x9000);
+  bool ok = append_sw(response, response_len, response_cap, 0x9000);
+  if (ok) user_presence_slots_succeeded |= slot_bit;
+  // Normal login uses both slots. Configuration permits repeated operations
+  // and must retain its separate discovery window for macOS pairing.
+  if (ok && !user_presence_allows_repeated_slots && user_presence_slots_succeeded == 0x03) {
+    usb_ccid_login_complete();
+  }
+  return ok;
 }
 
 void piv_init(void) {
@@ -770,6 +779,7 @@ void piv_reset_transport_state(void) {
   pin_verified_until = 0;
   user_presence_until = 0;
   user_presence_slots_used = 0;
+  user_presence_slots_succeeded = 0;
   user_presence_operations_left = 0;
   user_presence_allows_repeated_slots = false;
   user_presence_window_ticks = 0;
@@ -780,6 +790,7 @@ void piv_note_user_presence(void) {
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
   user_presence_slots_used = 0;
+  user_presence_slots_succeeded = 0;
   user_presence_operations_left = 2;
   user_presence_allows_repeated_slots = false;
   user_presence_window_ticks = USER_PRESENCE_WINDOW_TICKS;
@@ -791,6 +802,7 @@ void piv_note_configuration_presence(void) {
   user_presence_until =
       xTaskGetTickCount() + CONFIGURATION_PRESENCE_WINDOW_TICKS;
   user_presence_slots_used = 0;
+  user_presence_slots_succeeded = 0;
   user_presence_operations_left = CONFIGURATION_PIV_OPERATION_LIMIT;
   user_presence_allows_repeated_slots = true;
   user_presence_window_ticks = CONFIGURATION_PRESENCE_WINDOW_TICKS;

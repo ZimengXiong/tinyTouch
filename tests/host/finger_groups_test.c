@@ -54,8 +54,8 @@ int main(void) {
   assert(finger_profiles_save(&interrupted));
   profiles = interrupted;
   sensor_templates |= UINT64_C(1) << 9;
-  search_slot = 9; assert(!fingerprint_authorize_poll_match().slot);
-  search_slot = 1; assert(fingerprint_authorize_poll_match().slot == 1);
+  search_slot = 9; assert(!poll_match_with_led().slot);
+  search_slot = 1; assert(poll_match_with_led().slot == 1);
   // Failed boot cleanup retains the journal and retries on a later boot.
   fail_delete = 9; fingerprint_init();
   assert(profiles.pending && (sensor_templates & (UINT64_C(1) << 9)));
@@ -68,7 +68,7 @@ int main(void) {
     assert((sensor_templates & finger_profiles_block(finger)) == finger_profiles_block(finger));
   }
   assert(finger_profiles_count(sensor_templates) == 40);
-  search_slot = 0; assert(fingerprint_authorize_poll_match().slot == 40);
+  search_slot = 0; assert(poll_match_with_led().slot == 40);
   assert(fingerprint_enroll_finger(10, true, prompt, connected));
   assert(finger_profiles_count(sensor_templates) == 40);
   uint64_t full = sensor_templates;
@@ -93,7 +93,7 @@ int main(void) {
   disk_profiles.version = 99;
   fingerprint_init();
   assert(!profiles_ready);
-  search_slot = 2; assert(!fingerprint_authorize_poll_match().slot);
+  search_slot = 2; assert(!poll_match_with_led().slot);
   assert(!fingerprint_enroll_finger(1, true, prompt, connected));
   assert(finger_profiles_count(sensor_templates) == 3);
   disk_profiles.version = 1; fingerprint_init();
