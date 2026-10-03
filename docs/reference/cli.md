@@ -16,15 +16,16 @@ tinytouch menu
 tinytouch --port /dev/cu.usbmodem101
 ```
 
-The menu provides setup, fingerprint management, device settings, registered
-computers, status, connection testing, updates, and diagnostics or recovery.
-Select an option by number or name. Use `0` to return from a submenu or close the
-main menu. No device connection is required to open the menu.
+The main menu contains **Setup**, **Enroll**, **Update**, **Status**, and
+**Advanced**. Use the up and down arrows to navigate, Enter to select, and Esc to
+go back. Advanced contains settings, fingerprint and computer management, full
+status, diagnostics, and service removal. The CLI exits after an action.
+No device connection is required to open the menu.
 
 Fingerprint actions display the live inventory before selection. Replacement
 uses the existing enrollment confirmation. Deletion and computer removal require
-confirmation. Device errors return to the current menu. Ctrl-C cancels the current
-operation or closes the current menu; Ctrl-D closes the session.
+confirmation. Device errors exit the CLI. Ctrl-C cancels the session; Ctrl-D closes
+the menu. Terminals without arrow support accept options by number or name.
 
 Menu actions use the same handlers as explicit commands. Explicit commands retain
 their arguments, output formats, and exit codes. Without an interactive terminal,
@@ -33,14 +34,14 @@ running `tinytouch` prints help and exits without prompting or accessing a devic
 ## Prompts and results
 
 Setup and the interactive menu use the same HID and PIV mode descriptions.
-Options with descriptions use parentheses. Input prompts end with a colon;
+Input prompts end with a colon;
 confirmation prompts use `[y/N]`, with **No** as the default.
 
 After enrollment, protected changes require fingerprint approval. For example,
 a settings change prompts:
 
 ```text
-Touch the sensor with an enrolled finger to change device settings.
+Touch the device with a registered finger to unlock configuration.
 ```
 
 Keep your finger off the sensor until the touch prompt. Then touch once and hold
@@ -182,10 +183,14 @@ for setup behavior and visibility windows.
 ## `status`
 
 ```text
-tinytouch status [--port PATH]
+tinytouch status [--summary | --details] [--port PATH]
 ```
 
-Prints JSON containing:
+The default output is JSON. `--summary` shows a brief overview; `--details` shows
+all fields with readable labels. The menu uses the summary, with full status under
+Advanced.
+
+JSON contains:
 
 | Field | Meaning |
 |---|---|
@@ -296,6 +301,17 @@ tinytouch pair [--port PATH]
 Pairs the PIV identity with the current macOS user. Requires administrator and fingerprint approval.
 When touch activation is enabled, this command temporarily exposes the PIV
 identity for discovery and renews the setup window before pairing.
+If macOS cannot enable automatic Keychain unlock, the CLI preserves the verified
+pairing and reports that the next PIV login needs your Mac password for Keychain.
+
+## `uninstall`
+
+```sh
+tinytouch uninstall
+```
+
+Stops and removes the background service. The CLI, saved credentials, and device
+settings stay installed. This action is also available under **Advanced**.
 
 ## `update`
 
@@ -313,11 +329,7 @@ tinytouch factory-reset [--port PATH]
 
 Clears fingerprints, keys, registered computers, device settings, local HID
 credentials, and PIV pairing. Confirm the reset and approve it with an enrolled
-fingerprint. In **Diagnostics and recovery**, select:
-
-```text
-  7. Factory reset (Clear device and local configuration) [factory-reset]
-```
+fingerprint. In **Advanced → Diagnostics**, select **Factory reset**.
 
 ## `rom` / `bootloader`
 
@@ -350,8 +362,8 @@ tinytouch config NAME [VALUE] [--json] [--port PATH]
 tinytouch settings ...
 ```
 
-`settings` is an alias for `config`. Without a name, shows current settings and
-defaults. `list` shows every setting, value range, default and effect without a
+`settings` is an alias for `config`. Without a name, shows current settings.
+`list` shows every setting, value range, default and effect without a
 device connection. With a name, reads that saved setting; with a value, writes
 it after fingerprint approval. `--json` applies to reads and `list`.
 
@@ -381,7 +393,7 @@ or an update instruction. The CLI does not substitute defaults for missing value
 | Name | Range | Default | Effect |
 |---|---:|---:|---|
 | `typing_delay_ms` | 1–100 | 1 | Delay after HID key press and release |
-| `piv_delay_ms` | 0–5000 | 25 | Delay before touch-login PIN entry after PIV selection and USB/HID readiness |
+| `piv_delay_ms` | 0–5000 | 50 | Delay before touch-login PIN entry after PIV selection and USB/HID readiness |
 | `submit_enter` | 0 or 1 | 1 | Type Enter after the HID password |
 | `touch_cooldown_ms` | 100–5000 | 800 | Minimum interval between touch actions |
 

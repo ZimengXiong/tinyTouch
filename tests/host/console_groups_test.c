@@ -31,7 +31,7 @@ int main(void) {
   assert(device_config_led_mode() == DEVICE_LED_ON);
   char locked_delay[] = "PIV_DELAY 100";
   set_value(locked_delay); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
-  assert(device_config_piv_delay_ms() == 25);
+  assert(device_config_piv_delay_ms() == 50);
   authorized_until = INT64_MAX;
   // Preferences and previews use the same authorization boundary as LED mode.
   authorized_until = 0;

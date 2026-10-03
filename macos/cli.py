@@ -157,7 +157,7 @@ class SettingSpec:
 SETTINGS = {
     "mode": SettingSpec("MODE", "Device mode", "Select HID password entry or PIV smart card authentication. Reconnect the device after changing the mode.", "piv", choices={"piv": 0, "hid": 1}),
     "led": SettingSpec("LED", "Sensor lighting", "Enable all sensor lighting, disable it, or show authentication results only.", "on", choices={"off": 0, "on": 1, "only-auth": 2}),
-    "piv_delay_ms": SettingSpec("PIV_DELAY", "PIV PIN delay (ms)", "Delay before automatic PIN entry after the smart card is ready.", "25", 0, 5000),
+    "piv_delay_ms": SettingSpec("PIV_DELAY", "PIV PIN delay (ms)", "Delay before automatic PIN entry after the smart card is ready.", "50", 0, 5000),
     "typing_delay_ms": SettingSpec("TYPE_DELAY", "Typing delay (ms)", "Set the delay after each HID key press and release.", "1", 1, 100),
     "submit_enter": SettingSpec("SUBMIT_ENTER", "Submit Enter", "Press Enter after typing the password or the automatic PIV PIN.", "on", choices={"off": 0, "on": 1}),
     "touch_cooldown_ms": SettingSpec("COOLDOWN", "Touch cooldown (ms)", "Minimum interval between touch actions.", "800", 100, 5000),

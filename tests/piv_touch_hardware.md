@@ -4,7 +4,7 @@ Host simulation validates firmware policy and descriptor contents. Before a
 release, run these checks with an ESP32-S3 sensor and a Mac that has no policy
 requiring smart-card login. macOS field-switch timing is not observable from USB
 enumeration alone; the firmware waits for successful PIV selection plus a
-configurable PIN delay (25 ms by default) before typing the dummy PIN.
+configurable PIN delay (50 ms by default) before typing the dummy PIN.
 
 1. Upgrade an existing paired device. Confirm `piv_touch=off`, existing PIV
    login still works, and host keys and fingerprint templates are preserved.

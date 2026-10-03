@@ -45,6 +45,7 @@ class ConfigurationTests(unittest.TestCase):
             self.invoke(["config", "list", "--json"])
             metadata = json.loads(self.output.getvalue())
             self.assertEqual(metadata["led_idle_color"]["default"], "blue")
+            self.assertEqual(metadata["piv_delay_ms"]["default"], "50")
             self.assertEqual(metadata["typing_delay_ms"]["values"], {"minimum": 1, "maximum": 100})
             port.assert_not_called()
 

@@ -25,7 +25,7 @@ curl -fsSL https://github.com/ZimengXiong/tinyTouch/releases/latest/download/ins
 tinytouch
 ```
 
-Select **Set up this Mac** and follow the prompts. Choose PIV for smart card login
+Select **Setup** and follow the prompts. Choose PIV for smart card login
 or HID for password entry. Lift your finger between scans. You can also start
 setup directly with `tinytouch setup`.
 
@@ -39,7 +39,7 @@ Lock your Mac, then touch the sensor to sign in. In HID mode, select the passwor
 
 ## 4. Change device settings
 
-Run `tinytouch` and select **Device settings**. Select **Sensor colors and effects**
+Run `tinytouch` and select **Advanced → Settings → Lighting**
 to change the sensor ring colors, animation, or preset. You can also use commands:
 
 ```sh
