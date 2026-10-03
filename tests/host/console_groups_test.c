@@ -29,7 +29,40 @@ int main(void) {
   char locked_led[] = "LED 2";
   set_value(locked_led); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
   assert(device_config_led_mode() == DEVICE_LED_ON);
+  char locked_delay[] = "PIV_DELAY 100";
+  set_value(locked_delay); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
+  assert(device_config_piv_delay_ms() == 50);
   authorized_until = INT64_MAX;
+  // Preferences and previews use the same authorization boundary as LED mode.
+  authorized_until = 0;
+  led_preview("5 1 100"); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
+  char locked_color[] = "LED_IDLE_COLOR 5";
+  set_value(locked_color); assert(strcmp(last_reply, "ERR LOCKED run=AUTH") == 0);
+  authorized_until = INT64_MAX;
+  char custom_color[] = "LED_IDLE_COLOR 5";
+  set_value(custom_color); assert(strcmp(last_reply, "OK SET") == 0);
+  expect_led(5);
+  led_preview("3 2 100"); assert(strcmp(last_reply, "OK LED PREVIEW") == 0);
+  expect_led(5);
+  const char *bad_preview[] = {"8 1 100", "1 4 100", "1 1 99", "1 1 5001", "1 1 100 junk", "1 1"};
+  for (unsigned i = 0; i < sizeof(bad_preview) / sizeof(bad_preview[0]); i++) {
+    led_preview(bad_preview[i]); assert(strncmp(last_reply, "ERR LED", 7) == 0);
+  }
+  char restore_color[] = "LED_IDLE_COLOR 1";
+  set_value(restore_color); assert(strcmp(last_reply, "OK SET") == 0);
+  char valid_delay[] = "PIV_DELAY 100";
+  set_value(valid_delay); assert(strcmp(last_reply, "OK SET") == 0);
+  assert(device_config_piv_delay_ms() == 100 && disk_piv_delay == 100);
+  const char *bad_delay[] = {"PIV_DELAY 5001", "PIV_DELAY -1", "PIV_DELAY 65536", "PIV_DELAY 50 junk"};
+  for (unsigned i = 0; i < sizeof(bad_delay) / sizeof(bad_delay[0]); i++) {
+    char value[32]; snprintf(value, sizeof(value), "%s", bad_delay[i]);
+    set_value(value); assert(strcmp(last_reply, "ERR SET") == 0);
+    assert(device_config_piv_delay_ms() == 100);
+  }
+  char reconnect_led[] = "LED 0";
+  set_value(reconnect_led); assert(strcmp(last_reply, "ERR SET LED reconnect_required") == 0);
+  assert(device_config_led_mode() == DEVICE_LED_OFF);
+  sensor_power_cycle(); fingerprint_init();
   for (unsigned mode = 0; mode <= 2; mode++) {
     char value[16]; snprintf(value, sizeof(value), "LED %u", mode);
     set_value(value); assert(strcmp(last_reply, "OK SET") == 0);
@@ -41,6 +74,12 @@ int main(void) {
     char value[32]; snprintf(value, sizeof(value), "%s", bad_led[i]);
     set_value(value); assert(strcmp(last_reply, "ERR SET") == 0);
     assert(device_config_led_mode() == DEVICE_LED_ONLY_AUTH);
+  }
+  const char *bad_settings[] = {"LED_IDLE_COLOR 256", "LED_IDLE_EFFECT 4", "LED_IDLE_CYCLES 256",
+                               "LED_FEEDBACK_MS 49", "PIV_AUTO_TYPE 2", "UNKNOWN 1"};
+  for (unsigned i = 0; i < sizeof(bad_settings) / sizeof(bad_settings[0]); i++) {
+    char value[64]; snprintf(value, sizeof(value), "%s", bad_settings[i]);
+    set_value(value); assert(strcmp(last_reply, "ERR SET") == 0);
   }
   fail_save = true;
   char failed_led[] = "LED 0";

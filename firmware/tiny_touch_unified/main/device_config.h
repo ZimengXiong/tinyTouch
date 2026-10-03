@@ -45,3 +45,35 @@ typedef enum {
 device_led_mode_t device_config_led_mode(void);
 const char *device_config_led_mode_name(void);
 bool device_config_set_led_mode(device_led_mode_t value);
+
+// Additional preferences use a separate NVS key. The schema-6 credentials and
+// enrollment mapping remain readable by both old and new firmware.
+typedef struct {
+  uint8_t version;
+  uint8_t led_idle_color;
+  uint8_t led_success_color;
+  uint8_t led_failure_color;
+  uint8_t led_idle_end_color;
+  uint8_t led_idle_effect;
+  uint8_t led_idle_cycles;
+  uint8_t piv_auto_type;
+  uint16_t led_feedback_ms;
+} device_options_t;
+
+typedef enum {
+  DEVICE_OPTION_LED_IDLE_COLOR,
+  DEVICE_OPTION_LED_SUCCESS_COLOR,
+  DEVICE_OPTION_LED_FAILURE_COLOR,
+  DEVICE_OPTION_LED_IDLE_END_COLOR,
+  DEVICE_OPTION_LED_IDLE_EFFECT,
+  DEVICE_OPTION_LED_IDLE_CYCLES,
+  DEVICE_OPTION_LED_FEEDBACK_MS,
+  DEVICE_OPTION_PIV_AUTO_TYPE,
+} device_option_t;
+
+device_options_t device_config_options(void);
+bool device_config_set_option(device_option_t option, uint16_t value);
+bool device_config_piv_touch_enabled(void);
+bool device_config_set_piv_touch_enabled(bool value);
+uint16_t device_config_piv_delay_ms(void);
+bool device_config_set_piv_delay_ms(uint16_t value);

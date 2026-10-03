@@ -1,4 +1,5 @@
 import importlib.util
+import ctypes
 import hashlib
 import tempfile
 import threading
@@ -151,6 +152,134 @@ class CredentialPreflightTests(unittest.TestCase):
         load.assert_not_called()
 
 
+class KeyboardMapCacheTests(unittest.TestCase):
+    def test_live_layout_contents_invalidate_cached_translation(self):
+        hitoolbox, foundation = mock.Mock(), mock.Mock()
+        hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.return_value = 123
+        hitoolbox.TISGetInputSourceProperty.return_value = 456
+        layouts = [ctypes.create_string_buffer(value) for value in (b"layout-a", b"layout-b")]
+        foundation.CFDataGetBytePtr.side_effect = [ctypes.addressof(layouts[i]) for i in (0, 0, 1)]
+        foundation.CFDataGetLength.return_value = 8
+
+        def translate(layout, keycode, action, modifiers, keyboard_type, options, dead, size, actual, chars):
+            actual._obj.value = 1
+            chars[0] = ord("a" if layout.raw.startswith(b"layout-a") else "b")
+            return 0
+
+        hitoolbox.UCKeyTranslate.side_effect = translate
+        helper._keyboard_output_map.cache_clear()
+        try:
+            with mock.patch.object(helper, "_keyboard_layout_libraries", return_value=(hitoolbox, foundation, None)):
+                first = helper.current_keyboard_output_map()
+                count = hitoolbox.UCKeyTranslate.call_count
+                self.assertGreater(count, 90)
+                first["mutation"] = "x"
+                self.assertEqual(set(helper.current_keyboard_output_map()), {"a"})
+                self.assertEqual(hitoolbox.UCKeyTranslate.call_count, count)
+                self.assertEqual(set(helper.current_keyboard_output_map()), {"b"})
+                self.assertEqual(hitoolbox.UCKeyTranslate.call_count, count * 2)
+                self.assertEqual(foundation.CFRelease.call_count, 3)
+                self.assertEqual(hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.call_count, 3)
+        finally:
+            helper._keyboard_output_map.cache_clear()
+
+    def test_missing_layout_releases_source_and_does_not_reuse_cache(self):
+        hitoolbox, foundation = mock.Mock(), mock.Mock()
+        hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.return_value = 123
+        hitoolbox.TISGetInputSourceProperty.return_value = None
+        with mock.patch.object(helper, "_keyboard_layout_libraries", return_value=(hitoolbox, foundation, None)):
+            with self.assertRaises(RuntimeError):
+                helper.current_keyboard_output_map()
+        foundation.CFRelease.assert_called_once_with(123)
+
+    def test_empty_layout_is_not_passed_to_native_translation(self):
+        hitoolbox, foundation = mock.Mock(), mock.Mock()
+        hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.return_value = 123
+        hitoolbox.TISGetInputSourceProperty.return_value = 456
+        foundation.CFDataGetBytePtr.return_value = 789
+        foundation.CFDataGetLength.return_value = 0
+        with mock.patch.object(helper, "_keyboard_layout_libraries", return_value=(hitoolbox, foundation, None)):
+            with self.assertRaises(RuntimeError):
+                helper.current_keyboard_output_map()
+        hitoolbox.UCKeyTranslate.assert_not_called()
+        foundation.CFRelease.assert_called_once_with(123)
+
+
+class SerialDeliveryTests(unittest.TestCase):
+    def test_fragmented_authenticated_requests_reach_the_wire_and_secrets_are_wiped(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                key = bytearray(range(32))
+                original_key = bytes(key)
+                secret = bytearray(b"abAa1")
+                nonce = "12" * 16
+                key_id = hashlib.sha256(key).hexdigest()[:16]
+                if version == 1:
+                    frame = f"EV {nonce} 1 2 99 {helper.mac_hex(key, f'EV|{nonce}|1|2|99')}\n"
+                else:
+                    material = f"EV2|{key_id}|{nonce}|1|2|99"
+                    frame = f"EV2 {nonce} 1 2 99 {key_id}:{helper.mac_hex(key, material)}\n"
+                bad_frame = f"EV {nonce} 1 2 99 {'00' * 32}\n"
+
+                class Connection:
+                    def __init__(self):
+                        self.chunks = []
+                        self.written = []
+
+                    @property
+                    def in_waiting(self):
+                        return len(self.chunks[0]) if self.chunks else 0
+
+                    def read(self, size):
+                        if not self.chunks:
+                            raise AssertionError("worker consumed every frame without responding")
+                        self_test.assertLessEqual(size, len(self.chunks[0]))
+                        result = self.chunks[0][:size]
+                        self.chunks[0] = self.chunks[0][size:]
+                        if not self.chunks[0]:
+                            self.chunks.pop(0)
+                        return result
+
+                    def write(self, data):
+                        self.written.append(data)
+                        if data == b"STATUS\n":
+                            self.chunks.extend([
+                                b"OK STA", b"TUS firmware=unified\r\n", b"PONG 6\n\xff\n",
+                                bad_frame.encode(), frame[:17].encode(), frame[17:-1].encode(), b"\n",
+                            ])
+
+                    def flush(self):
+                        pass
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_):
+                        pass
+
+                self_test = self
+                connection = Connection()
+                device_id = "TT-001122334455"
+                with (
+                    mock.patch.object(helper, "open_serial", return_value=connection),
+                    mock.patch.object(helper, "load_passwords", return_value={0: secret}),
+                    mock.patch.object(helper, "pairing_keychain_get", return_value=key),
+                    mock.patch.object(helper, "load_settings", return_value={"keyboard_layout": "us"}),
+                    mock.patch.object(helper, "load_state", return_value={}),
+                    mock.patch.object(helper, "REATTACHED_DEVICES", [device_id]),
+                    mock.patch.object(helper, "remember_nonce") as remember,
+                    mock.patch.object(helper, "diagnostic"),
+                    mock.patch("builtins.print"),
+                ):
+                    helper.serve_port("/dev/cu.fake", once=True, device_id=device_id)
+                self.assertEqual(len(connection.written), 2)
+                reply = connection.written[1].decode()
+                self.assertEqual(HelperProtocolTests.decrypt_response(original_key, nonce, reply), b"abAa1")
+                remember.assert_called_once_with({"seen_nonces": []}, nonce, device_id)
+                self.assertFalse(any(secret))
+                self.assertFalse(any(key))
+
+
 class WorkerStateMachineTests(unittest.TestCase):
     def test_manager_failure_drains_workers_before_restart(self):
         endpoint = helper.DeviceEndpoint("TT-001122334455", "/dev/cu.fake", "1-1")
@@ -274,6 +403,18 @@ class HelperProtocolTests(unittest.TestCase):
                 helper.serve_port("/dev/cu.fake", device_id="TT-001122334455")
         self.assertFalse(any(secret))
         self.assertFalse(any(key))
+
+    def test_password_overrides_cover_all_forty_template_ids(self):
+        identity = "TT-123456ABCDEF"
+        secret = bytearray(b"password")
+        with (
+            mock.patch.object(helper, "has_password", side_effect=lambda service, account: account.endswith(":40")) as exists,
+            mock.patch.object(helper, "keychain_get", return_value=secret) as get,
+        ):
+            passwords = helper.load_passwords(identity)
+        self.assertEqual(set(passwords), {0, 40})
+        self.assertEqual(exists.call_count, 40)
+        get.assert_any_call(identity + ":fingerprint:40")
 
     def test_partial_password_load_failure_wipes_previous_slots(self):
         secret = bytearray(b"password")

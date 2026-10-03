@@ -20,6 +20,41 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def test_chime_is_nonblocking_and_does_not_overlap(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        with (mock.patch.object(cli.sys, "platform", "darwin"),
+              mock.patch.dict(cli.os.environ, {}, clear=True),
+              mock.patch.object(cli.Path, "is_file", return_value=True),
+              mock.patch.object(cli, "_sound_process", None),
+              mock.patch.object(cli.subprocess, "Popen", return_value=process) as start):
+            cli.chime("Tink")
+            cli.chime("Pop")
+        start.assert_called_once()
+        process.wait.assert_not_called()
+
+    def test_sound_preference_disables_afplay(self):
+        with (mock.patch.object(cli.sys, "platform", "darwin"),
+              mock.patch.dict(cli.os.environ, {"TINYTOUCH_NO_SOUND": "1"}),
+              mock.patch.object(cli.subprocess, "Popen") as start):
+            cli.chime("Glass")
+        start.assert_not_called()
+    def test_led_off_rejects_legacy_firmware_that_can_still_flash_green(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={
+                "protocol": "6", "firmware": "0.1.30", "led": "off", "led_only_auth": "1",
+            }),
+            mock.patch.object(cli, "unlock") as unlock,
+            mock.patch.object(cli, "serial_command") as command,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "automatic authentication flashes"):
+                args.func(args)
+            unlock.assert_not_called()
+            command.assert_not_called()
+
     def test_led_command_saves_and_verifies_all_modes_in_one_session(self):
         for state, value in (("off", "0"), ("on", "1"), ("only-auth", "2")):
             with (
@@ -27,7 +62,7 @@ class ProtocolSixTests(unittest.TestCase):
                 mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
                 mock.patch.object(cli, "foreground_session") as session,
                 mock.patch.object(cli, "status", side_effect=[
-                    {"protocol": "6", "firmware": "0.1.30", "led": "on", "led_only_auth": "1"},
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "on", "led_only_auth": "1", "led_control": "manual"},
                     {"led": state},
                 ]),
                 mock.patch.object(cli, "unlock") as unlock,
@@ -39,7 +74,7 @@ class ProtocolSixTests(unittest.TestCase):
                 session.assert_called_once_with("/dev/cu.TT")
                 unlock.assert_called_once()
                 command.assert_called_once_with("/dev/cu.TT", f"SET LED {value}", timeout=5)
-                self.assertIn(f"LED is {state}", output.call_args.args[0])
+                self.assertIn(f"Sensor lighting mode: {state}", output.call_args.args[0])
 
     def test_led_on_old_firmware_explains_update_before_authorization(self):
         with (
@@ -54,6 +89,64 @@ class ProtocolSixTests(unittest.TestCase):
                 args.func(args)
             unlock.assert_not_called()
             command.assert_not_called()
+
+    def test_led_migration_requires_reconnect_without_claiming_light_is_off(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", side_effect=[
+                {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "reconnect"},
+                {"led": "off", "led_control": "reconnect", "led_sync": "synced"},
+            ]),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command"),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            args.func(args)
+            text = "\n".join(call.args[0] for call in output.call_args_list)
+            self.assertIn("Unplug tinyTouch and reconnect", text)
+            self.assertIn("preference saved", text)
+            self.assertNotIn("LED is off", text)
+
+    def test_led_reconnect_response_explains_saved_preference(self):
+        message = cli.human_error("ERR SET LED reconnect_required")
+        self.assertIn("preference saved", message)
+        self.assertIn("Unplug tinyTouch and reconnect", message)
+        with (
+            mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "status", return_value={"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"}),
+            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "serial_command", side_effect=cli.ToolError(message)),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["led", "off"])
+            with self.assertRaisesRegex(cli.ToolError, "Unplug tinyTouch and reconnect"):
+                args.func(args)
+            output.assert_not_called()
+
+    def test_led_incomplete_control_or_cleanup_does_not_report_success(self):
+        for control, sync in (("rejected", "synced"), ("pending", "synced"),
+                              ("unavailable", "synced"),
+                              ("storage-error", "synced"), ("busy", "pending"),
+                              ("manual", "pending")):
+            with (
+                self.subTest(control=control, sync=sync),
+                mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT"),
+                mock.patch.object(cli, "foreground_session"),
+                mock.patch.object(cli, "status", side_effect=[
+                    {"protocol": "6", "firmware": "0.1.31-dev.1", "led": "off", "led_control": "manual"},
+                    {"led": "off", "led_control": control, "led_sync": sync},
+                ]),
+                mock.patch.object(cli, "unlock"),
+                mock.patch.object(cli, "serial_command"),
+                mock.patch.object(cli, "say") as output,
+            ):
+                args = cli.parser().parse_args(["led", "off"])
+                with self.assertRaisesRegex(cli.ToolError, "not applied"):
+                    args.func(args)
+                output.assert_not_called()
 
     def test_led_only_auth_on_old_firmware_requires_update_without_writing(self):
         with (
@@ -107,7 +200,7 @@ class ProtocolSixTests(unittest.TestCase):
         text = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("⣰⣷⣼⣇", text)
         self.assertIn(cli.CLI_VERSION, text)
-        self.assertIn("Factory Reset", text)
+        self.assertIn("Factory reset", text)
 
     def test_terminal_style_respects_no_color(self):
         with (
@@ -123,8 +216,8 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             self.assertEqual(cli.choose_mode(None), "hid")
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("HID — Types your password", text)
-        self.assertIn("PIV — Acts as a smart card", text)
+        self.assertIn("HID — types your password; works with most apps", text)
+        self.assertIn("PIV — smart card; PIN login for supported Mac prompts", text)
 
     def test_enrollment_runs_all_views_for_one_finger(self):
         responses = [
@@ -150,8 +243,8 @@ class ProtocolSixTests(unittest.TestCase):
         unlock.assert_called_once()
         text = "\n".join(call.args[0] for call in output.call_args_list)
         for view in ("left edge", "right edge", "top", "center"):
-            self.assertIn(f"Touch with the {view} of the same finger.", text)
-        self.assertIn("Finger 2 enrolled with all four views.", text)
+            self.assertIn(f"Touch the sensor with the {view} of the same finger.", text)
+        self.assertIn("Finger 2 is enrolled with all four views.", text)
 
     def test_partial_legacy_block_requires_replacement_confirmation(self):
         with (
@@ -295,8 +388,8 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.introduce_enrollment()
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("enroll different views of your fingerprint", text)
-        self.assertIn("instructions on the next screen", text)
+        self.assertIn("Enroll different views of the same fingerprint", text)
+        self.assertIn("instructions shown on the next screen", text)
         ask.assert_called_once_with("Press Enter to continue.")
 
     def test_enrollment_oval_has_no_repeat_badge(self):
@@ -347,6 +440,25 @@ class ProtocolSixTests(unittest.TestCase):
             with self.assertRaises(cli.ToolError):
                 cli.update_release()
         download.assert_called_once()
+
+    def test_explicit_dev_update_is_pinned_without_reading_latest(self):
+        version = "0.1.34-dev.1"
+        exact = json.dumps({"version": version, "ota": {}}).encode()
+        with mock.patch.object(cli, "download", return_value=exact) as download:
+            root, manifest = cli.update_release(version)
+        self.assertEqual(root, f"{cli.RELEASE_DOWNLOAD_URL}/v{version}")
+        self.assertEqual(manifest["version"], version)
+        download.assert_called_once_with(f"{root}/release-manifest.json")
+
+    def test_explicit_release_rejects_invalid_names_and_mismatched_manifest(self):
+        for version in ("0.1.34-dev", "0.1.34-dev.1/../../main", "0.1.34-beta.1", "0.1.34-dev.-1"):
+            with self.subTest(version=version), mock.patch.object(cli, "download") as download:
+                with self.assertRaises(cli.ToolError):
+                    cli.update_release(version)
+                download.assert_not_called()
+        with mock.patch.object(cli, "download", return_value=b'{"version":"0.1.33"}'):
+            with self.assertRaisesRegex(cli.ToolError, "do not match"):
+                cli.update_release("0.1.34-dev.1")
 
     def test_cli_update_pins_installer_and_firmware_to_one_release(self):
         target_version = "9.9.9"
@@ -402,16 +514,34 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "command_repair") as repair,
             mock.patch.object(cli, "choose_port", return_value="/dev/cu.TT-1234"),
             mock.patch.object(
-                cli, "status", return_value={"protocol": "6", "firmware": "x"}
+                cli,
+                "status",
+                return_value={
+                    "protocol": "6",
+                    "firmware": "x",
+                    "led": "only-auth",
+                    "led_control": "reconnect",
+                },
             ),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "download", return_value=image),
-            mock.patch.object(cli, "stage_ota"),
-            mock.patch.object(cli, "notify"),
+            mock.patch.object(cli, "stage_ota") as ota,
+            mock.patch.object(cli, "notify") as notify,
+            mock.patch.object(cli, "say") as output,
         ):
             cli.command_update(args)
         install_helper.assert_called_once_with(check_saved=True)
         repair.assert_not_called()
+        ota.assert_called_once_with("/dev/cu.TT-1234", image, digest)
+        message = "Update ready. Unplug and reconnect tinyTouch to finish."
+        self.assertEqual(
+            output.call_args_list,
+            [
+                mock.call("Updating the HID background service..."),
+                mock.call(message),
+            ],
+        )
+        notify.assert_called_once_with("tinyTouch update ready", message)
 
     def test_upgrade_repairs_denied_credentials_before_staging_firmware(self):
         image = b"firmware"
@@ -555,11 +685,75 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertFalse(cli.is_terminal("SET MODE HID", "OK STATUS mode=hid"))
 
     def test_auth_failure_explains_whether_touch_started(self):
-        self.assertIn("expired", cli.human_error("ERR AUTH", touch_prompted=True))
-        self.assertIn("did not start", cli.human_error("ERR AUTH"))
+        self.assertEqual(
+            cli.human_error("ERR AUTH", touch_prompted=True),
+            "Fingerprint authentication timed out. Please try again.",
+        )
+        self.assertEqual(
+            cli.human_error("ERR AUTH"),
+            "Fingerprint authentication could not start. Please try again.",
+        )
+
+    def test_status_summary_counts_complete_fingers_instead_of_scans(self):
+        with (
+            mock.patch.object(cli, "choose_port", return_value="port"),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(
+                cli,
+                "status",
+                return_value={
+                    "mode": "hid",
+                    "finger_groups": "1",
+                    "fingerprints": "5",
+                    "firmware": "0.1.34-dev.1",
+                    "sensor": "ready",
+                    "led": "only-auth",
+                },
+            ),
+            mock.patch.object(
+                cli,
+                "serial_command",
+                return_value=[
+                    "OK FINGER LIST groups=1:4,2:1 available=8 capacity=40 pending=0",
+                ],
+            ),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["status", "--summary"])
+            args.func(args)
+        lines = [call.args[0] for call in output.call_args_list]
+        self.assertTrue(
+            any(
+                line.strip().startswith("Fingerprints:")
+                and line.endswith("1 enrolled (1 incomplete)")
+                for line in lines
+            )
+        )
+        self.assertTrue(
+            any(
+                line.strip().startswith("Sensor:") and line.endswith("Ready")
+                for line in lines
+            )
+        )
+        self.assertEqual(len(lines), 5)
+
+    def test_full_status_preserves_all_fields_as_json(self):
+        data = {"mode": "hid", "firmware": "test", "future_field": "value"}
+        with (
+            mock.patch.object(cli, "choose_port", return_value="port"),
+            mock.patch.object(cli, "status", return_value=data),
+            mock.patch.object(cli, "say") as output,
+        ):
+            args = cli.parser().parse_args(["status"])
+            args.func(args)
+        self.assertEqual(json.loads(output.call_args.args[0]), data)
 
     def test_status_requires_a_terminal_status_line(self):
-        with mock.patch.object(cli, "serial_command", return_value=["OK STATUS protocol=6 mode=hid sensor=ready hosts=1"]):
+        with mock.patch.object(
+            cli,
+            "serial_command",
+            return_value=["OK STATUS protocol=6 mode=hid sensor=ready hosts=1"],
+        ):
             result = cli.status("/dev/cu.TT-1234")
         self.assertEqual(result["protocol"], "6")
         self.assertEqual(result["hosts"], "1")
@@ -640,6 +834,7 @@ class ProtocolSixTests(unittest.TestCase):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         calls = []
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "piv_identities", side_effect=[([], [identity]), ([identity], [])]
@@ -664,6 +859,7 @@ class ProtocolSixTests(unittest.TestCase):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -681,7 +877,9 @@ class ProtocolSixTests(unittest.TestCase):
             ):
                 cli.command_pair(args)
 
-    def test_piv_pair_removes_pairing_when_keychain_wrapping_is_unavailable(self):
+    def test_piv_pair_preserves_verified_pairing_when_keychain_wrapping_is_unavailable(
+        self,
+    ):
         identity = "A" * 40
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         result = SimpleNamespace(
@@ -692,6 +890,7 @@ class ProtocolSixTests(unittest.TestCase):
             stderr="",
         )
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], [identity])
@@ -700,16 +899,23 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "choose_port", return_value=args.port),
             mock.patch.object(cli, "unlock"),
             mock.patch.object(cli, "run", return_value=result) as run,
+            mock.patch.object(cli, "user_piv_identities", return_value=[identity]),
+            mock.patch.object(cli, "say") as output,
         ):
-            with self.assertRaisesRegex(cli.ToolError, "incomplete pairing was removed"):
-                cli.command_pair(args)
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("unpair", run.call_args.args[0])
+            cli.command_pair(args)
+        run.assert_called_once()
+        self.assertIn("pair", run.call_args.args[0])
+        text = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("PIV pairing with this Mac is complete.", text)
+        self.assertIn(
+            "Keychain needs your Mac password after the next PIV login.", text
+        )
 
     def test_piv_identity_selection_recommends_the_default(self):
         identities = ["A" * 40, "B" * 40]
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         with (
+            mock.patch.object(cli, "prepare_piv_discovery", return_value=None),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(
                 cli, "wait_for_piv_identities", return_value=([], identities)
@@ -723,7 +929,7 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_pair(args)
         text = "\n".join(call.args[0] for call in output.call_args_list)
-        self.assertIn("If you are not sure, select 1.", text)
+        self.assertIn("Select 1 if you are not sure which identity to use.", text)
 
     def test_new_piv_identity_wait_has_creation_guidance(self):
         args = SimpleNamespace(
@@ -773,11 +979,11 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("Waiting for macOS", wait.call_args.kwargs["message"])
         self.assertTrue(pair.call_args.kwargs["separate_identity_list"])
         self.assertIn(
-            "tinyTouch is ready in PIV mode.",
+            "Ready (PIV).",
             [call.args[0] for call in output.call_args_list],
         )
         self.assertIn(
-            "Setting up PIV certificates. This may take up to 30 seconds.",
+            "Setting up PIV certificates. This can take up to 30 seconds.",
             [call.args[0] for call in output.call_args_list],
         )
 
@@ -799,7 +1005,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(paired, [])
         self.assertEqual(available, [new_identity])
 
-    def test_macos_authorization_explains_hidden_password_input(self):
+    def test_macos_authorization_uses_native_terminal_prompt(self):
         results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
         with (
             mock.patch.object(cli, "_sudo_session_ready", False),
@@ -809,7 +1015,7 @@ class ProtocolSixTests(unittest.TestCase):
             cli.authorize_macos()
         text = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("Authorize macOS in this terminal.", text)
-        self.assertIn("Your typing is hidden", text)
+        self.assertEqual(text, "Authorize macOS in this terminal.")
 
     def test_piv_unlock_prints_pin_before_macos_can_prompt(self):
         with (
@@ -826,7 +1032,7 @@ class ProtocolSixTests(unittest.TestCase):
         explain.assert_called_once_with()
         self.assertEqual(
             command.call_args.kwargs["touch_prompt"],
-            "Touch the fingerprint sensor now with an already-enrolled finger to pair PIV with this Mac.",
+            "Touch the device with a registered finger to unlock configuration.",
         )
 
     def test_hid_host_list_preserves_eight_host_capacity(self):
@@ -860,7 +1066,7 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_factory_reset(args)
         self.assertEqual(calls, ["RESET FACTORY"])
-        output.assert_called_once_with("Factory reset completed.")
+        output.assert_called_once_with("Factory reset complete.")
 
     def test_factory_reset_unpairs_the_live_piv_identity_before_erasing_it(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
@@ -1195,7 +1401,7 @@ class ProtocolSixTests(unittest.TestCase):
         keychain = mock.Mock()
         keychain.can_read_password.side_effect = [False, True] * 7
         keychain.has_password.side_effect = (
-            lambda service, name: ":fingerprint:" not in name or name.endswith(":2")
+            lambda service, name: ":fingerprint:" not in name or name.endswith(":40")
         )
         activity = []
         keychain.authorize_executable.side_effect = (
@@ -1220,7 +1426,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(
             [event[0] for event in activity], ["authorize"] * 3 + ["install"]
         )
-        self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:2")
+        self.assertEqual(activity[2][1][1], "TT-123456ABCDEF:fingerprint:40")
         self.assertTrue(
             all(event[1][-1] == cli.sys.executable for event in activity[:3])
         )
