@@ -908,7 +908,9 @@ bool fingerprint_delete_finger(unsigned finger) {
   bool ok = false;
   if (profiles_ready && cleanup_pending_locked()) {
     fingerprint_inventory_t inventory;
-    if (inventory_locked(&inventory) && finger_profiles_block_fits(finger, inventory.capacity)) {
+    // Legacy prints can occupy part of a block on a smaller sensor. Deletion
+    // uses the live index and capacity, so it does not need four writable slots.
+    if (inventory_locked(&inventory)) {
       finger_profiles_t next = profiles;
       next.pending = finger_profiles_block(finger);
       ok = save_profiles_locked(&next) && cleanup_pending_locked();

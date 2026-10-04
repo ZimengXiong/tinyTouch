@@ -1412,22 +1412,41 @@ def host_list(port: str) -> tuple[set[str], int]:
     return ids, capacity
 
 
-def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int], int]:
+def finger_slots(finger: int) -> tuple[int, ...]:
+    """Map a fingerprint block to sensor slots, including slot zero."""
+    return tuple(slot % 40 for slot in range((finger - 1) * 4 + 1, finger * 4 + 1))
+
+
+def finger_inventory(
+    port: str, device: dict[str, str], *, required_finger: int | None = None,
+) -> tuple[dict[int, int], int]:
     if device.get("finger_groups") != "1":
         raise ToolError(
             "This firmware requires an update for fingerprint block enrollment. Run 'tinytouch update'. Then unplug and reconnect tinyTouch."
         )
     data = fields_from(serial_command(port, "FINGER LIST", timeout=6), "OK FINGER LIST")
     try:
-        groups = {} if data["groups"] == "none" else {
-            int(number): int(views) for number, views in
-            (entry.split(":") for entry in data["groups"].split(","))
-        }
+        entries = [] if data["groups"] == "none" else [
+            tuple(map(int, entry.split(":"))) for entry in data["groups"].split(",")
+        ]
+        groups = dict(entries)
         available = int(data["available"])
+        capacity = int(data["capacity"])
         pending = int(data["pending"])
-        if not 0 <= available <= 10 or any(
+        if not 1 <= capacity <= 40 or len(groups) != len(entries) or any(
             not 1 <= number <= 10 or not 0 <= views <= 4 for number, views in groups.items()
         ):
+            raise ValueError()
+        for number, views in groups.items():
+            if views > sum(slot < capacity for slot in finger_slots(number)):
+                raise ValueError()
+            if views == 0 and number != pending:
+                raise ValueError()
+        expected_available = sum(
+            finger not in groups and max(finger_slots(finger)) < capacity
+            for finger in range(1, 11)
+        )
+        if available != expected_available:
             raise ValueError()
         if pending:
             if pending not in groups:
@@ -1435,11 +1454,16 @@ def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int],
             groups[pending] = -1
     except (KeyError, ValueError) as exc:
         raise ToolError("The device returned an invalid fingerprint inventory.") from exc
+    if required_finger is not None and max(finger_slots(required_finger)) >= capacity:
+        raise ToolError(
+            f"This sensor cannot store all four views for finger {required_finger}. "
+            "Run 'tinytouch fingers' and choose a fingerprint block within its capacity."
+        )
     return groups, available
 
 
 def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool = False) -> None:
-    groups, available = finger_inventory(port, device)
+    groups, available = finger_inventory(port, device, required_finger=finger)
     occupied = finger in groups
     if occupied and not replace:
         say(f'Finger {finger} already has fingerprint enrollment data.')

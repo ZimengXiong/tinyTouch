@@ -191,6 +191,7 @@ int uart_write_bytes(uart_port_t port, const void *data, size_t size) {
     else sensor_templates |= UINT64_C(1) << slot;
   } else if (instruction == 0x0c) {
     unsigned slot = request[11];
+    assert(slot < sensor_capacity);
     if ((int)slot == fail_delete) confirm = 1;
     else sensor_templates &= ~(UINT64_C(1) << slot);
   } else if (instruction == 0x0d) sensor_templates = 0;

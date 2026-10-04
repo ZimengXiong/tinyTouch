@@ -104,5 +104,27 @@ int main(void) {
   assert(!fingerprint_inventory(&inventory));
   assert(!fingerprint_enroll_finger(1, true, prompt, connected));
   assert(sensor_templates == full);
+  // A smaller sensor can contain legacy prints in a block that cannot fit
+  // four new views. Deleting that block must still remove its valid slots.
+  uint64_t keep = (UINT64_C(1) << 1) | 1;
+  uint64_t partial = (UINT64_C(1) << 17) | (UINT64_C(1) << 19);
+  sensor_templates = keep | partial;
+  assert(fingerprint_inventory(&inventory));
+  assert(!fingerprint_enroll_finger(5, true, prompt, connected));
+  assert(sensor_templates == (keep | partial));
+  assert(fingerprint_delete_finger(5));
+  assert(sensor_templates == keep && !profiles.pending);
+  // Physical slot zero belongs to finger 10, even on a smaller sensor.
+  assert(!fingerprint_enroll_finger(10, true, prompt, connected));
+  assert(fingerprint_delete_finger(10));
+  assert(sensor_templates == (UINT64_C(1) << 1));
+  fail_save = true;
+  assert(!fingerprint_delete_finger(1));
+  assert(sensor_templates == (UINT64_C(1) << 1));
+  fail_save = false;
+  // Empty unsupported blocks remain safe to delete without sending commands
+  // for slots beyond the sensor's capacity.
+  assert(fingerprint_delete_finger(9));
+  assert(sensor_templates == (UINT64_C(1) << 1));
   return 0;
 }
