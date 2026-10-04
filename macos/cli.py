@@ -1514,68 +1514,73 @@ def command_setup(args: argparse.Namespace) -> None:
     piv_rescan_needed = False
     created_piv_identities = None
     previous_piv_identities: set[str] = set()
-    mode_changed = False
-    with foreground_session(port):
-        device = status(port)
-        protocol6(device)
-        sensor_ready(device)
-        if (
-            mode == "piv"
-            and device.get("mode") == "piv"
-            and device.get("piv") == "ready"
-            and int(device.get("fingerprints", "0")) > 0
-            and paired_piv_identities()
-        ):
-            say("PIV setup is already complete on this Mac.")
-            explain_piv_pin()
-            return
-        if device.get("mode") != mode:
-            unlock(
-                port,
-                reason=f"switch to {mode.upper()} mode",
-            )
-            serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
-            mode_changed = True
-        elif mode == "hid":
-            unlock(port, reason="configure HID mode")
-            configure_hid(port, device)
-        else:
-            if device.get("piv") != "ready":
+    expected_account: str | None = None
+    reconnected = False
+    hid_configured = False
+    while True:
+        mode_changed = False
+        with foreground_session(port) as connected_port:
+            if isinstance(connected_port, str):
+                port = connected_port
+            if expected_account is not None and device_account(port) != expected_account:
+                raise ToolError("A different device reconnected. Connect the original tinyTouch and run setup again.")
+            device = fresh_status(port, {"mode": mode}) if reconnected else status(port)
+            protocol6(device)
+            sensor_ready(device)
+            if (
+                mode == "piv"
+                and device.get("mode") == "piv"
+                and device.get("piv") == "ready"
+                and int(device.get("fingerprints", "0")) > 0
+                and paired_piv_identities()
+            ):
+                say("PIV setup is already complete on this Mac.")
+                explain_piv_pin()
+                return
+            if mode == "hid" and not hid_configured:
+                expected_account = device_account(port)
+                unlock(port, reason="configure HID mode")
+                configure_hid(port, device)
+                hid_configured = True
+            if device.get("mode") != mode:
+                expected_account = device_account(port)
+                unlock(
+                    port,
+                    reason=f"switch to {mode.upper()} mode",
+                )
+                serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
+                mode_changed = True
+            elif mode == "piv" and device.get("piv") != "ready":
                 say("")
                 say("Setting up PIV certificates. This can take up to 30 seconds.")
                 paired, available = piv_identities()
                 previous_piv_identities = set(paired + available)
-                unlock(
-                    port,
-                    reason="create your PIV identity",
-                )
+                unlock(port, reason="create your PIV identity")
                 serial_command(
-                    port,
-                    "PIV CREATE",
-                    timeout=45,
-                    wait_message=(
-                        "Creating PIV identities. This can take up to 30 seconds. Keep your finger off the sensor."
-                    ),
+                    port, "PIV CREATE", timeout=45,
+                    wait_message="Creating PIV identities. This can take up to 30 seconds. Keep your finger off the sensor.",
                 )
                 piv_rescan_needed = True
-        if not mode_changed and not piv_rescan_needed:
-            enroll(port, args.skip_enroll)
-            device = status(port)
-            protocol6(device)
-            sensor_ready(device)
-            device = status(port)
-    if mode_changed:
+            if not mode_changed and not piv_rescan_needed:
+                enroll(port, args.skip_enroll)
+                device = status(port)
+                protocol6(device)
+                sensor_ready(device)
+        if not mode_changed:
+            break
         notify(
             "tinyTouch mode changed",
             "Reconnect tinyTouch to apply the new device mode.",
         )
         say(f"Unplug and reconnect tinyTouch to use {mode.upper()} mode.")
-        reconnected_port = wait_for_reconnect(port)
-        resumed = argparse.Namespace(**vars(args))
-        resumed.mode = mode
-        resumed.port = reconnected_port
-        command_setup(resumed)
-        return
+        try:
+            port = wait_for_reconnect(port)
+        except ToolError as exc:
+            raise ToolError(
+                f"{mode.upper()} mode was selected, but setup did not finish. {exc} "
+                f"Unplug and reconnect tinyTouch, then run 'tinytouch setup --mode {mode}' again."
+            ) from exc
+        reconnected = True
     if piv_rescan_needed:
         say("")
         created_piv_identities = wait_for_piv_identities(

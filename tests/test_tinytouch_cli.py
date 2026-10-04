@@ -810,6 +810,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "choose_mode", return_value="piv"),
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "status", return_value=device),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "sensor_ready"),

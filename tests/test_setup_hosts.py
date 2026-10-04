@@ -119,6 +119,84 @@ class HostInventoryTests(unittest.TestCase):
                     cli.host_list(PORT)
 
 
+class SetupFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.output = io.StringIO()
+        self.enterContext(contextlib.redirect_stdout(self.output))
+        self.enterContext(mock.patch.object(cli, "require_macos"))
+        self.enterContext(mock.patch.object(cli, "choose_port", return_value=PORT))
+        self.remove = self.enterContext(mock.patch.object(cli, "remove_helper"))
+        self.session = self.enterContext(mock.patch.object(cli, "foreground_session"))
+        self.account = self.enterContext(mock.patch.object(cli, "device_account", return_value=ACCOUNT))
+        self.status = self.enterContext(mock.patch.object(cli, "status", return_value=DEVICE))
+        self.fresh = self.enterContext(mock.patch.object(cli, "fresh_status", return_value=DEVICE))
+        self.enterContext(mock.patch.object(cli, "unlock"))
+        self.events = []
+        self.configure = self.enterContext(mock.patch.object(cli, "configure_hid", side_effect=lambda *_args: self.events.append("configure")))
+        self.command = self.enterContext(mock.patch.object(cli, "serial_command", side_effect=lambda _port, command, **_kwargs: self.events.append(command)))
+        self.reconnect = self.enterContext(mock.patch.object(cli, "wait_for_reconnect", return_value="/dev/cu.TT-NEW"))
+        self.enroll = self.enterContext(mock.patch.object(cli, "enroll"))
+        self.enterContext(mock.patch.object(cli, "notify"))
+        self.verify = self.enterContext(mock.patch.object(cli, "verify_hid_host"))
+        self.install = self.enterContext(mock.patch.object(cli, "install_helper"))
+        self.loaded = self.enterContext(mock.patch.object(cli, "helper_loaded", return_value=True))
+        self.args = cli.parser().parse_args(["setup", "--mode", "hid", "--skip-enroll"])
+
+    def test_setup_registers_before_mode_switch_and_does_not_recurse(self):
+        self.status.side_effect = [{**DEVICE, "mode": "piv"}, DEVICE]
+        cli.command_setup(self.args)
+        self.assertEqual(self.events, ["configure", "SET MODE HID"])
+        self.remove.assert_called_once()
+        self.configure.assert_called_once()
+        self.assertEqual(self.session.call_count, 2)
+        self.reconnect.assert_called_once_with(PORT)
+        self.fresh.assert_called_once_with("/dev/cu.TT-NEW", {"mode": "hid"})
+        self.enroll.assert_called_once_with("/dev/cu.TT-NEW", True)
+        self.verify.assert_called_once_with("/dev/cu.TT-NEW", DEVICE)
+        self.assertIn("Ready (HID)", self.output.getvalue())
+
+    def test_reconnect_timeout_explains_how_to_finish_setup(self):
+        self.status.return_value = {**DEVICE, "mode": "piv"}
+        self.reconnect.side_effect = cli.ToolError("Timed out waiting for USB")
+        with self.assertRaisesRegex(cli.ToolError, "tinytouch setup --mode hid"):
+            cli.command_setup(self.args)
+        self.assertEqual(self.events, ["configure", "SET MODE HID"])
+        self.install.assert_not_called()
+        self.assertNotIn("Ready (HID)", self.output.getvalue())
+
+    def test_failed_pairing_stops_before_selecting_hid(self):
+        self.status.return_value = {**DEVICE, "mode": "piv"}
+        self.configure.side_effect = cli.ToolError("No host saved")
+        with self.assertRaisesRegex(cli.ToolError, "No host saved"):
+            cli.command_setup(self.args)
+        self.command.assert_not_called()
+        self.reconnect.assert_not_called()
+
+    def test_wrong_mode_after_reconnect_stops_without_another_write(self):
+        self.status.return_value = {**DEVICE, "mode": "piv"}
+        self.fresh.side_effect = cli.ToolError("Verification failed. mode is piv")
+        with self.assertRaisesRegex(cli.ToolError, "Verification failed"):
+            cli.command_setup(self.args)
+        self.command.assert_called_once()
+        self.reconnect.assert_called_once()
+        self.install.assert_not_called()
+
+    def test_a_different_reconnected_device_is_never_configured(self):
+        self.status.return_value = {**DEVICE, "mode": "piv"}
+        self.account.side_effect = [ACCOUNT, ACCOUNT, "TT-OTHER"]
+        with self.assertRaisesRegex(cli.ToolError, "different device reconnected"):
+            cli.command_setup(self.args)
+        self.configure.assert_called_once()
+        self.fresh.assert_not_called()
+        self.install.assert_not_called()
+
+    def test_existing_hid_mode_does_not_require_a_reconnect(self):
+        cli.command_setup(self.args)
+        self.command.assert_not_called()
+        self.reconnect.assert_not_called()
+        self.install.assert_called_once()
+
+
 class HostRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.credentials = {cli.PAIRING_SERVICE: KEY.hex(), cli.PASSWORD_SERVICE: "custom-password"}
