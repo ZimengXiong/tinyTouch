@@ -267,6 +267,7 @@ class SerialDeliveryTests(unittest.TestCase):
                     mock.patch.object(helper, "load_settings", return_value={"keyboard_layout": "us"}),
                     mock.patch.object(helper, "load_state", return_value={}),
                     mock.patch.object(helper, "REATTACHED_DEVICES", [device_id]),
+                    mock.patch.object(helper, "device_ports", return_value=["/dev/cu.fake"]),
                     mock.patch.object(helper, "remember_nonce") as remember,
                     mock.patch.object(helper, "diagnostic"),
                     mock.patch("builtins.print"),

@@ -605,8 +605,9 @@ def require_startup_status(
     pending: deque[bytes] = deque(maxlen=MAX_SEEN_NONCES)
     if stop_event is not None and stop_event.is_set():
         return None
+    # Serial.write uses write_timeout. flush waits in tcdrain without a deadline
+    # and can prevent a disconnected worker from releasing its port.
     ser.write(b"STATUS\n")
-    ser.flush()
     deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if stop_event is not None and stop_event.is_set():
@@ -657,12 +658,12 @@ def serve_port(
             if pending_frames is None or (stop_event is not None and stop_event.is_set()):
                 return
             last_received = time.monotonic()
+            last_heartbeat = last_received
             if device_id not in REATTACHED_DEVICES:
                 # A new login creates a new helper process. Ask the firmware to
                 # re-enumerate once so macOS rebuilds stale CDC and HID endpoints.
                 REATTACHED_DEVICES.append(device_id)
                 ser.write(b"USB RECONNECT\n")
-                ser.flush()
                 diagnostic("worker.usb_reattach_requested", device_id=device_id, port=port)
                 raise serial.SerialException("USB reattach requested")
             diagnostic("worker.connected", device_id=device_id, port=port)
@@ -671,37 +672,21 @@ def serve_port(
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return
                 chunk = b"" if pending_frames else read_available(ser)
-                if not chunk and not pending_frames:
-                    # pyserial can leave a descriptor open after macOS removes
-                    # the USB device during sleep.  In that state readline()
-                    # simply times out forever, so the manager never gets a
-                    # chance to open the device again after wake.
-                    now = time.monotonic()
-                    if now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
-                        if decoder.discard_partial():
-                            diagnostic(
-                                "protocol.partial_frame_expired",
-                                level="warning",
-                                device_id=device_id,
-                            )
-                    if now - last_port_check >= 1.0:
-                        last_port_check = now
-                        if port not in device_ports():
-                            raise serial.SerialException(
-                                f"serial device disappeared: {port}"
-                            )
-                    if heartbeat_sent_at is not None:
-                        if now - heartbeat_sent_at >= HEARTBEAT_TIMEOUT_SECONDS:
-                            raise serial.SerialException(
-                                f'The serial device stopped responding after sleep. Port: {port}.'
-                            )
-                    elif now - last_received >= HEARTBEAT_INTERVAL_SECONDS:
-                        ser.write(b"PING\n")
-                        ser.flush()
-                        heartbeat_sent_at = now
-                    continue
-                last_received = time.monotonic()
-                heartbeat_sent_at = None
+                now = time.monotonic()
+                # Check discovery even when stale descriptors keep yielding bytes.
+                if now - last_port_check >= 1.0:
+                    last_port_check = now
+                    if port not in device_ports():
+                        raise serial.SerialException(f"serial device disappeared: {port}")
+                if chunk:
+                    last_received = now
+                elif now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
+                    if decoder.discard_partial():
+                        diagnostic(
+                            "protocol.partial_frame_expired",
+                            level="warning",
+                            device_id=device_id,
+                        )
                 frames = pending_frames or decoder.feed(chunk)
                 pending_frames = []
                 for raw in frames:
@@ -715,7 +700,10 @@ def serve_port(
                             reason="non_ascii",
                         )
                         continue
-                    if line == "PONG":
+                    if re.fullmatch(r"PONG(?: [0-9]+)?", line):
+                        if heartbeat_sent_at is not None:
+                            heartbeat_sent_at = None
+                            last_heartbeat = now
                         continue
                     line = resynchronize_event(line, device_id)
                     if not (line.startswith("EV ") or line.startswith("EV2 ")):
@@ -727,7 +715,6 @@ def serve_port(
                                          record_nonce=False)
                     if reply:
                         ser.write(reply.encode("ascii"))
-                        ser.flush()
                         remember_nonce(state, line.split()[1], device_id)
                         diagnostic(
                             "protocol.password_delivered",
@@ -736,6 +723,16 @@ def serve_port(
                         )
                         if once:
                             return
+                # Only a complete PONG acknowledges PING. Diagnostics, malformed
+                # frames, and fingerprint events cannot hide a stuck console.
+                if heartbeat_sent_at is not None:
+                    if now - heartbeat_sent_at >= HEARTBEAT_TIMEOUT_SECONDS:
+                        raise serial.SerialException(
+                            f'The serial device stopped responding to PING. Port: {port}.'
+                        )
+                elif now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                    ser.write(b"PING\n")
+                    heartbeat_sent_at = time.monotonic()
     finally:
         for value in password.values():
             value[:] = b"\x00" * len(value)
