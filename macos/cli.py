@@ -2094,12 +2094,11 @@ def command_factory_reset(args: argparse.Namespace) -> None:
         protocol6(device)
         if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
             raise ToolError("Factory reset cancelled.")
-        # Capture Mac cleanup data while the device identity still exists.
+        # Capture HID cleanup data while the device identity still exists.
         account = device_account(port)
         paired_identities = paired_piv_identities()
-        if paired_identities:
-            authorize_macos()
-        # The administrator prompt can outlast device authorization.
+        # Visible sc_auth hashes do not identify the selected USB device.
+        # Preserve those pairings rather than unpairing another smart card.
         unlock(port, reason="confirm the factory reset")
         serial_command(port, "RESET FACTORY", timeout=15)
         cleared = status(port)
@@ -2110,17 +2109,10 @@ def command_factory_reset(args: argparse.Namespace) -> None:
                 raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
         # Keep the saved service and Mac pairings if approval or reset fails.
         remove_helper()
-    if paired_identities:
-        for identity in paired_identities:
-            run(
-                [
-                    "sudo", "-n", "sc_auth", "unpair", "-u",
-                    getpass.getuser(), "-h", identity,
-                ]
-            )
     keychain_delete(PAIRING_SERVICE, account)
     keychain_delete(PASSWORD_SERVICE, account)
-    say("Factory reset complete.")
+    suffix = " macOS smart-card pairings were preserved." if paired_identities else ""
+    say("Factory reset complete." + suffix)
 
 
 def response_next(lines: list[str], verb: str) -> int:
@@ -3202,7 +3194,7 @@ def parser() -> argparse.ArgumentParser:
         "delete": ("Delete all views in the selected fingerprint block after fingerprint approval. Keep the other fingerprint blocks.", "tinytouch delete 2"),
         "fingers": ("Read occupied fingerprint blocks, partial enrollment, pending cleanup, and available capacity. Keep the existing enrollment.", "tinytouch fingers"),
         "computers": ("List or remove registered HID computers. Use HID setup to add this Mac. Removing the last computer selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
-        "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and local pairing. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
+        "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and this device's local HID credentials. macOS smart-card pairings are preserved. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
         "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
         "uninstall": ("Stop and remove the background service. Saved credentials and the CLI stay installed.", "tinytouch uninstall"),
         "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),

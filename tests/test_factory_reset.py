@@ -53,13 +53,13 @@ class FactoryResetTests(unittest.TestCase):
         self.assert_mac_setup_preserved()
         self.session.return_value.__exit__.assert_called_once()
 
-    def test_failed_administrator_approval_preserves_mac_setup(self):
-        self.admin.side_effect = cli.ToolError("Administrator approval failed.")
-        with self.assertRaisesRegex(cli.ToolError, "approval failed"):
-            cli.command_factory_reset(self.args)
-        self.unlock.assert_not_called()
-        self.reset.assert_not_called()
-        self.assert_mac_setup_preserved()
+    def test_reset_preserves_unrelated_visible_smart_card_pairings(self):
+        self.pairings.return_value = ["A" * 40, "B" * 40]
+        cli.command_factory_reset(self.args)
+        self.admin.assert_not_called()
+        self.unpair.assert_not_called()
+        self.remove.assert_called_once()
+        self.assertIn("smart-card pairings were preserved", self.output.call_args.args[0])
 
     def test_rejected_reset_preserves_mac_setup(self):
         self.reset.side_effect = cli.ToolError("ERR RESET FACTORY")
@@ -104,8 +104,8 @@ class FactoryResetTests(unittest.TestCase):
         self.credentials.side_effect = lambda *_a: events.append("credentials")
         cli.command_factory_reset(self.args)
         self.assertEqual(events, [
-            "status", "account", "pairings", "admin", "unlock", "reset", "status",
-            "remove", "unpair", "credentials", "credentials",
+            "status", "account", "pairings", "unlock", "reset", "status",
+            "remove", "credentials", "credentials",
         ])
         self.session.assert_called_once_with("TT")
         self.reset.assert_called_once_with("TT", "RESET FACTORY", timeout=15)
@@ -113,7 +113,11 @@ class FactoryResetTests(unittest.TestCase):
             mock.call(cli.PAIRING_SERVICE, "TT-1234"),
             mock.call(cli.PASSWORD_SERVICE, "TT-1234"),
         ])
-        self.output.assert_called_once_with("Factory reset complete.")
+        self.admin.assert_not_called()
+        self.unpair.assert_not_called()
+        self.output.assert_called_once_with(
+            "Factory reset complete. macOS smart-card pairings were preserved."
+        )
 
     def test_unpaired_device_needs_no_administrator_cleanup(self):
         self.pairings.return_value = []

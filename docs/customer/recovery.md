@@ -16,7 +16,10 @@ If the device responds, run:
 tinytouch factory-reset
 ```
 
-Approve with your fingerprint. This also removes local credentials and PIV pairing.
+Approve with your fingerprint. This also removes this device's local HID credentials.
+macOS smart-card pairings are preserved because the CLI cannot match a pairing
+to the selected device. See [pairing cleanup](../reference/recovery.md) to remove
+a stale pairing after reset.
 The CLI verifies the cleared device state before removing the Mac setup.
 
 If every enrolled finger fails with `AUTH no_match`, use browser recovery below.

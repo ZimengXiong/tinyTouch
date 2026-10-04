@@ -18,7 +18,10 @@ description: Compare factory reset, factory reflashing, recovery firmware, and t
 tinytouch factory-reset
 ```
 
-Use this when serial communication and fingerprint approval work. It also removes local HID credentials and PIV pairing.
+Use this when serial communication and fingerprint approval work. It also removes
+this device's local HID credentials. It preserves macOS smart-card pairings because
+the CLI cannot match a pairing to the selected device. Inspect and remove a stale
+pairing with the `sc_auth` commands below.
 
 ## Factory browser flash
 
