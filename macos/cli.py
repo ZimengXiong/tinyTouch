@@ -789,40 +789,47 @@ def install_helper(*, check_saved: bool = False) -> None:
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
         "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},
     }
-    previous = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
-    was_loaded = helper_loaded()
-    was_suppressed = _helper_suppressed
-    _helper_suppressed = False
-    try:
-        unload_helper()
-        atomic_write_bytes(
-            LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644
-        )
-        load_helper()
-        if not helper_loaded():
-            raise ToolError("The HID helper did not load.")
-    except BaseException as exc:
+    # Use the foreground lock so a replacement cannot interrupt another CLI's
+    # USB session or remove its lease while changing the LaunchAgent.
+    with ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK) as lease:
+        try:
+            lease.acquire(wait_for_ack=False)
+        except (LeaseBusyError, OSError) as exc:
+            raise ToolError(f"Could not replace the HID background service: {exc}") from exc
+        previous = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
+        was_loaded = helper_loaded()
+        was_suppressed = _helper_suppressed
+        _helper_suppressed = False
         try:
             unload_helper()
-            if previous is None:
-                LAUNCH_AGENT.unlink(missing_ok=True)
-            else:
-                atomic_write_bytes(LAUNCH_AGENT, previous, mode=0o644)
-                if was_loaded:
-                    load_helper()
-                    if not helper_loaded():
-                        raise ToolError("The previous HID helper did not reload.")
-        except Exception as rollback_error:
+            atomic_write_bytes(
+                LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644
+            )
+            load_helper()
+            if not helper_loaded():
+                raise ToolError("The HID helper did not load.")
+        except BaseException as exc:
+            try:
+                unload_helper()
+                if previous is None:
+                    LAUNCH_AGENT.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(LAUNCH_AGENT, previous, mode=0o644)
+                    if was_loaded:
+                        load_helper()
+                        if not helper_loaded():
+                            raise ToolError("The previous HID helper did not reload.")
+            except Exception as rollback_error:
+                raise ToolError(
+                    "The replacement HID helper failed, and the previous service could not be restored."
+                ) from rollback_error
+            finally:
+                _helper_suppressed = was_suppressed
+            if not isinstance(exc, Exception):
+                raise
             raise ToolError(
-                "The replacement HID helper failed, and the previous service could not be restored."
-            ) from rollback_error
-        finally:
-            _helper_suppressed = was_suppressed
-        if not isinstance(exc, Exception):
-            raise
-        raise ToolError(
-            "The replacement HID helper failed. The previous service was restored."
-        ) from exc
+                "The replacement HID helper failed. The previous service was restored."
+            ) from exc
 
 
 def command_repair(args: argparse.Namespace) -> None:

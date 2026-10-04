@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location(
 )
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
+import tinytouch_runtime as runtime
 
 
 class LaunchAgentLifecycleTests(unittest.TestCase):
@@ -150,6 +151,36 @@ class LaunchAgentLifecycleTests(unittest.TestCase):
                 cli.install_helper()
         self.assertFalse(self.agent.exists())
         self.assertTrue(cli._helper_suppressed)
+
+
+    def test_replacement_cannot_stop_a_helper_owned_by_a_foreground_command(self):
+        lease = cli.ForegroundLease(self.suspend, self.ack).acquire(wait_for_ack=False)
+        try:
+            with (
+                mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+                mock.patch.object(cli, "unload_helper") as unload,
+            ):
+                with self.assertRaisesRegex(cli.ToolError, "Another tinyTouch command"):
+                    cli.install_helper()
+            unload.assert_not_called()
+            self.loaded.assert_not_called()
+            self.assertEqual(self.agent.read_bytes(), self.previous)
+            self.assertEqual(runtime.LeaseObserver(self.suspend, self.ack).active(), lease.record)
+        finally:
+            lease.release()
+
+    def test_failed_lease_write_releases_lock_without_stopping_the_service(self):
+        with (
+            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+            mock.patch.object(cli, "unload_helper") as unload,
+            mock.patch.object(runtime, "atomic_write_json", side_effect=PermissionError("read-only")),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "Could not replace"):
+                cli.install_helper()
+        unload.assert_not_called()
+        self.assertEqual(self.agent.read_bytes(), self.previous)
+        with cli.ForegroundLease(self.suspend, self.ack) as lease:
+            lease.acquire(wait_for_ack=False)
 
 
 class UpdateRestartTests(unittest.TestCase):
