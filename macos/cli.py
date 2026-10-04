@@ -1879,15 +1879,28 @@ def command_computers(args: argparse.Namespace) -> None:
 
 def command_factory_reset(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
-        raise ToolError("Factory reset cancelled.")
-    remove_helper()
-    unlock(port, reason="confirm the factory reset")
-    paired_identities = paired_piv_identities()
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
+            raise ToolError("Factory reset cancelled.")
+        # Capture Mac cleanup data while the device identity still exists.
+        account = device_account(port)
+        paired_identities = paired_piv_identities()
+        if paired_identities:
+            authorize_macos()
+        # The administrator prompt can outlast device authorization.
+        unlock(port, reason="confirm the factory reset")
+        serial_command(port, "RESET FACTORY", timeout=15)
+        cleared = status(port)
+        for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
+            if key == "piv" and key not in cleared:
+                continue
+            if cleared.get(key) != expected:
+                raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
+        # Keep the saved service and Mac pairings if approval or reset fails.
+        remove_helper()
     if paired_identities:
-        authorize_macos()
         for identity in paired_identities:
             run(
                 [
@@ -1895,15 +1908,6 @@ def command_factory_reset(args: argparse.Namespace) -> None:
                     getpass.getuser(), "-h", identity,
                 ]
             )
-    serial_command(port, "RESET FACTORY", timeout=15)
-    cleared = status(port)
-    for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
-        if key == "piv" and key not in cleared:
-            continue
-        if cleared.get(key) != expected:
-            raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
-    remove_helper()
-    account = device_account(port)
     keychain_delete(PAIRING_SERVICE, account)
     keychain_delete(PASSWORD_SERVICE, account)
     say("Factory reset complete.")

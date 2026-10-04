@@ -1054,6 +1054,7 @@ class ProtocolSixTests(unittest.TestCase):
         calls = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session") as session,
             mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "ask", return_value="y"),
@@ -1067,9 +1068,10 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_factory_reset(args)
         self.assertEqual(calls, ["RESET FACTORY"])
+        session.assert_called_once_with(args.port)
         output.assert_called_once_with("Factory reset complete.")
 
-    def test_factory_reset_unpairs_the_live_piv_identity_before_erasing_it(self):
+    def test_factory_reset_captures_pairing_before_reset_and_unpairs_after_verification(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         identity = "A" * 40
         statuses = iter([
@@ -1079,10 +1081,11 @@ class ProtocolSixTests(unittest.TestCase):
         events = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session"),
             mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "ask", return_value="y"),
-            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "unlock", side_effect=lambda *_a, **_k: events.append("unlock")),
             mock.patch.object(cli, "paired_piv_identities", return_value=[identity]),
             mock.patch.object(cli, "authorize_macos", side_effect=lambda: events.append("authorize")),
             mock.patch.object(cli, "run", side_effect=lambda command, **_kwargs: events.append(command)),
@@ -1094,8 +1097,9 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_factory_reset(args)
         self.assertEqual(events[0], "authorize")
-        self.assertIn("unpair", events[1])
+        self.assertEqual(events[1], "unlock")
         self.assertEqual(events[2], "reset")
+        self.assertIn("unpair", events[3])
 
     def test_mode_verifies_the_live_mode_without_reconnect_command(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234", mode="hid")
