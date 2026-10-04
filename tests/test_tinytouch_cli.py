@@ -21,6 +21,21 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def setUp(self):
+        service_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # Helper installation now acquires a lease. Keep every service path in
+        # the fixture, including paths computed when the CLI module was imported.
+        for name, value in (
+            ("LAUNCH_AGENT", service_root / "agent.plist"),
+            ("SUPPORT_DIR", service_root / "support"),
+            ("LOG_DIR", service_root / "logs"),
+            ("HELPER_SUSPEND", service_root / "suspend"),
+            ("HELPER_SUSPEND_ACK", service_root / "ack"),
+            ("_helper_suppressed", False),
+            ("_active_serial", None),
+        ):
+            self.enterContext(mock.patch.object(cli, name, value))
+
     def test_chime_is_nonblocking_and_does_not_overlap(self):
         process = mock.Mock()
         process.poll.return_value = None
