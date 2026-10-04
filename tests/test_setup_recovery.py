@@ -114,7 +114,7 @@ class SetupRecoveryTests(unittest.TestCase):
         add = next(index for index, command in enumerate(commands) if command.startswith("HOST ADD "))
         self.assertLess(add, commands.index("SET MODE HID"))
         self.prepare.assert_called_once()
-        self.remove.assert_called_once()
+        self.remove.assert_not_called()
         self.install.assert_called_once()
 
     def test_missing_host_after_reconnect_cannot_start_helper(self):
