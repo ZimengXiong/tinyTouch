@@ -414,7 +414,7 @@ class HelperProtocolTests(unittest.TestCase):
         ):
             passwords = helper.load_passwords(identity)
         self.assertEqual(set(passwords), {0, 40})
-        self.assertEqual(exists.call_count, 40)
+        self.assertEqual(exists.call_count, 50)
         get.assert_any_call(identity + ":fingerprint:40")
 
     def test_partial_password_load_failure_wipes_previous_slots(self):

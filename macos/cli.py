@@ -824,6 +824,8 @@ def command_repair(args: argparse.Namespace) -> None:
 
         device_ids = known_device_ids()
     keychain = _keychain()
+    from tinytouch_helper import password_accounts
+
     accounts = []
     for account in sorted(device_ids):
         pairing = [(PAIRING_SERVICE, account), (PASSWORD_SERVICE, account)]
@@ -831,9 +833,9 @@ def command_repair(args: argparse.Namespace) -> None:
             continue
         accounts.extend(pairing)
         accounts.extend(
-            (PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
-            for slot in range(1, 41)
-            if keychain.has_password(PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
+            (PASSWORD_SERVICE, name)
+            for name in password_accounts(account)
+            if keychain.has_password(PASSWORD_SERVICE, name)
         )
     if not accounts:
         raise ToolError(
@@ -1233,6 +1235,18 @@ def verify_hid_host(port: str, device: dict[str, str], account: str | None = Non
         raise ToolError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
 
 
+def prompt_hid_password() -> str:
+    """Confirm a password without including it in command arguments."""
+    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
+    first = getpass.getpass("Password: ")
+    second = getpass.getpass("Password again: ")
+    if not first or first != second:
+        raise ToolError("Enter matching passwords. Neither password can be empty.")
+    if len(first.encode()) > 160:
+        raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
+    return first
+
+
 def password_for(account: str) -> str:
     global _setup_password
     if _setup_password is not None:
@@ -1245,15 +1259,59 @@ def password_for(account: str) -> str:
         finally:
             _setup_password[:] = b"\x00" * len(_setup_password)
             _setup_password = None
-    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
-    first = getpass.getpass("Password: ")
-    second = getpass.getpass("Password again: ")
-    if not first or first != second:
-        raise ToolError("Enter matching passwords. Neither password can be empty.")
-    if len(first.encode()) > 160:
-        raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
+    first = prompt_hid_password()
     keychain_set(PASSWORD_SERVICE, account, first)
     return first
+
+
+@contextmanager
+def hid_settings_change():
+    """Restart the existing helper so it discards cached host credentials."""
+    was_loaded = unload_helper()
+    try:
+        yield
+    except _keychain().KeychainError as exc:
+        raise ToolError(
+            "Could not update the saved HID credentials. "
+            "Unlock the login Keychain and run 'tinytouch repair', then retry."
+        ) from exc
+    finally:
+        if was_loaded:
+            load_helper()
+
+
+def command_password(args: argparse.Namespace) -> None:
+    """Change a host password without repeating enrollment or HID pairing."""
+    require_macos()
+    from tinytouch_helper import (
+        current_keyboard_output_map, finger_password_account, load_settings,
+        translate_password,
+    )
+
+    account = device_account(choose_port(args.port))
+    keychain = _keychain()
+    try:
+        configured = all(keychain.has_password(service, account)
+                         for service in (PAIRING_SERVICE, PASSWORD_SERVICE))
+    except keychain.KeychainError as exc:
+        raise ToolError("Unlock the login Keychain, then retry.") from exc
+    if not configured:
+        raise ToolError("Run 'tinytouch setup --mode hid' before changing a password.")
+    value = prompt_hid_password()
+    try:
+        mapping = (current_keyboard_output_map()
+                   if load_settings(account)["keyboard_layout"] == "auto" else None)
+        translate_password(value.encode("utf-8"), mapping)
+    except (UnicodeError, ValueError, RuntimeError) as exc:
+        raise ToolError(
+            "This password cannot be typed with the selected keyboard layout. "
+            "Select a compatible macOS layout and use at most 160 typed keys."
+        ) from exc
+    target = finger_password_account(account, args.finger) if args.finger else account
+    with hid_settings_change():
+        keychain_set(PASSWORD_SERVICE, target, value)
+    say(f"HID password saved for finger {args.finger}." if args.finger
+        else "Default HID password saved.")
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
@@ -2854,6 +2912,12 @@ def parser() -> argparse.ArgumentParser:
     )
     repair.add_argument("--port")
     repair.set_defaults(func=command_repair)
+    password = sub.add_parser("password", help="Change the password typed on this Mac.")
+    password.add_argument("--finger", type=int, choices=range(1, 11),
+                          help="Set one password for all four views of this finger.")
+    password.add_argument("--port", default=argparse.SUPPRESS,
+                          help="Use this USB serial path instead of the global --port value.")
+    password.set_defaults(func=command_password)
     upgrade_helper = sub.add_parser("_upgrade-helper", help=argparse.SUPPRESS)
     upgrade_helper.add_argument("--port")
     upgrade_helper.set_defaults(func=command_upgrade_helper)

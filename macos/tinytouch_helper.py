@@ -138,10 +138,33 @@ def fingerprint_account(device_id: str, slot: int) -> str:
     return f"{device_id}:fingerprint:{slot}"
 
 
+def finger_password_account(device_id: str, finger: int) -> str:
+    """Name one password shared by all four views of an enrolled finger."""
+    return f"{device_id}:fingerprint:group:{finger}"
+
+
+def password_accounts(device_id: str) -> list[str]:
+    """List override accounts that may need Keychain access repair."""
+    return [fingerprint_account(device_id, slot) for slot in range(1, 41)] + [
+        finger_password_account(device_id, finger) for finger in range(1, 11)
+    ]
+
+
 def load_passwords(device_id: str) -> dict[int, bytearray]:
     passwords = {0: keychain_get(device_id)}
     try:
+        for finger in range(1, 11):
+            account = finger_password_account(device_id, finger)
+            if has_password(SERVICE, account):
+                # Store one item so a failed update cannot leave a finger's
+                # four views using different passwords.
+                value = keychain_get(account)
+                first_slot = (finger - 1) * 4 + 1
+                for slot in range(first_slot, first_slot + 4):
+                    passwords[slot] = value
         for slot in range(1, 41):
+            if slot in passwords:
+                continue
             account = fingerprint_account(device_id, slot)
             if has_password(SERVICE, account):
                 try:
