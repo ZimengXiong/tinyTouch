@@ -385,9 +385,10 @@ Updates the CLI, HID helper, and firmware. Reconnect the device after staging.
 tinytouch factory-reset [--port PATH]
 ```
 
-Clears fingerprints, keys, registered computers, device settings, local HID
-credentials. macOS smart-card pairings are preserved. Confirm the reset and approve it with an enrolled
-fingerprint. In **Advanced → Diagnostics**, select **Factory reset**.
+Clears fingerprints, keys, registered computers, device settings, and this device's
+local HID credentials. macOS smart-card pairings are preserved. Confirm the reset
+and approve it with an enrolled fingerprint. In **Advanced → Diagnostics**, select
+**Factory reset**.
 The CLI checks the cleared device state before removing the Mac setup. If no
 enrolled finger matches, follow [Recover tinyTouch](/customer/recovery).
 

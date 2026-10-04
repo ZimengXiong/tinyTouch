@@ -1085,7 +1085,7 @@ class ProtocolSixTests(unittest.TestCase):
         session.assert_called_once_with(args.port)
         output.assert_called_once_with("Factory reset complete.")
 
-    def test_factory_reset_captures_pairing_before_reset_and_unpairs_after_verification(self):
+    def test_factory_reset_preserves_visible_smart_card_pairings(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         identity = "A" * 40
         statuses = iter([
@@ -1110,10 +1110,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "say"),
         ):
             cli.command_factory_reset(args)
-        self.assertEqual(events[0], "authorize")
-        self.assertEqual(events[1], "unlock")
-        self.assertEqual(events[2], "reset")
-        self.assertIn("unpair", events[3])
+        self.assertEqual(events, ["unlock", "reset"])
 
     def test_mode_verifies_the_live_mode_without_reconnect_command(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234", mode="hid")
