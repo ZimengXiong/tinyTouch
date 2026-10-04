@@ -40,6 +40,27 @@ class LaunchAgentLifecycleTests(unittest.TestCase):
         ))
         self.run = self.enterContext(mock.patch.object(cli, "run"))
         self.loaded = self.enterContext(mock.patch.object(cli, "helper_loaded"))
+        self.clock = 0.0
+        self.enterContext(mock.patch.object(cli.time, "monotonic", side_effect=lambda: self.clock))
+        self.enterContext(mock.patch.object(cli.time, "sleep", side_effect=self.advance))
+
+    def advance(self, seconds):
+        self.clock += seconds
+
+    def test_bootout_waits_for_launchd_to_remove_the_stopping_service(self):
+        self.loaded.side_effect = [True, True, True, False]
+        self.assertTrue(cli.unload_helper())
+        self.assertFalse(self.suspend.exists())
+        self.assertFalse(self.ack.exists())
+        self.assertEqual(self.loaded.call_count, 4)
+
+    def test_stop_wait_is_bounded_when_launchd_keeps_the_service(self):
+        self.loaded.return_value = True
+        with self.assertRaisesRegex(cli.ToolError, "Could not stop"):
+            cli.stop_helper()
+        self.assertGreaterEqual(self.clock, 5)
+        self.assertLess(self.clock, 5.1)
+        self.assertTrue(self.agent.exists())
 
     def test_successful_bootout_must_also_release_the_service(self):
         self.loaded.return_value = True

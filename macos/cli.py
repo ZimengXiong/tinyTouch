@@ -706,8 +706,13 @@ def stop_helper() -> None:
         raise ToolError(
             "Could not stop the background service. Please try again."
         ) from exc
-    if helper_loaded():
-        raise ToolError("Could not stop the background service. Please try again.")
+    # bootout can return while launchd still lists the terminating process.
+    # Wait for removal before replacing its files or bootstrapping a new job.
+    deadline = time.monotonic() + 5
+    while helper_loaded():
+        if time.monotonic() >= deadline:
+            raise ToolError("Could not stop the background service. Please try again.")
+        time.sleep(0.05)
 
 
 def remove_helper() -> None:
