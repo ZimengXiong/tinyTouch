@@ -630,18 +630,9 @@ def unload_helper() -> bool:
     if _helper_suppressed:
         return False
     should_restart = LAUNCH_AGENT.exists()
-    loaded = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
-    if not loaded:
+    if not helper_loaded():
         return should_restart
-    result = subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0 and helper_loaded():
-        raise ToolError("Could not stop the HID background service.")
+    stop_helper()
     HELPER_SUSPEND.unlink(missing_ok=True)
     HELPER_SUSPEND_ACK.unlink(missing_ok=True)
     return should_restart
@@ -651,41 +642,38 @@ def helper_loaded() -> bool:
     try:
         return subprocess.run(
             ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode == 0
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
 def load_helper() -> None:
     if _helper_suppressed:
         return
-    if not helper_loaded():
-        run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
-
-
-def remove_helper() -> None:
-    global _helper_suppressed
-    _helper_suppressed = True
-    if LAUNCH_AGENT.exists():
-        process = subprocess.Popen(
-            ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    if helper_loaded():
+        return
+    try:
+        run(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
+            timeout=5,
         )
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        LAUNCH_AGENT.unlink(missing_ok=True)
-    HELPER_SUSPEND.unlink(missing_ok=True)
-    HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+    except (ToolError, OSError, subprocess.TimeoutExpired) as exc:
+        # Another CLI can finish the same bootstrap between print and bootstrap.
+        if helper_loaded():
+            return
+        raise ToolError(
+            "Could not start the HID background service. Run 'tinytouch repair'."
+        ) from exc
+    if not helper_loaded():
+        raise ToolError(
+            "The HID background service did not load. Run 'tinytouch repair'."
+        )
 
 
-def command_uninstall(args: argparse.Namespace) -> None:
-    """Remove the background service without changing device or credential data."""
-    global _helper_suppressed
-    require_macos()
+def stop_helper() -> None:
+    """Verify that launchd released the service before changing its files."""
     service = f"gui/{os.getuid()}/com.tinytouch.helper"
     try:
         subprocess.run(
@@ -701,6 +689,12 @@ def command_uninstall(args: argparse.Namespace) -> None:
         ) from exc
     if helper_loaded():
         raise ToolError("Could not stop the background service. Please try again.")
+
+
+def remove_helper() -> None:
+    """Stop the helper before deleting its LaunchAgent and foreground state."""
+    global _helper_suppressed
+    stop_helper()
     _helper_suppressed = True
     try:
         LAUNCH_AGENT.unlink(missing_ok=True)
@@ -710,12 +704,18 @@ def command_uninstall(args: argparse.Namespace) -> None:
         raise ToolError(
             "Could not remove the background service. Please try again."
         ) from exc
+
+
+def command_uninstall(args: argparse.Namespace) -> None:
+    """Remove the background service without changing device or credential data."""
+    require_macos()
+    remove_helper()
     say("Background service uninstalled.")
 
 
 def ensure_helper_environment() -> Path:
     if FROZEN:
-        return Path(sys.executable)
+        return Path(sys.executable).resolve()
     python = VENV / "bin" / "python"
     if not python.exists():
         run([sys.executable, "-m", "venv", str(VENV)])
@@ -731,7 +731,7 @@ def install_helper(*, check_saved: bool = False) -> None:
     arguments = (
         [str(python), str(HELPER)]
         if not FROZEN
-        else [str(Path(sys.executable)), "_helper"]
+        else [str(python), "_helper"]
     )
     # Keychain access depends on the executable's identity. Check the exact
     # replacement process before stopping a helper that can still read secrets.
