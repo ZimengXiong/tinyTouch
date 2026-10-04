@@ -210,6 +210,13 @@ class SetupFlowTests(unittest.TestCase):
         self.remove.assert_not_called()
         self.configure.assert_not_called()
 
+    def test_changed_mode_in_final_status_cannot_report_hid_ready(self):
+        self.status.side_effect = [DEVICE, {**DEVICE, "mode": "piv"}]
+        with self.assertRaisesRegex(cli.ToolError, "did not remain in HID mode"):
+            cli.command_setup(self.args)
+        self.install.assert_not_called()
+        self.assertNotIn("Ready (HID)", self.output.getvalue())
+
     def test_piv_pairing_uses_the_resumed_port(self):
         self.args.mode = "piv"
         piv = {**DEVICE, "mode": "piv", "piv": "ready"}

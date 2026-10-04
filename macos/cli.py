@@ -1745,6 +1745,8 @@ def command_setup(args: argparse.Namespace) -> None:
         device = status(port)
         protocol6(device)
         sensor_ready(device)
+    if device.get("mode") != mode:
+        raise ToolError(f"Setup is incomplete. The device did not remain in {mode.upper()} mode. Run 'tinytouch setup --mode {mode}' again.")
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete. The identity is not ready.")
     if mode == "hid":
