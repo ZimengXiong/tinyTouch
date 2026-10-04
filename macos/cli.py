@@ -26,6 +26,7 @@ import textwrap
 import tty
 import time
 import urllib.request
+import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -494,7 +495,14 @@ def keychain_get(service: str, account: str) -> str | None:
 
 
 def keychain_set(service: str, account: str, value: str) -> None:
-    _keychain().set_password(service, account, value)
+    keychain = _keychain()
+    try:
+        keychain.set_password(service, account, value)
+    except keychain.KeychainError as exc:
+        raise ToolError(
+            "Could not save the HID credential. Unlock the login Keychain or "
+            "run 'tinytouch repair', then retry."
+        ) from exc
 
 
 def keychain_delete(service: str, account: str) -> None:
@@ -1243,8 +1251,13 @@ def verify_hid_host(port: str, device: dict[str, str], account: str | None = Non
 def prompt_hid_password() -> str:
     """Confirm a password without including it in command arguments."""
     say("Nothing appears as you type. Enter the password twice to catch typing errors.")
-    first = getpass.getpass("Password: ")
-    second = getpass.getpass("Password again: ")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            first = getpass.getpass("Password: ")
+            second = getpass.getpass("Password again: ")
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise ToolError("Run this command in an interactive terminal.") from exc
     if not first or first != second:
         raise ToolError("Enter matching passwords. Neither password can be empty.")
     if len(first.encode()) > 160:
@@ -1273,16 +1286,20 @@ def password_for(account: str) -> str:
 def hid_settings_change():
     """Restart the existing helper so it discards cached host credentials."""
     was_loaded = unload_helper()
+    completed = False
     try:
         yield
-    except _keychain().KeychainError as exc:
-        raise ToolError(
-            "Could not update the saved HID credentials. "
-            "Unlock the login Keychain and run 'tinytouch repair', then retry."
-        ) from exc
+        completed = True
     finally:
         if was_loaded:
-            load_helper()
+            try:
+                load_helper()
+            except (ToolError, OSError, subprocess.SubprocessError) as exc:
+                outcome = "was saved" if completed else "did not finish"
+                raise ToolError(
+                    f"The HID change {outcome}, but the background service "
+                    "could not restart. Run 'tinytouch repair'."
+                ) from exc
 
 
 def command_password(args: argparse.Namespace) -> None:
@@ -1307,7 +1324,7 @@ def command_password(args: argparse.Namespace) -> None:
         mapping = (current_keyboard_output_map()
                    if load_settings(account)["keyboard_layout"] == "auto" else None)
         translate_password(value.encode("utf-8"), mapping)
-    except (UnicodeError, ValueError, RuntimeError) as exc:
+    except (UnicodeError, ValueError, RuntimeError, OSError) as exc:
         raise ToolError(
             "This password cannot be typed with the selected keyboard layout. "
             "Select a compatible macOS layout and use at most 160 typed keys."

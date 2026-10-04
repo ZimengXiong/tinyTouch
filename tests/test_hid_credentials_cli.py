@@ -66,6 +66,32 @@ class HidPasswordCommandTests(unittest.TestCase):
             self.run_command()
         self.assertEqual(self.activity, ["stop", "reload"])
 
+    def test_restart_failure_reports_that_the_credential_was_saved(self):
+        with mock.patch.object(cli, "load_helper", side_effect=OSError("fixture failure")):
+            with self.assertRaisesRegex(cli.ToolError, "was saved.*could not restart"):
+                self.run_command()
+        self.keychain.set_password.assert_called_once()
+        self.assertEqual(self.activity, ["stop", "save"])
+
+    def test_password_prompt_refuses_echo_fallback_and_closed_input(self):
+        for error in (cli.getpass.GetPassWarning("echo unavailable"), EOFError()):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(cli.getpass, "getpass", side_effect=error):
+                    with self.assertRaisesRegex(cli.ToolError, "interactive terminal"):
+                        self.run_command()
+        self.keychain.set_password.assert_not_called()
+        self.assertEqual(self.activity, [])
+
+    def test_native_layout_loading_failure_does_not_save_or_restart(self):
+        with (
+            mock.patch.object(helper, "load_settings", return_value={"keyboard_layout": "auto"}),
+            mock.patch.object(helper, "current_keyboard_output_map", side_effect=OSError("fixture")),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "cannot be typed"):
+                self.run_command()
+        self.keychain.set_password.assert_not_called()
+        self.assertEqual(self.activity, [])
+
     def test_unconfigured_device_does_not_save_or_restart(self):
         self.keychain.has_password.return_value = False
         with self.assertRaisesRegex(cli.ToolError, "setup --mode hid"):
@@ -102,6 +128,19 @@ class HidPasswordCommandTests(unittest.TestCase):
 
 
 class FingerPasswordLoadingTests(unittest.TestCase):
+    def test_later_group_denial_wipes_all_previously_loaded_passwords(self):
+        default, group = bytearray(b"default"), bytearray(b"first group")
+        with (
+            mock.patch.object(helper, "keychain_get", side_effect=[
+                default, group, helper.KeychainError("read", -25308),
+            ]),
+            mock.patch.object(helper, "has_password", return_value=True),
+        ):
+            with self.assertRaises(helper.KeychainError):
+                helper.load_passwords("TT-123456ABCDEF")
+        self.assertEqual(default, bytearray(len(default)))
+        self.assertEqual(group, bytearray(len(group)))
+
     def test_all_four_views_use_group_password_over_legacy_slot_values(self):
         account = "TT-123456ABCDEF"
         default, group = bytearray(b"default"), bytearray(b"group password")
