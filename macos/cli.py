@@ -615,10 +615,14 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
     if line in {"ERR AUTH", "ERR AUTH no_match", "ERR AUTH sensor=offline"}:
         if line.endswith("sensor=offline"):
             return "Fingerprint sensor unavailable. Please reconnect tinyTouch."
+        if line.endswith("no_match"):
+            return (
+                "No enrolled fingerprint matched. Lift your finger and try an enrolled finger. "
+                f"If none work, use Recovery firmware at {FACTORY_FLASH_URL}?firmware=recovery. "
+                "Recovery erases fingerprints, device keys, registered computers, and settings."
+            )
         if touch_prompted:
             return "Fingerprint authentication timed out. Please try again."
-        if line.endswith("no_match"):
-            return "Fingerprint not recognized. Please try again."
         return "Fingerprint authentication could not start. Please try again."
     if line == "ERR FINGER update_cli":
         return "Update the tinyTouch CLI. Enrollment now uses complete fingerprint blocks instead of individual templates."

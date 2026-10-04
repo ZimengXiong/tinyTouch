@@ -33,6 +33,11 @@ For PIV, enter `111111` if macOS prompts for the smart card PIN. For HID, enter
 your Mac password when prompted. Your typing is hidden; no characters appear
 while you type.
 
+Setup preserves existing fingerprints. To add a second finger, run
+`tinytouch fingers` to check the saved blocks, then `tinytouch enroll 2`.
+Use an enrolled finger for approval and the new finger for all four views.
+Each view needs two scans. An occupied block requires replacement confirmation.
+
 ## 3. Try it
 
 Lock your Mac, then touch the sensor to sign in. In HID mode, select the password field first.

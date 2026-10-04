@@ -32,7 +32,9 @@ Recovery writes a one-time marker at `0x212000`. On boot, it:
 2. erases ESP32 NVS;
 3. erases the request marker.
 
-If sensor cleanup fails, recovery preserves device state.
+If sensor cleanup fails, recovery preserves ESP32 NVS and the request marker.
+Some sensor templates may already have been deleted. Recovery retries after
+reconnecting the device; it does not report completion until the sensor count is zero.
 
 Recovery removes:
 
@@ -43,5 +45,10 @@ Recovery removes:
 - OTA and configuration state stored in NVS.
 
 Recovery can't remove macOS Keychain items or smart card pairing. Run setup again and manage stale pairing with `sc_auth`.
+
+Use `sc_auth list -u "$USER"` to inspect saved pairings. To remove a stale identity,
+use `sudo sc_auth unpair -u "$USER" -h HASH`, replacing `HASH` with that identity's
+hash. Check the selected identity before removing it, especially if you use other
+smart cards.
 
 To run recovery, follow [Recover tinyTouch](/customer/recovery).

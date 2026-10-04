@@ -5,7 +5,8 @@ description: Choose between normal diagnostics, factory reset, factory flashing,
 
 # Recover tinyTouch
 
-Recovery erases fingerprints, keys, pairings, and settings.
+Recovery erases fingerprints, device keys, registered computers, and settings.
+Factory flashing alone preserves saved device state.
 
 ## Reset from the CLI
 
@@ -16,6 +17,11 @@ tinytouch factory-reset
 ```
 
 Approve with your fingerprint. This also removes local credentials and PIV pairing.
+The CLI verifies the cleared device state before removing the Mac setup.
+
+If every enrolled finger fails with `AUTH no_match`, use browser recovery below.
+Factory reset, enrollment, deletion, and normal updates require a matching
+fingerprint while templates remain on the sensor.
 
 ## Recover with the browser
 
@@ -26,8 +32,23 @@ Approve with your fingerprint. This also removes local credentials and PIV pairi
 5. Select the ESP32-S3 download-mode port.
 6. After flashing, leave the device connected for 20 seconds.
 7. Unplug and reconnect it once.
-8. Run setup:
+8. Check the cleared state:
+
+```sh
+tinytouch status
+tinytouch fingers
+```
+
+After successful recovery, `fingerprints` and `hosts` are `0`, `piv` is
+`unconfigured`, and no fingerprint blocks remain.
+
+9. Run setup:
 
 ```sh
 tinytouch setup
 ```
+
+If templates remain, check the sensor wiring and repeat recovery. Reflashing the
+ESP32 alone does not erase templates stored in the fingerprint sensor.
+Browser recovery cannot remove Mac Keychain items or smart card pairings.
+See [Recovery reference](/reference/recovery) for local cleanup details.

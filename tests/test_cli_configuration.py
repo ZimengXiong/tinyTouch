@@ -206,7 +206,8 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_auth_and_storage_failures_have_next_actions(self):
         self.assertIn(
-            "timed out", cli.human_error("ERR AUTH no_match", touch_prompted=True)
+            "No enrolled fingerprint matched",
+            cli.human_error("ERR AUTH no_match", touch_prompted=True),
         )
         self.assertIn("reconnect", cli.human_error("ERR AUTH sensor=offline"))
         self.assertIn("try again", cli.human_error("ERR LOCKED run=AUTH"))

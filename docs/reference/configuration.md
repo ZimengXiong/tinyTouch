@@ -35,7 +35,7 @@ the [Hi-Link sensor manual, section 3.5.7](https://r0.hlktech.com/download/HLK-Z
 The palette is `off`, `blue`, `green`, `cyan`, `red`, `purple`, `yellow`, `white`.
 `magenta` is accepted as an alias for `purple` by `config`.
 
-Custom LED preferences and `piv_auto_type` require firmware 0.1.34-dev.1+ with
+Custom LED preferences and `piv_auto_type` are included in firmware 0.1.34 with
 `custom_config=1`. With automatic PIV entry off, a matching fingerprint still
 grants smart card presence. Enter `111111` manually if macOS requests the PIN.
 
@@ -110,7 +110,7 @@ specifies the manual-lighting command and required sensor power cycle.
 
 ## Password entry in PIV mode
 
-This development release adds `tinytouch piv-touch on`. After authorizing the change,
+Firmware 0.1.34 includes `tinytouch piv-touch on`. After authorizing the change,
 unplug and reconnect tinyTouch. PIV mode then hides its smart-card interface
 while idle, so macOS can offer password entry at the login or lock screen.
 
@@ -209,6 +209,11 @@ occupied index before writing; an unreadable or inconsistent inventory stops the
 operation. Sensor addresses are zero-based: logical template 40 uses physical
 address 0, preserving the existing physical addresses 1–5 while allowing all ten
 blocks. HID event IDs remain 1–40.
+
+On sensors with fewer than 40 slots, enrollment requires room for all four views
+in the selected block. You can still delete legacy prints in a partial block
+that extends beyond the sensor's capacity. Deletion uses the live occupied index
+and removes only stored templates in that block.
 
 The sensor stores templates. ESP32 NVS stores the LED preference and enrollment
 journal, separately from the existing device configuration and credentials.

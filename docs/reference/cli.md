@@ -162,8 +162,8 @@ Without an action, shows current lighting settings and defaults.
 `only-auth` disables idle lighting and keeps configured authentication feedback
 (CLI and firmware 0.1.30+).
 
-Custom colors, effects, presets and previews require firmware from this branch
-(0.1.34-dev.1+, `custom_config=1`). Older firmware still supports its existing lighting modes.
+Custom colors, effects, presets and previews are included in firmware 0.1.34
+(`custom_config=1`). Older firmware still supports its existing lighting modes.
 
 Colors: `off`, `blue`, `green`, `cyan`, `red`, `purple`, `yellow`, `white`.
 Effects: `steady`, `breathe`, `flash`, `fade-in`, `fade-out`.
@@ -208,7 +208,7 @@ sensor power must be cycled. Fingerprint matching remains enabled in all LED mod
 tinytouch piv-touch {on,off} [--port PATH]
 ```
 
-Enables or disables touch activation for PIV mode. Requires firmware 0.1.34-dev.1 or
+Enables or disables touch activation for PIV mode. Requires firmware 0.1.34 or
 later and fingerprint approval on an enrolled device. Unplug and reconnect to
 apply the saved setting.
 
@@ -254,7 +254,7 @@ JSON contains:
 | `hosts` | Number of registered HID computers |
 | `ota` | `idle`, `writing`, or `staged` |
 
-Firmware 0.1.34-dev.1+ also reports all preference fields in the [configuration table](/reference/configuration#user-preferences).
+Firmware 0.1.34 also reports all preference fields in the [configuration table](/reference/configuration#user-preferences).
 LED colors and effects are numeric in raw status; `tinytouch config` converts them
 to names.
 
@@ -282,6 +282,9 @@ tinytouch enroll FINGER [--replace] [--port PATH]
 
 Enrolls finger `1` through `10` through the complete four-view sequence. Use the
 same finger for every view and lift it when prompted. Each view is scanned twice.
+On an enrolled device, approve with an existing finger before scanning the new
+finger. Occupied blocks require replacement confirmation; `--replace` skips that
+confirmation. Fingerprint approval still applies.
 
 ```sh
 tinytouch enroll 1
@@ -311,6 +314,8 @@ Deletes the **entire** block for finger `1` through `10` after fingerprint appro
 For example, `tinytouch delete 2` deletes templates 5–8, including any legacy print
 in that block. It does not delete other fingers. To delete all state, use
 `factory-reset`.
+On a smaller sensor, deletion also removes legacy prints in a block that has
+too few slots for a new four-view enrollment.
 
 See [Device configuration](/reference/configuration#fingers-and-existing-enrollment)
 for the complete mapping and interrupted-enrollment behavior.
@@ -354,6 +359,18 @@ tinytouch uninstall
 Stops and removes the background service. The CLI, saved credentials, and device
 settings stay installed. This action is also available under **Advanced**.
 
+## `repair`
+
+```text
+tinytouch repair [--port PATH]
+```
+
+Repairs saved HID credential access and reinstalls the helper from the signed
+standalone CLI. Without `--port`, checks saved devices even when tinyTouch is
+disconnected. With `--port`, checks the selected device. Enter your login Keychain
+password and approve macOS Keychain dialogs when prompted. Saved credentials
+remain in place. If credentials are missing, run HID setup.
+
 ## `update`
 
 ```text
@@ -371,6 +388,8 @@ tinytouch factory-reset [--port PATH]
 Clears fingerprints, keys, registered computers, device settings, local HID
 credentials, and PIV pairing. Confirm the reset and approve it with an enrolled
 fingerprint. In **Advanced → Diagnostics**, select **Factory reset**.
+The CLI checks the cleared device state before removing the Mac setup. If no
+enrolled finger matches, follow [Recover tinyTouch](/customer/recovery).
 
 ## `rom` / `bootloader`
 
