@@ -386,6 +386,37 @@ class HostRegistrationTests(unittest.TestCase):
         self.assertEqual(self.registered, set())
         self.assertEqual(self.commands[-1], f"HOST REMOVE {IDENTIFIER}")
 
+    def test_failed_host_cleanup_still_restores_credentials_and_reports_recovery(self):
+        self.credentials.clear()
+        self.registered.clear()
+        self.status.side_effect = cli.ToolError("status unavailable")
+
+        def fail_remove(port, command, **kwargs):
+            if command.startswith("HOST REMOVE "):
+                raise cli.ToolError("device disconnected")
+            return self.exchange(port, command, **kwargs)
+
+        self.command.side_effect = fail_remove
+        with self.assertRaisesRegex(cli.ToolError, "Some setup changes could not be restored"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.credentials, {})
+        self.assertEqual(len(self.registered), 1)
+
+    def test_existing_host_is_never_removed_after_failed_verification(self):
+        self.status.side_effect = cli.ToolError("status unavailable")
+        with self.assertRaisesRegex(cli.ToolError, "status unavailable"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.registered, {IDENTIFIER})
+        self.command.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_full_inventory_keeps_the_registered_local_key(self):
+        self.registered.update(f"{number:016x}" for number in range(7))
+        cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(len(self.registered), 8)
+        self.command.assert_not_called()
+        self.save.assert_not_called()
+
     def test_failed_password_write_restores_previous_value(self):
         self.credentials[cli.PASSWORD_SERVICE] = ""
 
