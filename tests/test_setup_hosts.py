@@ -197,6 +197,80 @@ class SetupFlowTests(unittest.TestCase):
         self.install.assert_called_once()
 
 
+class ModeFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.output = io.StringIO()
+        self.enterContext(contextlib.redirect_stdout(self.output))
+        self.enterContext(mock.patch.object(cli, "choose_port", return_value=PORT))
+        self.session = self.enterContext(mock.patch.object(cli, "foreground_session"))
+        self.account = self.enterContext(mock.patch.object(cli, "device_account", return_value=ACCOUNT))
+        self.enterContext(mock.patch.object(cli, "status", return_value={**DEVICE, "mode": "piv"}))
+        self.fresh = self.enterContext(mock.patch.object(cli, "fresh_status", return_value=DEVICE))
+        self.enterContext(mock.patch.object(cli, "unlock"))
+        self.command = self.enterContext(mock.patch.object(cli, "serial_command"))
+        self.enterContext(mock.patch.object(cli, "notify"))
+        self.reconnect = self.enterContext(mock.patch.object(cli, "wait_for_reconnect", return_value="/dev/cu.TT-NEW"))
+        self.verify = self.enterContext(mock.patch.object(cli, "verify_hid_host"))
+        self.install = self.enterContext(mock.patch.object(cli, "install_helper"))
+        self.loaded = self.enterContext(mock.patch.object(cli, "helper_loaded", return_value=True))
+        self.remove = self.enterContext(mock.patch.object(cli, "remove_helper"))
+        self.args = cli.parser().parse_args(["mode", "hid"])
+
+    def test_hid_mode_checks_local_host_before_and_after_reconnect(self):
+        cli.command_mode(self.args)
+        self.assertEqual(self.verify.call_args_list, [
+            mock.call(PORT, {**DEVICE, "mode": "piv"}, ACCOUNT),
+            mock.call("/dev/cu.TT-NEW", DEVICE, ACCOUNT),
+        ])
+        self.assertEqual(self.session.call_count, 2)
+        self.command.assert_called_once_with(PORT, "SET MODE HID", timeout=4)
+        self.install.assert_called_once()
+        self.assertIn("HID mode is active.", self.output.getvalue())
+
+    def test_no_local_pairing_warns_and_cannot_claim_hid_success(self):
+        self.verify.side_effect = cli.HidSetupIncompleteError("Run 'tinytouch setup --mode hid'.")
+        with self.assertRaisesRegex(cli.ToolError, "tinytouch setup --mode hid"):
+            cli.command_mode(self.args)
+        self.assertIn("HID password typing needs setup", self.output.getvalue())
+        self.install.assert_not_called()
+        self.assertNotIn("HID mode is active", self.output.getvalue())
+
+    def test_malformed_inventory_blocks_mode_write(self):
+        self.verify.side_effect = cli.ToolError("invalid HID computer inventory")
+        with self.assertRaisesRegex(cli.ToolError, "invalid HID computer inventory"):
+            cli.command_mode(self.args)
+        self.command.assert_not_called()
+        self.reconnect.assert_not_called()
+
+    def test_reconnect_timeout_provides_setup_recovery(self):
+        self.reconnect.side_effect = cli.ToolError("Timed out waiting for USB")
+        with self.assertRaisesRegex(cli.ToolError, "tinytouch setup --mode hid"):
+            cli.command_mode(self.args)
+        self.install.assert_not_called()
+
+    def test_a_different_device_cannot_start_the_helper(self):
+        self.account.side_effect = [ACCOUNT, "TT-OTHER"]
+        with self.assertRaisesRegex(cli.ToolError, "different device reconnected"):
+            cli.command_mode(self.args)
+        self.fresh.assert_not_called()
+        self.install.assert_not_called()
+
+    def test_missing_helper_cannot_claim_hid_success(self):
+        self.loaded.return_value = False
+        with self.assertRaisesRegex(cli.ToolError, "helper is not loaded"):
+            cli.command_mode(self.args)
+        self.assertNotIn("HID mode is active", self.output.getvalue())
+
+    def test_piv_mode_removes_helper_without_hid_pairing_changes(self):
+        self.args.mode = "piv"
+        self.fresh.return_value = {**DEVICE, "mode": "piv"}
+        cli.command_mode(self.args)
+        self.remove.assert_called_once()
+        self.install.assert_not_called()
+        self.verify.assert_not_called()
+        self.command.assert_called_once_with(PORT, "SET MODE PIV", timeout=4)
+
+
 class HostRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.credentials = {cli.PAIRING_SERVICE: KEY.hex(), cli.PASSWORD_SERVICE: "custom-password"}
@@ -243,6 +317,14 @@ class HostRegistrationTests(unittest.TestCase):
         cli.configure_hid(PORT, DEVICE)
         self.assertEqual(self.commands, [f"HOST ADD {IDENTIFIER} {KEY.hex()}"])
         self.save.assert_not_called()
+
+    def test_setup_repairs_an_invalid_saved_key(self):
+        self.credentials[cli.PAIRING_SERVICE] = "invalid"
+        self.registered.clear()
+        cli.configure_hid(PORT, DEVICE)
+        repaired_key = cli.hid_pairing_key(self.credentials[cli.PAIRING_SERVICE])
+        self.assertIn(cli.host_id(repaired_key), self.registered)
+        self.assertEqual(self.credentials[cli.PASSWORD_SERVICE], "custom-password")
 
     def test_verification_failure_removes_only_the_new_host(self):
         self.registered = {"a" * 16}

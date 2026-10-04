@@ -1108,6 +1108,9 @@ class ProtocolSixTests(unittest.TestCase):
         calls = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
+            mock.patch.object(cli, "verify_hid_host"),
             mock.patch.object(cli, "status", side_effect=[
                 {"firmware": "unified", "protocol": "6", "mode": "piv", "sensor": "ready", "hosts": "1"},
                 {"firmware": "unified", "protocol": "6", "mode": "hid", "sensor": "ready", "hosts": "1"},
@@ -1118,6 +1121,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "wait_for_reconnect", return_value=args.port),
             mock.patch.object(cli, "fresh_status", return_value={"mode": "hid"}),
             mock.patch.object(cli, "install_helper"),
+            mock.patch.object(cli, "helper_loaded", return_value=True),
             mock.patch.object(cli, "notify"),
         ):
             cli.command_mode(args)

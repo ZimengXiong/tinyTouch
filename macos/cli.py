@@ -80,6 +80,10 @@ class HelperCredentialAccessError(ToolError):
     """The replacement helper needs permission to read saved credentials."""
 
 
+class HidSetupIncompleteError(ToolError):
+    """HID mode needs a usable local password and registered pairing key."""
+
+
 class SerialTimeout(ToolError):
     """The device did not return a terminal response."""
 
@@ -1210,13 +1214,13 @@ def host_id(key: bytes) -> str:
 def hid_pairing_key(value: str | None) -> bytes:
     """Validate a saved pairing key before using its host identifier."""
     if value is None:
-        raise ToolError("This Mac has no saved HID pairing key. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError("This Mac has no saved HID pairing key. Run 'tinytouch setup --mode hid'.")
     try:
         key = bytes.fromhex(value.strip())
     except ValueError as exc:
-        raise ToolError("The saved HID pairing key is invalid.") from exc
+        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.") from exc
     if len(key) != 32:
-        raise ToolError("The saved HID pairing key is invalid.")
+        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.")
     return key
 
 
@@ -1226,14 +1230,14 @@ def verify_hid_host(port: str, device: dict[str, str], account: str | None = Non
     key = hid_pairing_key(keychain_get(PAIRING_SERVICE, account))
     password = keychain_get(PASSWORD_SERVICE, account)
     if not password or len(password.encode("utf-8")) > 160:
-        raise ToolError("This Mac has no usable HID password. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError("This Mac has no usable HID password. Run 'tinytouch setup --mode hid'.")
     registered, _capacity = host_list(port)
     try:
         count = int(device["hosts"])
     except (KeyError, ValueError) as exc:
         raise ToolError("HID setup is incomplete. The device did not report a valid computer count.") from exc
     if count < 1 or count != len(registered) or host_id(key) not in registered:
-        raise ToolError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
 
 
 def prompt_hid_password() -> str:
@@ -1353,14 +1357,19 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
             for service in (PAIRING_SERVICE, PASSWORD_SERVICE)
         }
         saved_key = previous[PAIRING_SERVICE]
-        key = hid_pairing_key(saved_key) if saved_key is not None else hashlib.sha256(
-            f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
-        ).digest()
+        try:
+            key = hid_pairing_key(saved_key)
+            valid_saved_key = True
+        except HidSetupIncompleteError:
+            key = hashlib.sha256(
+                f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
+            ).digest()
+            valid_saved_key = False
         identifier = host_id(key)
         registered, capacity = host_list(port)
         if identifier not in registered and len(registered) >= capacity:
             raise ToolError("This device has no available HID computer slot. Remove a registered computer before adding another.")
-        if saved_key is None:
+        if not valid_saved_key:
             written.append(PAIRING_SERVICE)
             keychain_set(PAIRING_SERVICE, account, key.hex())
         saved_password = previous[PASSWORD_SERVICE]
@@ -1722,24 +1731,46 @@ def command_setup(args: argparse.Namespace) -> None:
 
 def command_mode(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    unlock(
-        port,
-        reason=f"switch to {args.mode.upper()} mode",
-    )
-    serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
-    if args.mode == "piv":
-        remove_helper()
+    with foreground_session(port) as connected_port:
+        if isinstance(connected_port, str):
+            port = connected_port
+        device = status(port)
+        protocol6(device)
+        account = device_account(port)
+        if args.mode == "hid":
+            try:
+                verify_hid_host(port, device, account)
+            except HidSetupIncompleteError as exc:
+                say(f"HID password typing needs setup on this Mac. {exc}")
+        unlock(port, reason=f"switch to {args.mode.upper()} mode")
+        serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
+        if args.mode == "piv":
+            remove_helper()
     notify("tinyTouch mode changed", "Reconnect tinyTouch to apply the new device mode.")
     say(f"{args.mode.upper()} mode was selected.")
     say("")
     say("Unplug and reconnect tinyTouch to apply the new device mode.")
     say("Waiting for the device to disconnect from USB.")
-    reconnected_port = wait_for_reconnect(port)
-    fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    try:
+        reconnected_port = wait_for_reconnect(port)
+    except ToolError as exc:
+        recovery = "tinytouch setup --mode hid" if args.mode == "hid" else "tinytouch mode piv"
+        raise ToolError(
+            f"{args.mode.upper()} mode was selected, but reconnect did not finish. {exc} "
+            f"Unplug and reconnect tinyTouch, then run '{recovery}' again."
+        ) from exc
+    with foreground_session(reconnected_port) as connected_port:
+        if isinstance(connected_port, str):
+            reconnected_port = connected_port
+        if device_account(reconnected_port) != account:
+            raise ToolError("A different device reconnected. Connect the original tinyTouch and run the mode command again.")
+        device = fresh_status(reconnected_port, {"mode": args.mode.lower()})
+        if args.mode == "hid":
+            verify_hid_host(reconnected_port, device, account)
     if args.mode == "hid":
         install_helper()
+        if not helper_loaded():
+            raise ToolError("HID mode was selected, but the helper is not loaded. Run 'tinytouch setup --mode hid'.")
     say(f"{args.mode.upper()} mode is active.")
 
 
