@@ -41,7 +41,8 @@ class FirmwareLatencyTests(unittest.TestCase):
     def test_helper_requests_end_when_usb_session_changes(self):
         source = (MAIN / "touch_pin_hid.c").read_text()
         self.run_harness("hid_request_test.c", {
-            "request": section(source, "static bool request_and_type_password(", "typedef enum {\n  AUTH_STATE_IDLE"),
+            "request": section(source, "static bool begin_password_request(", "typedef enum {\n  AUTH_STATE_IDLE"),
+            "submit": section(source, "bool touch_pin_hid_submit_response(", "uint8_t const *tud_hid_descriptor_report_cb("),
         })
 
     def test_touch_edges_capture_retries_and_foreground_pause(self):
