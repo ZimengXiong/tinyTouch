@@ -650,7 +650,7 @@ def require_startup_status(
                 status_received = True
             else:
                 line = resynchronize_event(line, device_id)
-                if line.startswith(("EV ", "EV2 ")):
+                if re.match(r"EV[0-9]* ", line):
                     pending.append(line.encode("ascii"))
         if status_received:
             return list(pending)
@@ -668,7 +668,6 @@ def serve_port(
     password: dict[int, bytearray] = {}
     pairing_key = bytearray()
     last_port_check = 0.0
-    last_received = time.monotonic()
     heartbeat_sent_at: float | None = None
     decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
@@ -682,8 +681,8 @@ def serve_port(
             )
             if pending_frames is None or (stop_event is not None and stop_event.is_set()):
                 return
-            last_received = time.monotonic()
-            last_heartbeat = last_received
+            last_heartbeat = time.monotonic()
+            partial_started_at = last_heartbeat if decoder.buffer else None
             if device_id not in REATTACHED_DEVICES:
                 # A new login creates a new helper process. Ask the firmware to
                 # re-enumerate once so macOS rebuilds stale CDC and HID endpoints.
@@ -703,17 +702,20 @@ def serve_port(
                     last_port_check = now
                     if port not in device_ports():
                         raise serial.SerialException(f"serial device disappeared: {port}")
-                if chunk:
-                    last_received = now
-                elif now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
+                if partial_started_at is not None and now - partial_started_at >= PARTIAL_FRAME_TIMEOUT_SECONDS:
                     if decoder.discard_partial():
                         diagnostic(
                             "protocol.partial_frame_expired",
                             level="warning",
                             device_id=device_id,
                         )
+                    partial_started_at = None
                 frames = pending_frames or decoder.feed(chunk)
                 pending_frames = []
+                if not decoder.buffer:
+                    partial_started_at = None
+                elif frames or partial_started_at is None:
+                    partial_started_at = now
                 for raw in frames:
                     try:
                         line = raw.decode("ascii").strip()
@@ -731,6 +733,16 @@ def serve_port(
                             last_heartbeat = now
                         continue
                     line = resynchronize_event(line, device_id)
+                    version = re.match(r"(EV[0-9]+) ", line)
+                    if version is not None and version[1] != "EV2":
+                        diagnostic(
+                            "protocol.frame_rejected",
+                            level="warning",
+                            device_id=device_id,
+                            reason="unsupported_event_version",
+                            version=version[1],
+                        )
+                        continue
                     if not (line.startswith("EV ") or line.startswith("EV2 ")):
                         continue
                     keyboard_map = (current_keyboard_output_map()

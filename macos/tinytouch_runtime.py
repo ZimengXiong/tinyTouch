@@ -259,28 +259,32 @@ class SerialFrameDecoder:
         self.maximum = maximum
         self.buffer = bytearray()
         self.discarding = False
+        self._line_bytes = 0
 
     def feed(self, chunk: bytes) -> list[bytes]:
         frames: list[bytes] = []
         for value in chunk:
-            if self.discarding:
-                if value == 0x0A:
-                    self.discarding = False
-                continue
             if value == 0x0A:
-                frames.append(bytes(self.buffer))
+                if not self.discarding:
+                    frames.append(bytes(self.buffer))
                 self.buffer.clear()
+                self.discarding = False
+                self._line_bytes = 0
                 continue
-            self.buffer.append(value)
-            if len(self.buffer) > self.maximum:
+            if self.discarding:
+                continue
+            self._line_bytes += 1
+            if self._line_bytes > self.maximum:
                 self.buffer.clear()
                 self.discarding = True
+            else:
+                self.buffer.append(value)
         return frames
 
     def discard_partial(self) -> bool:
-        had_partial = bool(self.buffer) or self.discarding
+        """Expire buffered bytes without resetting the line's size or quarantine."""
+        had_partial = bool(self.buffer)
         self.buffer.clear()
-        self.discarding = False
         return had_partial
 
 

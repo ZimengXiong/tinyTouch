@@ -21,13 +21,13 @@ KEY = bytes(range(32))
 NONCE = "ab" * 16
 
 
-def event_frame(version=1):
+def event_frame(version=1, nonce=NONCE):
     if version == 1:
-        material = f"EV|{NONCE}|1|2|99"
-        return f"EV {NONCE} 1 2 99 {helper.mac_hex(KEY, material)}\n".encode()
+        material = f"EV|{nonce}|1|2|99"
+        return f"EV {nonce} 1 2 99 {helper.mac_hex(KEY, material)}\n".encode()
     key_id = hashlib.sha256(KEY).hexdigest()[:16]
-    material = f"EV2|{key_id}|{NONCE}|1|2|99"
-    return f"EV2 {NONCE} 1 2 99 {key_id}:{helper.mac_hex(KEY, material)}\n".encode()
+    material = f"EV2|{key_id}|{nonce}|1|2|99"
+    return f"EV2 {nonce} 1 2 99 {key_id}:{helper.mac_hex(KEY, material)}\n".encode()
 
 
 class Clock:
@@ -254,6 +254,64 @@ class WatchdogRecoveryTests(unittest.TestCase):
         self.assertTrue(connection.closed)
         self.assertFalse(any(password))
         self.assertFalse(any(key))
+
+
+class FrameExpiryRecoveryTests(unittest.TestCase):
+    def test_oversized_frame_stays_quarantined_across_idle_expiry(self):
+        fresh_nonce = "cd" * 16
+        connection = Connection(Clock(), [
+            b"OK STATUS protocol=6\n", b"x" * 2049,
+            *([b""] * 7), event_frame(), event_frame(nonce=fresh_nonce),
+        ])
+        with serving(connection) as (_, _, remember):
+            helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+        self.assertEqual(connection.written[1].split()[1].decode(), fresh_nonce)
+        self.assertEqual(remember.call_args.args[1], fresh_nonce)
+
+    def test_absolute_frame_expiry_rejects_slow_trickle_and_recovers_next_frame(self):
+        fresh_nonce = "cd" * 16
+        frame = event_frame()
+        connection = Connection(Clock(), [
+            b"OK STATUS protocol=6\n",
+            *[frame[index:index + 10] for index in range(0, len(frame), 10)],
+            event_frame(nonce=fresh_nonce),
+        ])
+        with serving(connection):
+            helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+        self.assertEqual(connection.written[1].split()[1].decode(), fresh_nonce)
+
+    def test_unknown_event_version_is_diagnosed_and_following_event_is_delivered(self):
+        unknown = event_frame().replace(b"EV ", b"EV3 ")
+        for chunks in (
+            [b"OK STATUS protocol=6\n", unknown, event_frame()],
+            [unknown + b"OK STATUS protocol=6\n" + event_frame()],
+        ):
+            with self.subTest(chunks=chunks):
+                connection = Connection(Clock(), chunks)
+                with serving(connection), mock.patch.object(helper, "diagnostic") as log:
+                    helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+                self.assertEqual(len(connection.written), 2)
+                log.assert_any_call(
+                    "protocol.frame_rejected", level="warning", device_id=DEVICE_ID,
+                    reason="unsupported_event_version", version="EV3",
+                )
+
+    def test_partial_prefix_expiry_does_not_drop_next_intact_event(self):
+        connection = Connection(Clock(), [
+            b"OK STATUS protocol=6\nEV partial", *([b""] * 7), event_frame(2),
+        ])
+        with serving(connection):
+            helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+        self.assertTrue(connection.written[1].startswith(b"PW2 "))
+
+    def test_short_fragments_still_deliver_before_frame_deadline(self):
+        frame = event_frame(2)
+        connection = Connection(Clock(), [
+            b"OK STATUS protocol=6\n", frame[:40], frame[40:80], frame[80:],
+        ])
+        with serving(connection):
+            helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+        self.assertTrue(connection.written[1].startswith(b"PW2 "))
 
 
 class PseudoTerminalRecoveryTests(unittest.TestCase):
