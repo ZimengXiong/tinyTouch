@@ -1,6 +1,7 @@
 """Device identity checks during USB reconnects and HID setup."""
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,14 @@ def usb_port(device=NEW_PORT, serial_number=IDENTITY):
 
 class SetupIdentityTests(unittest.TestCase):
     def setUp(self):
+        service_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name, value in (
+            ("LAUNCH_AGENT", service_root / "agent.plist"),
+            ("HELPER_SUSPEND", service_root / "suspend"),
+            ("HELPER_SUSPEND_ACK", service_root / "ack"),
+            ("_helper_suppressed", False),
+        ):
+            self.enterContext(mock.patch.object(cli, name, value))
         self.now = 0.0
         self.ports = mock.Mock()
         self.enterContext(

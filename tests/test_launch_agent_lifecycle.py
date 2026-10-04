@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location(
 )
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
+probe_helper_loaded = cli.helper_loaded
 import tinytouch_runtime as runtime
 
 
@@ -97,6 +98,23 @@ class LaunchAgentLifecycleTests(unittest.TestCase):
         self.loaded.return_value = True
         cli.load_helper()
         self.run.assert_not_called()
+
+    def test_unreadable_launchd_state_is_not_treated_as_an_absent_service(self):
+        for error in (FileNotFoundError("launchctl"),
+                      cli.subprocess.TimeoutExpired("launchctl", 5)):
+            with self.subTest(error=type(error).__name__):
+                self.process.side_effect = error
+                with self.assertRaisesRegex(cli.ToolError, "Could not check"):
+                    probe_helper_loaded()
+        self.assertEqual(self.process.call_args.kwargs["timeout"], 5)
+
+    def test_removal_preserves_files_if_the_stop_cannot_be_verified(self):
+        self.loaded.side_effect = cli.ToolError("Could not check the HID background service")
+        with self.assertRaisesRegex(cli.ToolError, "Could not check"):
+            cli.remove_helper()
+        self.assertEqual(self.agent.read_bytes(), self.previous)
+        self.assertTrue(self.suspend.exists())
+        self.assertFalse(cli._helper_suppressed)
 
     def test_frozen_helper_checks_and_registers_the_resolved_bundle_executable(self):
         executable = self.root / "cli-current" / "tinytouch"

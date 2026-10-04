@@ -658,8 +658,10 @@ def helper_loaded() -> bool:
             check=False, timeout=5,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(
+            "Could not check the HID background service. Please try again."
+        ) from exc
 
 
 def load_helper() -> None:
