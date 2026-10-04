@@ -1168,6 +1168,35 @@ def host_id(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
 
 
+def hid_pairing_key(value: str | None) -> bytes:
+    """Validate a saved pairing key before using its host identifier."""
+    if value is None:
+        raise ToolError("This Mac has no saved HID pairing key. Run 'tinytouch setup --mode hid'.")
+    try:
+        key = bytes.fromhex(value.strip())
+    except ValueError as exc:
+        raise ToolError("The saved HID pairing key is invalid.") from exc
+    if len(key) != 32:
+        raise ToolError("The saved HID pairing key is invalid.")
+    return key
+
+
+def verify_hid_host(port: str, device: dict[str, str], account: str | None = None) -> None:
+    """Check that this Mac can use one of the device's registered hosts."""
+    account = account or device_account(port)
+    key = hid_pairing_key(keychain_get(PAIRING_SERVICE, account))
+    password = keychain_get(PASSWORD_SERVICE, account)
+    if not password or len(password.encode("utf-8")) > 160:
+        raise ToolError("This Mac has no usable HID password. Run 'tinytouch setup --mode hid'.")
+    registered, _capacity = host_list(port)
+    try:
+        count = int(device["hosts"])
+    except (KeyError, ValueError) as exc:
+        raise ToolError("HID setup is incomplete. The device did not report a valid computer count.") from exc
+    if count < 1 or count != len(registered) or host_id(key) not in registered:
+        raise ToolError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
+
+
 def password_for(account: str) -> str:
     global _setup_password
     if _setup_password is not None:
@@ -1285,15 +1314,20 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
 
 def host_list(port: str) -> tuple[set[str], int]:
     lines = serial_command(port, "HOST LIST", timeout=4)
-    line = next((item for item in lines if item.startswith("OK HOST LIST")), "")
-    data = dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
-    ids = set() if data.get("ids") in {None, "none"} else {
-        value.lower() for value in data["ids"].split(",")
-    }
+    data = fields_from(lines, "OK HOST LIST ")
     try:
-        capacity = int(data.get("capacity", "8"))
-    except ValueError as exc:
-        raise ToolError("The device returned an invalid HID computer capacity.") from exc
+        capacity = int(data["capacity"])
+        values = [] if data["ids"] == "none" else data["ids"].lower().split(",")
+        ids = set(values)
+        if (
+            not 1 <= capacity <= 8
+            or len(values) != len(ids)
+            or len(ids) > capacity
+            or any(re.fullmatch(r"[0-9a-f]{16}", value) is None for value in ids)
+        ):
+            raise ValueError()
+    except (KeyError, ValueError) as exc:
+        raise ToolError("The device returned an invalid HID computer inventory.") from exc
     return ids, capacity
 
 
@@ -1478,6 +1512,7 @@ def command_setup(args: argparse.Namespace) -> None:
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete. The identity is not ready.")
     if mode == "hid":
+        verify_hid_host(port, device)
         install_helper()
         if not helper_loaded():
             raise ToolError("HID setup is incomplete. The helper is not loaded.")
