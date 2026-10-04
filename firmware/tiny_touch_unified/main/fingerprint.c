@@ -561,18 +561,27 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   return no_match;
 }
 
-fingerprint_match_t fingerprint_authorize_poll_match(void) {
-  fingerprint_match_t no_match = {0};
-  if (!fp_take(0)) return no_match;
+bool fingerprint_try_poll_match(fingerprint_match_t *match) {
+  *match = (fingerprint_match_t){0};
+  if (!fp_take(0)) return false;
   uint8_t confirm = 0xff;
-  if (!fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) || confirm != 0x00) {
+  bool replied = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350);
+  if (!replied || confirm != 0x00) {
     if (device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
     fp_give();
-    return no_match;
+    // TOUCH_OUT can assert before image acquisition is ready. Only the
+    // acknowledged "no finger" result permits another capture attempt.
+    return !replied || confirm != 0x02;
   }
-  fingerprint_match_t match = fingerprint_match_captured(true);
-  schedule_result_led(match.slot != 0);
+  *match = fingerprint_match_captured(true);
+  schedule_result_led(match->slot != 0);
   fp_give();
+  return true;
+}
+
+fingerprint_match_t fingerprint_authorize_poll_match(void) {
+  fingerprint_match_t match;
+  (void)fingerprint_try_poll_match(&match);
   return match;
 }
 

@@ -151,5 +151,17 @@ int main(void) {
   assert(!result_led_pending && !result_led_visible && last_aura == 0);
   assert(service_result_led() == portMAX_DELAY);
   lighting_off = false;
+
+  // A busy UART and an acknowledged no-image response leave the touch
+  // available for a retry. A mismatch or transport error completes it.
+  reset(); mutex_available = false; match.slot = 99;
+  assert(!fingerprint_try_poll_match(&match) && match.slot == 0 && writes == 0);
+  reset(); const uint8_t no_image[] = {2}; packet(7, no_image, sizeof(no_image));
+  assert(!fingerprint_try_poll_match(&match) && match.slot == 0 && ready);
+  assert(notifications == 0 && !mutex_held);
+  reset(); ack(); expected_match.slot = 0;
+  assert(fingerprint_try_poll_match(&match) && match.slot == 0 && notifications == 1);
+  reset();
+  assert(fingerprint_try_poll_match(&match) && match.slot == 0 && !ready);
   return 0;
 }

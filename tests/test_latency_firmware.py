@@ -44,11 +44,18 @@ class FirmwareLatencyTests(unittest.TestCase):
             "request": section(source, "static bool request_and_type_password(", "typedef enum {\n  AUTH_STATE_IDLE"),
         })
 
+    def test_touch_edges_capture_retries_and_foreground_pause(self):
+        source = (MAIN / "touch_pin_hid.c").read_text()
+        self.run_harness("touch_polling_test.c", {
+            "state": section(source, "typedef enum {\n  AUTH_STATE_IDLE", "static void handle_fingerprint_match("),
+            "task": section(source, "static void auth_wait_for_lift(", "void touch_pin_hid_start("),
+        })
+
     def test_uart_framing_and_independent_result_feedback(self):
         source = (MAIN / "fingerprint.c").read_text()
         self.run_harness("fingerprint_latency_test.c", {
             "uart": section(source, "static uint16_t fp_checksum(", "static bool fp_take("),
             "led": section(source, "static bool set_aura(", "void fingerprint_led_service(") + section(source, "static bool apply_aura(void) {", "static void result_led_worker("),
             "schedule": section(source, "static void schedule_result_led(", "static void show_result("),
-            "matcher": section(source, "fingerprint_match_t fingerprint_authorize_poll_match(", "void fingerprint_init("),
+            "matcher": section(source, "bool fingerprint_try_poll_match(", "void fingerprint_init("),
         })

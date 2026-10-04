@@ -436,6 +436,7 @@ done:
 
 typedef enum {
   AUTH_STATE_IDLE = 0,
+  AUTH_STATE_CAPTURING,
   AUTH_STATE_WAITING_FOR_LIFT,
 } auth_state_t;
 
@@ -502,6 +503,7 @@ static void touch_hid_task(void *arg) {
       // still touching the sensor. Disarm that touch until a lift is observed
       // so it cannot become a second background match and type into the CLI.
       runtime.presence_armed = false;
+      if (runtime.state == AUTH_STATE_CAPTURING) usb_ccid_touch_cancel();
       auth_wait_for_lift(&runtime, xTaskGetTickCount());
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -539,6 +541,16 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
+    // Retry only while the same finger is present, for at most 750 ms. A
+    // missing touch wire or a completed mismatch cannot start another scan.
+    if (runtime.state == AUTH_STATE_CAPTURING &&
+        (!present || (TickType_t)(now - runtime.state_started) >= pdMS_TO_TICKS(750))) {
+      usb_ccid_touch_cancel();
+      touch_pin_hid_log_event("finger_capture_cancelled", 0);
+      auth_wait_for_lift(&runtime, now);
+      continue;
+    }
+
     // Presence is the sole trigger for a capture. Idle lighting maintenance
     // never captures or matches a fingerprint.
     if (!fingerprint_is_ready()) {
@@ -556,19 +568,27 @@ static void touch_hid_task(void *arg) {
     // Fingerprint capture must not depend on macOS having polled the HID
     // endpoint. A fresh USB connection can delay that poll until a serial
     // command runs; wait_hid_ready() handles delivery only after a match.
-    if (!present || !runtime.presence_armed) {
-      fingerprint_wait_for_touch();
-      continue;
+    if (runtime.state == AUTH_STATE_IDLE) {
+      if (!present || !runtime.presence_armed) {
+        fingerprint_wait_for_touch();
+        continue;
+      }
+      runtime.presence_armed = false;
+      runtime.state = AUTH_STATE_CAPTURING;
+      runtime.state_started = now;
+      touch_pin_hid_log_event("touch_detected", 0);
+      usb_ccid_touch_begin();
     }
 
-    runtime.presence_armed = false;
-    touch_pin_hid_log_event("touch_detected", 0);
-    usb_ccid_touch_begin();
-    fingerprint_match_t match = fingerprint_authorize_poll_match();
+    fingerprint_match_t match;
+    if (!fingerprint_try_poll_match(&match)) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
     if (match.slot == 0) {
       usb_ccid_touch_cancel();
       touch_pin_hid_log_event("finger_no_match", 0);
-      auth_wait_for_lift(&runtime, now);
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
       continue;
     }
 
