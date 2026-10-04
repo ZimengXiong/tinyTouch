@@ -949,46 +949,62 @@ def exchange_serial(
     return lines
 
 
+def active_session_port(port: str) -> str:
+    """Require nested commands to use the device owned by the outer session."""
+    active_port = _active_serial.port
+    if port != active_port and current_port(port) != active_port:
+        raise ToolError("A foreground session is already using another device.")
+    return active_port
+
+
 @contextmanager
 def foreground_session(port: str):
     """Open one verified CDC session for a foreground device operation."""
     global _active_serial
+    if _active_serial is not None:
+        yield active_session_port(port)
+        return
     try:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("The pyserial package is required. Run setup again.") from exc
     was_loaded = unload_helper()
-    deadline = time.monotonic() + 6.0
-    last_error: Exception | None = None
     device = None
-    while time.monotonic() < deadline:
-        try:
-            port = current_port(port)
-            device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
-            time.sleep(0.2)
-            device.reset_input_buffer()
-            exchange_serial(device, "PING", timeout=3)
-            break
-        except Exception as exc:
-            last_error = exc
-            if device is not None:
-                device.close()
-                device = None
-            time.sleep(0.25)
-    if device is None:
-        if "Device not configured" in str(last_error):
-            raise ToolError(
-                "tinyTouch is reconnecting. Please try again in a moment."
-            ) from last_error
-        raise ToolError(f'Could not communicate with tinyTouch on {port}. Error: {last_error}') from last_error
-    _active_serial = device
     try:
+        deadline = time.monotonic() + 6.0
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                port = current_port(port)
+                device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
+                time.sleep(0.2)
+                device.reset_input_buffer()
+                exchange_serial(device, "PING", timeout=3)
+                break
+            except Exception as exc:
+                last_error = exc
+                if device is not None:
+                    device.close()
+                    device = None
+                time.sleep(0.25)
+        if device is None:
+            if "Device not configured" in str(last_error):
+                raise ToolError(
+                    "tinyTouch is reconnecting. Please try again in a moment."
+                ) from last_error
+            raise ToolError(
+                f"Could not communicate with tinyTouch on {port}. Error: {last_error}"
+            ) from last_error
+        _active_serial = device
         yield port
     finally:
         _active_serial = None
-        device.close()
-        if was_loaded:
-            load_helper()
+        try:
+            if device is not None:
+                device.close()
+        finally:
+            if was_loaded:
+                load_helper()
 
 
 def serial_command(
@@ -1000,6 +1016,7 @@ def serial_command(
     event_handler=None,
 ) -> list[str]:
     if _active_serial is not None:
+        active_session_port(port)
         try:
             return exchange_serial(
                 _active_serial, command, timeout=timeout, touch_prompt=touch_prompt,
