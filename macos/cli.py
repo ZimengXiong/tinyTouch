@@ -58,7 +58,9 @@ _sound_process = None
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_runtime import (  # type: ignore  # noqa: E402
+    ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes,
+)
 from tinytouch_menu import select_menu, supports_arrows  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
@@ -957,6 +959,44 @@ def active_session_port(port: str) -> str:
     return active_port
 
 
+def helper_supports_foreground_lease() -> bool:
+    """Check whether the installed helper can drain USB workers for a lease."""
+    try:
+        payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    environment = payload.get("EnvironmentVariables", {})
+    return isinstance(environment, dict) and environment.get(
+        "TINYTOUCH_SERVICE_SCHEMA"
+    ) == "3"
+
+
+@contextmanager
+def foreground_helper():
+    """Pause a current helper without removing its launchd registration."""
+    use_lease = not _helper_suppressed and helper_supports_foreground_lease()
+    if use_lease:
+        load_helper()
+    was_loaded = False
+    # The lock also serializes commands when no helper has been installed.
+    with ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK) as lease:
+        try:
+            lease.acquire(wait_for_ack=use_lease)
+        except (LeaseBusyError, LeaseProtocolError) as exc:
+            raise ToolError(str(exc)) from exc
+        except OSError as exc:
+            raise ToolError("Could not reserve the tinyTouch USB connection.") from exc
+        try:
+            if not use_lease:
+                was_loaded = unload_helper()
+            yield
+        finally:
+            if was_loaded:
+                load_helper()
+
+
 @contextmanager
 def foreground_session(port: str):
     """Open one verified CDC session for a foreground device operation."""
@@ -968,43 +1008,39 @@ def foreground_session(port: str):
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("The pyserial package is required. Run setup again.") from exc
-    was_loaded = unload_helper()
     device = None
-    try:
-        deadline = time.monotonic() + 6.0
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                port = current_port(port)
-                device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
-                time.sleep(0.2)
-                device.reset_input_buffer()
-                exchange_serial(device, "PING", timeout=3)
-                break
-            except Exception as exc:
-                last_error = exc
-                if device is not None:
-                    device.close()
-                    device = None
-                time.sleep(0.25)
-        if device is None:
-            if "Device not configured" in str(last_error):
-                raise ToolError(
-                    "tinyTouch is reconnecting. Please try again in a moment."
-                ) from last_error
-            raise ToolError(
-                f"Could not communicate with tinyTouch on {port}. Error: {last_error}"
-            ) from last_error
-        _active_serial = device
-        yield port
-    finally:
-        _active_serial = None
+    with foreground_helper():
         try:
+            deadline = time.monotonic() + 6.0
+            last_error: Exception | None = None
+            while time.monotonic() < deadline:
+                try:
+                    port = current_port(port)
+                    device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
+                    time.sleep(0.2)
+                    device.reset_input_buffer()
+                    exchange_serial(device, "PING", timeout=3)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if device is not None:
+                        device.close()
+                        device = None
+                    time.sleep(0.25)
+            if device is None:
+                if "Device not configured" in str(last_error):
+                    raise ToolError(
+                        "tinyTouch is reconnecting. Please try again in a moment."
+                    ) from last_error
+                raise ToolError(
+                    f"Could not communicate with tinyTouch on {port}. Error: {last_error}"
+                ) from last_error
+            _active_serial = device
+            yield port
+        finally:
+            _active_serial = None
             if device is not None:
                 device.close()
-        finally:
-            if was_loaded:
-                load_helper()
 
 
 def serial_command(
