@@ -17,11 +17,16 @@ import tinytouch_helper as helper
 
 class HidPasswordCommandTests(unittest.TestCase):
     def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.account = "TT-123456ABCDEF"
         self.keychain = mock.Mock(KeychainError=helper.KeychainError)
         self.keychain.has_password.return_value = True
         self.activity = []
         patches = [
+            mock.patch.object(cli, "LAUNCH_AGENT", self.root / "agent.plist"),
+            mock.patch.object(cli, "HELPER_SUSPEND", self.root / "suspend"),
+            mock.patch.object(cli, "HELPER_SUSPEND_ACK", self.root / "ack"),
+            mock.patch.object(cli, "_helper_suppressed", False),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "choose_port", return_value="/dev/test"),
             mock.patch.object(cli, "device_account", return_value=self.account),
@@ -54,6 +59,22 @@ class HidPasswordCommandTests(unittest.TestCase):
             self.run_command()
         self.assertEqual(self.activity, ["save"])
 
+    def test_modern_helper_stays_registered_while_credentials_change(self):
+        cli.LAUNCH_AGENT.write_bytes(cli.plistlib.dumps({
+            "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},
+        }))
+
+        def save(*_args):
+            self.assertTrue(cli.HELPER_SUSPEND.exists())
+            self.activity.append("save")
+
+        self.keychain.set_password.side_effect = save
+        with mock.patch.object(cli.ForegroundLease, "_wait_for_ack"):
+            self.run_command()
+        self.assertEqual(self.activity, ["reload", "save"])
+        self.assertTrue(cli.LAUNCH_AGENT.exists())
+        self.assertFalse(cli.HELPER_SUSPEND.exists())
+
     def test_finger_update_writes_one_group_item(self):
         self.run_command("--finger", "10")
         self.keychain.set_password.assert_called_once_with(
@@ -68,7 +89,7 @@ class HidPasswordCommandTests(unittest.TestCase):
 
     def test_restart_failure_reports_that_the_credential_was_saved(self):
         with mock.patch.object(cli, "load_helper", side_effect=OSError("fixture failure")):
-            with self.assertRaisesRegex(cli.ToolError, "was saved.*could not restart"):
+            with self.assertRaisesRegex(cli.ToolError, "was saved.*could not resume"):
                 self.run_command()
         self.keychain.set_password.assert_called_once()
         self.assertEqual(self.activity, ["stop", "save"])
@@ -173,6 +194,10 @@ class KeyboardLayoutCommandTests(unittest.TestCase):
         self.account = "TT-123456ABCDEF"
         self.activity = []
         patches = [
+            mock.patch.object(cli, "LAUNCH_AGENT", self.root / "agent.plist"),
+            mock.patch.object(cli, "HELPER_SUSPEND", self.root / "suspend"),
+            mock.patch.object(cli, "HELPER_SUSPEND_ACK", self.root / "ack"),
+            mock.patch.object(cli, "_helper_suppressed", False),
             mock.patch.object(helper, "STATE_DIR", self.root),
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "choose_port", return_value="/dev/test"),

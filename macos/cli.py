@@ -1297,22 +1297,25 @@ def password_for(account: str) -> str:
 
 @contextmanager
 def hid_settings_change():
-    """Restart the existing helper so it discards cached host credentials."""
-    was_loaded = unload_helper()
+    """Drain helper workers while changing their saved credentials or settings."""
     completed = False
+    operation_error = None
     try:
-        yield
-        completed = True
-    finally:
-        if was_loaded:
+        with foreground_helper():
             try:
-                load_helper()
-            except (ToolError, OSError, subprocess.SubprocessError) as exc:
-                outcome = "was saved" if completed else "did not finish"
-                raise ToolError(
-                    f"The HID change {outcome}, but the background service "
-                    "could not restart. Run 'tinytouch repair'."
-                ) from exc
+                yield
+            except BaseException as exc:
+                operation_error = exc
+                raise
+            completed = True
+    except (ToolError, OSError, subprocess.SubprocessError) as exc:
+        if exc is operation_error or (not completed and isinstance(exc, ToolError)):
+            raise
+        outcome = "was saved" if completed else "did not finish"
+        raise ToolError(
+            f"The HID change {outcome}, but the background service "
+            "could not resume. Run 'tinytouch repair'."
+        ) from exc
 
 
 def command_password(args: argparse.Namespace) -> None:
