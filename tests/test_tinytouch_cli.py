@@ -775,10 +775,7 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(result["hosts"], "1")
 
     def test_hid_add_is_live_and_does_not_provision_piv(self):
-        computer = "test-mac"
-        key = hashlib.sha256(
-            f"tinyTouch HID pairing|TT-1234|{computer}".encode("utf-8")
-        ).digest()
+        key = bytes(range(32))
         commands = []
         identifier = cli.host_id(key)
         registered = set()
@@ -806,7 +803,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "serial_command", side_effect=exchange),
             mock.patch.object(cli, "install_helper"),
             mock.patch.object(cli, "helper_loaded", return_value=True),
-            mock.patch.object(cli.platform, "node", return_value=computer),
+            mock.patch.object(cli.secrets, "token_bytes", return_value=key),
         ):
             cli.configure_hid("/dev/cu.TT-1234", {"mode": "piv", "hosts": "0"})
 

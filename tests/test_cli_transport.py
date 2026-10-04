@@ -60,7 +60,7 @@ class CliTransportTests(unittest.TestCase):
 
     def test_windowed_upload_finishes_without_driver_drain(self):
         device = AcknowledgedSerial()
-        image = bytes(range(256)) * 40
+        image = bytes(range(256)) * 200
 
         @contextmanager
         def session(port):
