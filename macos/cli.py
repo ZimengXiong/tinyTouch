@@ -60,6 +60,7 @@ if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
 from tinytouch_runtime import (  # type: ignore  # noqa: E402
     ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes,
+    atomic_write_json,
 )
 from tinytouch_menu import select_menu, supports_arrows  # type: ignore  # noqa: E402
 
@@ -1312,6 +1313,31 @@ def command_password(args: argparse.Namespace) -> None:
         keychain_set(PASSWORD_SERVICE, target, value)
     say(f"HID password saved for finger {args.finger}." if args.finger
         else "Default HID password saved.")
+
+
+def command_keyboard_layout(args: argparse.Namespace) -> None:
+    """Read or change the host layout used for HID password translation."""
+    require_macos()
+    from tinytouch_helper import load_settings, settings_path
+
+    account = device_account(choose_port(args.port))
+    if args.layout is None:
+        say(f'HID keyboard layout: {load_settings(account)["keyboard_layout"]}.')
+        return
+    path = settings_path(account)
+    try:
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
+            settings = {}
+        if not isinstance(settings, dict):
+            settings = {}
+        settings["keyboard_layout"] = args.layout
+        with hid_settings_change():
+            atomic_write_json(path, settings)
+    except OSError as exc:
+        raise ToolError("Could not save the HID keyboard layout. Check file permissions and retry.") from exc
+    say(f"HID keyboard layout saved: {args.layout}.")
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
@@ -2918,6 +2944,12 @@ def parser() -> argparse.ArgumentParser:
     password.add_argument("--port", default=argparse.SUPPRESS,
                           help="Use this USB serial path instead of the global --port value.")
     password.set_defaults(func=command_password)
+    layout = sub.add_parser("keyboard-layout", help="Read or change HID keyboard translation.")
+    layout.add_argument("layout", nargs="?", choices=("auto", "us"),
+                        help="Use the active macOS layout with auto, or US key positions with us.")
+    layout.add_argument("--port", default=argparse.SUPPRESS,
+                        help="Use this USB serial path instead of the global --port value.")
+    layout.set_defaults(func=command_keyboard_layout)
     upgrade_helper = sub.add_parser("_upgrade-helper", help=argparse.SUPPRESS)
     upgrade_helper.add_argument("--port")
     upgrade_helper.set_defaults(func=command_upgrade_helper)

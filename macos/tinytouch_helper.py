@@ -185,7 +185,7 @@ def settings_path(device_id: str) -> Path:
 def load_settings(device_id: str) -> dict[str, str]:
     try:
         value = json.loads(settings_path(device_id).read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
         return {"keyboard_layout": "auto"}
     if not isinstance(value, dict):
         return {"keyboard_layout": "auto"}

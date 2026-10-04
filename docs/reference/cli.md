@@ -105,6 +105,47 @@ tinytouch mode {hid,piv} [--port PATH]
 
 Changes mode after fingerprint approval. Reconnect the device when prompted.
 
+## `password`
+
+```text
+tinytouch password [--finger {1..10}] [--port PATH]
+```
+
+Changes the password typed by HID on this Mac. Enter the new password twice in
+the masked terminal prompt. The command preserves fingerprints and HID pairing.
+Run HID setup first if this Mac has no saved pairing.
+
+Without `--finger`, changes the default password used by fingers without an
+override. With `--finger`, assigns one password to all four enrolled views of
+that finger. The finger number is the same number used by `enroll` and `fingers`.
+Passwords are stored in macOS Keychain. The command restarts the existing helper
+to reload the saved value.
+
+The password must fit the selected layout, use at most 160 UTF-8 bytes, and
+require at most 160 typed keys. A dead-key sequence counts as two typed keys.
+Control characters are unsupported. A failed Keychain update keeps the previous
+password; unlock the login Keychain or run `tinytouch repair` before retrying.
+
+## `keyboard-layout`
+
+```text
+tinytouch keyboard-layout [auto|us] [--port PATH]
+```
+
+Without a value, shows the saved HID layout setting for this device on this Mac.
+`auto` is the default and translates passwords using the active macOS
+ASCII-capable layout, including French AZERTY and Croatian QWERTZ. Select your
+intended layout in macOS before touching the device. Characters requiring Option
+or more than one dead key are unsupported.
+
+Use `us` to send US key positions directly. This can preserve an existing manual
+character mapping. To replace a manually mapped password with your actual
+password, select the intended macOS layout, run `tinytouch keyboard-layout auto`,
+then run `tinytouch password`.
+
+Changes apply to this device on this Mac. The command restarts the existing
+helper to reload its settings.
+
 ## `led`
 
 ```text

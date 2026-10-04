@@ -1,7 +1,9 @@
 """Check host credential commands with mocked Keychain and service calls."""
 
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -46,6 +48,11 @@ class HidPasswordCommandTests(unittest.TestCase):
             cli.PASSWORD_SERVICE, self.account, "password"
         )
         self.assertEqual(self.activity, ["stop", "save", "reload"])
+
+    def test_password_update_does_not_install_an_absent_helper(self):
+        with mock.patch.object(cli, "unload_helper", return_value=False):
+            self.run_command()
+        self.assertEqual(self.activity, ["save"])
 
     def test_finger_update_writes_one_group_item(self):
         self.run_command("--finger", "10")
@@ -117,6 +124,65 @@ class FingerPasswordLoadingTests(unittest.TestCase):
             with mock.patch.object(helper, "encrypt_password", return_value=("00" * 16, "aa")) as encrypt:
                 helper.handle_event(f"EV {nonce} 1 {slot} 42 {signature}", passwords, key)
             self.assertEqual(encrypt.call_args.args[2], group)
+
+
+class KeyboardLayoutCommandTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.account = "TT-123456ABCDEF"
+        self.activity = []
+        patches = [
+            mock.patch.object(helper, "STATE_DIR", self.root),
+            mock.patch.object(cli, "require_macos"),
+            mock.patch.object(cli, "choose_port", return_value="/dev/test"),
+            mock.patch.object(cli, "device_account", return_value=self.account),
+            mock.patch.object(cli, "unload_helper",
+                              side_effect=lambda: self.activity.append("stop") or True),
+            mock.patch.object(cli, "load_helper", side_effect=lambda: self.activity.append("reload")),
+            mock.patch.object(cli, "say"),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def run_command(self, *arguments):
+        args = cli.parser().parse_args(["keyboard-layout", *arguments])
+        args.func(args)
+
+    def test_query_does_not_write_or_restart(self):
+        self.run_command()
+        self.assertEqual(self.activity, [])
+        self.assertEqual(list(self.root.iterdir()), [])
+        cli.say.assert_called_once_with("HID keyboard layout: auto.")
+
+    def test_change_preserves_other_settings_and_scopes_the_device(self):
+        path = helper.settings_path(self.account)
+        path.write_text(json.dumps({"keyboard_layout": "us", "future_setting": 7}))
+        other = helper.settings_path("TT-000000000000")
+        other.write_text('{"keyboard_layout":"us"}')
+        self.run_command("auto")
+        self.assertEqual(json.loads(path.read_text()),
+                         {"keyboard_layout": "auto", "future_setting": 7})
+        self.assertEqual(other.read_text(), '{"keyboard_layout":"us"}')
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.activity, ["stop", "reload"])
+
+    def test_failed_write_keeps_previous_settings_and_reloads_helper(self):
+        path = helper.settings_path(self.account)
+        path.write_text('{"keyboard_layout":"auto"}')
+        with mock.patch.object(cli, "atomic_write_json", side_effect=OSError("fixture failure")):
+            with self.assertRaisesRegex(cli.ToolError, "Could not save"):
+                self.run_command("us")
+        self.assertEqual(helper.load_settings(self.account), {"keyboard_layout": "auto"})
+        self.assertEqual(self.activity, ["stop", "reload"])
+
+    def test_explicit_layout_recovers_invalid_utf8_settings(self):
+        helper.settings_path(self.account).write_bytes(b"\xff")
+        self.assertEqual(helper.load_settings(self.account), {"keyboard_layout": "auto"})
+        self.run_command("us")
+        self.assertEqual(helper.load_settings(self.account), {"keyboard_layout": "us"})
 
 
 if __name__ == "__main__":
