@@ -162,8 +162,10 @@ def load_settings(device_id: str) -> dict[str, str]:
         value = json.loads(settings_path(device_id).read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return {"keyboard_layout": "auto"}
+    if not isinstance(value, dict):
+        return {"keyboard_layout": "auto"}
     layout = value.get("keyboard_layout", "auto")
-    return {"keyboard_layout": layout if layout in {"auto", "us"} else "auto"}
+    return {"keyboard_layout": layout if layout in ("auto", "us") else "auto"}
 
 
 @lru_cache(maxsize=1)
@@ -219,29 +221,56 @@ def _keyboard_output_map(layout_bytes: bytes) -> dict[str, str]:
     hitoolbox, _, _ = _keyboard_layout_libraries()
     layout = ctypes.create_string_buffer(layout_bytes)
     output_map: dict[str, str] = {}
+    keys: dict[str, tuple[int, int]] = {}
     for wire in (chr(value) for value in range(32, 127)):
         base = _US_SHIFTED.get(wire, wire)
         keycode = _MAC_KEYCODES.get(base.lower())
         if keycode is None:
             continue
         modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
-        dead_key = ctypes.c_uint32(0)
+        keys[wire] = (keycode, modifiers)
+
+    def translate(wire: str, state: int = 0) -> tuple[str, int]:
+        keycode, modifiers = keys[wire]
+        dead_key = ctypes.c_uint32(state)
         actual = ctypes.c_uint32(0)
         chars = (ctypes.c_uint16 * 4)()
-        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 1,
+        # Keep dead-key state: suppressing it predicts characters the physical
+        # key does not type until a second key completes the sequence.
+        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 0,
                                         ctypes.byref(dead_key), len(chars),
                                         ctypes.byref(actual), chars)
-        if status == 0 and actual.value == 1 and dead_key.value == 0:
-            output_map[chr(chars[0])] = wire
+        if status != 0 or actual.value > len(chars):
+            return "", 0
+        raw = b"".join(chars[index].to_bytes(2, "little")
+                       for index in range(actual.value))
+        try:
+            return raw.decode("utf-16-le"), dead_key.value
+        except UnicodeError:
+            return "", 0
+
+    dead_keys: dict[str, int] = {}
+    for wire in keys:
+        text, state = translate(wire)
+        if len(text) == 1 and state == 0:
+            output_map.setdefault(text, wire)
+        elif not text and state:
+            dead_keys[wire] = state
+    for first, state in dead_keys.items():
+        for second in keys:
+            text, remaining = translate(second, state)
+            if len(text) == 1 and remaining == 0:
+                output_map.setdefault(text, first + second)
     return output_map
 
 
 def translate_password(password: bytes, output_map: dict[str, str] | None) -> bytes:
+    text = password.decode("utf-8")
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("Passwords cannot contain control characters.")
     if output_map is None:
-        password.decode("ascii")
-        result = password
+        result = text.encode("ascii")
     else:
-        text = password.decode("utf-8")
         try:
             result = "".join(output_map[char] for char in text).encode("ascii")
         except KeyError as exc:
@@ -482,12 +511,11 @@ def handle_event(
         return None
     try:
         wire_password = translate_password(selected_password, keyboard_map)
-    except (UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError):
         diagnostic(
             "protocol.event_rejected",
             level="warning",
             reason="keyboard_layout_unrepresentable",
-            detail=str(exc),
         )
         return None
     iv_hex, ct_hex = encrypt_password(pairing_key, nonce, wire_password)
