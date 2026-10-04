@@ -10,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PivTouchFirmwareTests(unittest.TestCase):
     def test_visibility_descriptors_discovery_expiry_and_resume(self):
+        self.run_harness("usb_test.c")
+
+    def test_packet_framing_reset_and_response_termination(self):
+        self.run_harness("usb_transport_test.c")
+
+    def run_harness(self, filename):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)
             for name in (
@@ -24,7 +30,7 @@ class PivTouchFirmwareTests(unittest.TestCase):
             result = subprocess.run([
                 os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
                 "-I", str(build), "-I", str(ROOT / "tests/host"),
-                str(ROOT / "tests/host/usb_test.c"), "-o", str(executable),
+                str(ROOT / "tests/host" / filename), "-o", str(executable),
             ], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
