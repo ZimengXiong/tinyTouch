@@ -1257,24 +1257,68 @@ def password_for(account: str) -> str:
 
 
 def configure_hid(port: str, device: dict[str, str]) -> None:
+    global _setup_password
     account = device_account(port)
-    prepare_hid_password()
-    key = hashlib.sha256(
-        f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
-    ).digest()
-    identifier = host_id(key)
-    registered, capacity = host_list(port)
-    if identifier not in registered:
-        if len(registered) >= capacity:
+    previous: dict[str, str | None] = {}
+    written: list[str] = []
+    added: str | None = None
+    try:
+        prepare_hid_password()
+        previous = {
+            service: keychain_get(service, account)
+            for service in (PAIRING_SERVICE, PASSWORD_SERVICE)
+        }
+        saved_key = previous[PAIRING_SERVICE]
+        key = hid_pairing_key(saved_key) if saved_key is not None else hashlib.sha256(
+            f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
+        ).digest()
+        identifier = host_id(key)
+        registered, capacity = host_list(port)
+        if identifier not in registered and len(registered) >= capacity:
             raise ToolError("This device has no available HID computer slot. Remove a registered computer before adding another.")
-        serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
-    keychain_set(PAIRING_SERVICE, account, key.hex())
-    password_for(account)
-    current = status(port)
-    if current.get("hosts", "0") == "0":
-        raise ToolError("HID setup is incomplete. The device has no registered computer.")
-    if identifier not in host_list(port)[0]:
-        raise ToolError("HID setup is incomplete. The device has no registered computer.")
+        if saved_key is None:
+            written.append(PAIRING_SERVICE)
+            keychain_set(PAIRING_SERVICE, account, key.hex())
+        saved_password = previous[PASSWORD_SERVICE]
+        if not saved_password or len(saved_password.encode("utf-8")) > 160:
+            written.append(PASSWORD_SERVICE)
+            password_for(account)
+        if identifier not in registered:
+            # A timeout can occur after the device saves the host.
+            added = identifier
+            serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
+        verify_hid_host(port, status(port), account)
+    except (Exception, KeyboardInterrupt) as exc:
+        cleanup_failed = False
+        if added is not None:
+            try:
+                if added in host_list(port)[0]:
+                    serial_command(port, f"HOST REMOVE {added}", timeout=4)
+                    if added in host_list(port)[0]:
+                        raise ToolError("The new HID computer is still registered.")
+            except Exception:
+                cleanup_failed = True
+        for service in reversed(written):
+            try:
+                value = previous[service]
+                if value is None:
+                    keychain_delete(service, account)
+                else:
+                    keychain_set(service, account, value)
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
+            say("Some HID setup changes could not be restored. Reconnect tinyTouch and run 'tinytouch setup --mode hid' again.")
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        suffix = " Some setup changes could not be restored." if cleanup_failed else ""
+        raise ToolError(
+            f"HID setup did not finish. {exc}{suffix} Run 'tinytouch setup --mode hid' again."
+        ) from exc
+    finally:
+        if _setup_password is not None:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
 
 
 def command_hid_smoke(_: argparse.Namespace) -> None:
@@ -1350,10 +1394,11 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
 
 def host_list(port: str) -> tuple[set[str], int]:
     lines = serial_command(port, "HOST LIST", timeout=4)
-    data = fields_from(lines, "OK HOST LIST ")
+    line = next((item for item in reversed(lines) if item.startswith("OK HOST LIST ")), "")
+    data = dict(re.findall(r"([A-Za-z_]+)=([^ ]*)", line))
     try:
         capacity = int(data["capacity"])
-        values = [] if data["ids"] == "none" else data["ids"].lower().split(",")
+        values = [] if data["ids"] in {"", "none"} else data["ids"].lower().split(",")
         ids = set(values)
         if (
             not 1 <= capacity <= 8

@@ -766,6 +766,7 @@ class ProtocolSixTests(unittest.TestCase):
         commands = []
         identifier = cli.host_id(key)
         registered = set()
+        credentials = {}
 
         def exchange(_port, command, **_kwargs):
             commands.append(command)
@@ -781,11 +782,11 @@ class ProtocolSixTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "prepare_hid_password"),
-            mock.patch.object(cli, "keychain_get", return_value=None),
+            mock.patch.object(cli, "keychain_get", side_effect=lambda service, _account: credentials.get(service)),
             mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "keychain_exists", return_value=True),
-            mock.patch.object(cli, "keychain_set"),
-            mock.patch.object(cli, "password_for", return_value="test-password"),
+            mock.patch.object(cli, "keychain_set", side_effect=lambda service, _account, value: credentials.update({service: value})),
+            mock.patch.object(cli, "password_for", side_effect=lambda _account: credentials.update({cli.PASSWORD_SERVICE: "test-password"})),
             mock.patch.object(cli, "serial_command", side_effect=exchange),
             mock.patch.object(cli, "install_helper"),
             mock.patch.object(cli, "helper_loaded", return_value=True),

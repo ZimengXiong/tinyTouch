@@ -96,10 +96,11 @@ class HostInventoryTests(unittest.TestCase):
             self.assertEqual(cli.host_list(PORT), ({IDENTIFIER}, 8))
 
     def test_empty_inventory_is_explicit(self):
-        with mock.patch.object(cli, "serial_command", return_value=[
-            "OK HOST LIST ids=none capacity=8",
-        ]):
-            self.assertEqual(cli.host_list(PORT), (set(), 8))
+        for ids in ("", "none"):
+            with self.subTest(ids=ids), mock.patch.object(cli, "serial_command", return_value=[
+                f"OK HOST LIST ids={ids} capacity=8",
+            ]):
+                self.assertEqual(cli.host_list(PORT), (set(), 8))
 
     def test_malformed_inventory_never_becomes_an_empty_host_list(self):
         for response in (
@@ -116,6 +117,118 @@ class HostInventoryTests(unittest.TestCase):
             ):
                 with self.assertRaises(cli.ToolError):
                     cli.host_list(PORT)
+
+
+class HostRegistrationTests(unittest.TestCase):
+    def setUp(self):
+        self.credentials = {cli.PAIRING_SERVICE: KEY.hex(), cli.PASSWORD_SERVICE: "custom-password"}
+        self.registered = {IDENTIFIER}
+        self.commands = []
+        self.enterContext(mock.patch.object(cli, "device_account", return_value=ACCOUNT))
+        self.enterContext(mock.patch.object(cli, "_setup_password", None))
+        self.enterContext(mock.patch.object(cli, "prepare_hid_password", side_effect=self.prepare))
+        self.enterContext(mock.patch.object(cli, "keychain_get", side_effect=lambda service, _account: self.credentials.get(service)))
+        self.save = self.enterContext(mock.patch.object(cli, "keychain_set", side_effect=self.write))
+        self.delete = self.enterContext(mock.patch.object(cli, "keychain_delete", side_effect=lambda service, _account: self.credentials.pop(service, None)))
+        self.enterContext(mock.patch.object(cli, "host_list", side_effect=lambda _port: (set(self.registered), 8)))
+        self.status = self.enterContext(mock.patch.object(cli, "status", side_effect=lambda _port: {**DEVICE, "hosts": str(len(self.registered))}))
+        self.command = self.enterContext(mock.patch.object(cli, "serial_command", side_effect=self.exchange))
+        self.enterContext(mock.patch.object(cli, "say"))
+
+    def prepare(self):
+        self.captured = bytearray(b"mac-login-password")
+        cli._setup_password = self.captured
+
+    def write(self, service, _account, value):
+        self.credentials[service] = value
+
+    def exchange(self, _port, command, **_kwargs):
+        self.commands.append(command)
+        if command.startswith("HOST ADD "):
+            self.registered.add(command.split()[2])
+        elif command.startswith("HOST REMOVE "):
+            self.registered.remove(command.split()[2])
+        return ["OK HOST"]
+
+    def test_repeated_setup_preserves_custom_password_and_existing_pairing(self):
+        with mock.patch.object(cli.platform, "node", return_value="renamed-mac"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.credentials[cli.PASSWORD_SERVICE], "custom-password")
+        self.assertEqual(self.credentials[cli.PAIRING_SERVICE], KEY.hex())
+        self.save.assert_not_called()
+        self.command.assert_not_called()
+        self.assertEqual(self.captured, bytearray(len(self.captured)))
+        self.assertIsNone(cli._setup_password)
+
+    def test_saved_pairing_is_registered_again_after_factory_reset(self):
+        self.registered.clear()
+        cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.commands, [f"HOST ADD {IDENTIFIER} {KEY.hex()}"])
+        self.save.assert_not_called()
+
+    def test_verification_failure_removes_only_the_new_host(self):
+        self.registered = {"a" * 16}
+        self.status.side_effect = cli.ToolError("status unavailable")
+        with self.assertRaisesRegex(cli.ToolError, "status unavailable"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.registered, {"a" * 16})
+        self.assertEqual(self.commands[-1], f"HOST REMOVE {IDENTIFIER}")
+        self.assertEqual(self.credentials[cli.PASSWORD_SERVICE], "custom-password")
+
+    def test_new_credentials_are_removed_after_failed_registration(self):
+        self.credentials.clear()
+        self.registered.clear()
+        self.command.side_effect = cli.ToolError("registration failed")
+        with self.assertRaisesRegex(cli.ToolError, "registration failed"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.credentials, {})
+        self.assertEqual(self.delete.call_count, 2)
+        self.assertIsNone(cli._setup_password)
+
+    def test_lost_add_acknowledgment_is_rolled_back(self):
+        self.registered.clear()
+
+        def timeout_after_add(port, command, **kwargs):
+            result = self.exchange(port, command, **kwargs)
+            if command.startswith("HOST ADD "):
+                raise cli.SerialTimeout("lost acknowledgment")
+            return result
+
+        self.command.side_effect = timeout_after_add
+        with self.assertRaisesRegex(cli.ToolError, "lost acknowledgment"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.registered, set())
+        self.assertEqual(self.commands[-1], f"HOST REMOVE {IDENTIFIER}")
+
+    def test_failed_password_write_restores_previous_value(self):
+        self.credentials[cli.PASSWORD_SERVICE] = ""
+
+        def fail_after_write(service, account, value):
+            self.write(service, account, value)
+            if value == "mac-login-password":
+                raise cli.ToolError("password save failed")
+
+        self.save.side_effect = fail_after_write
+        with self.assertRaisesRegex(cli.ToolError, "password save failed"):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.credentials[cli.PASSWORD_SERVICE], "")
+        self.command.assert_not_called()
+
+    def test_interrupt_clears_password_and_rolls_back_new_credentials(self):
+        self.credentials.clear()
+        self.registered.clear()
+        self.command.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            cli.configure_hid(PORT, DEVICE)
+        self.assertEqual(self.credentials, {})
+        self.assertEqual(self.captured, bytearray(len(self.captured)))
+
+    def test_full_inventory_stops_before_writing_credentials(self):
+        self.registered = {f"{number:016x}" for number in range(8)}
+        with self.assertRaisesRegex(cli.ToolError, "no available HID computer slot"):
+            cli.configure_hid(PORT, DEVICE)
+        self.save.assert_not_called()
+        self.command.assert_not_called()
 
 
 if __name__ == "__main__":

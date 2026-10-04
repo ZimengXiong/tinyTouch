@@ -116,14 +116,17 @@ class SetupIdentityTests(unittest.TestCase):
             [usb_port()],
         ]
         events = []
+        credentials = {}
 
-        def save(service, account, _value):
+        def save(service, account, value):
             self.assertEqual(account, IDENTITY)
             events.append(service)
+            credentials[service] = value
 
         def password(account):
             self.assertEqual(account, IDENTITY)
             events.append("saved password")
+            credentials[cli.PASSWORD_SERVICE] = "test-password"
 
         with (
             mock.patch.dict(cli.sys.modules, {"serial": serial}),
@@ -137,6 +140,7 @@ class SetupIdentityTests(unittest.TestCase):
             ),
             mock.patch.object(cli, "host_id", return_value="registered-host"),
             mock.patch.object(cli, "host_list", return_value=({"registered-host"}, 8)),
+            mock.patch.object(cli, "keychain_get", side_effect=lambda service, _account: credentials.get(service)),
             mock.patch.object(cli, "keychain_set", side_effect=save),
             mock.patch.object(cli, "password_for", side_effect=password),
             mock.patch.object(cli, "status", return_value={"hosts": "1"}),
