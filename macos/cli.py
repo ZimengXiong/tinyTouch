@@ -1447,32 +1447,58 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
 
 
 def command_hid_smoke(_: argparse.Namespace) -> None:
-    """Run the HID setup path against a temporary protocol-6 device."""
+    """Test serial framing and encrypted helper replies with temporary secrets."""
+    import hmac
+    import serial
+    import tinytouch_helper as helper
+
     require_macos()
-    device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
+    pairing_key = bytearray(secrets.token_bytes(32))
+    password = bytearray(b"smoke test password")
+    identifier = host_id(pairing_key)
+    nonce = secrets.token_hex(16)
     master, slave = pty.openpty()
     port = os.ttyname(slave)
     tty.setraw(slave)
-    state = {"mode": "piv", "hosts": set()}
     stopped = threading.Event()
 
     def reply(line: str) -> str:
+        if line == "PING":
+            return "PONG 6"
         if line == "STATUS":
-            return (
-                "OK STATUS firmware=0.8.4 protocol=6 mode=" + state["mode"]
-                + f" sensor=ready fingerprints=4 piv=none hosts={len(state['hosts'])}"
-            )
-        if line == "AUTH":
-            return "EVENT TOUCH\nOK AUTH"
-        if line == "HOST LIST":
-            identifiers = ",".join(sorted(state["hosts"])) or "none"
-            return f"OK HOST LIST capacity=8 ids={identifiers}"
-        if line.startswith("HOST ADD "):
-            state["hosts"].add(line.split()[2].lower())
-            return "OK ADD"
-        if line == "SET MODE HID":
-            state["mode"] = "hid"
-            return "OK MODE"
+            return f"OK STATUS firmware={CLI_VERSION} protocol=6 mode=hid sensor=ready hosts=1"
+        if line in {"TEST EV", "TEST EV2"}:
+            kind = line.split()[1]
+            material = (f"EV|{nonce}|1|1|123" if kind == "EV"
+                        else f"EV2|{identifier}|{nonce}|1|1|123")
+            authenticator = helper.mac_hex(pairing_key, material)
+            if kind == "EV2":
+                authenticator = f"{identifier}:{authenticator}"
+            return f"{kind} {nonce} 1 1 123 {authenticator}\nOK TEST"
+        if line.startswith(("PW ", "PW2 ")):
+            verb = line.split()[0]
+            try:
+                parts = line.split()
+                if parts[0] == "PW2":
+                    if len(parts) != 6 or parts[1] != identifier:
+                        return f"ERR {verb} invalid_reply"
+                    response_nonce, iv, ciphertext = parts[2:5]
+                else:
+                    if len(parts) != 5:
+                        return f"ERR {verb} invalid_reply"
+                    response_nonce, iv, ciphertext = parts[1:4]
+                material = "|".join(parts[:-1])
+                if response_nonce != nonce or not hmac.compare_digest(
+                    parts[-1], helper.mac_hex(pairing_key, material)
+                ):
+                    return f"ERR {verb} invalid_mac"
+                decoded = helper.aes_ctr_crypt(
+                    helper.session_key(pairing_key, nonce),
+                    bytes.fromhex(iv), bytes.fromhex(ciphertext),
+                )
+                return f"OK {verb}" if decoded == password else f"ERR {verb} invalid_password"
+            except (ValueError, RuntimeError):
+                return f"ERR {verb} invalid_reply"
         return "ERR COMMAND"
 
     def serve() -> None:
@@ -1494,27 +1520,30 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
                 os.write(master, (response + "\n").encode("ascii"))
 
     worker = threading.Thread(target=serve, daemon=True)
-    previous_account = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
     try:
-        remove_helper()
-        os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = device_id
         worker.start()
-        command_setup(argparse.Namespace(mode="hid", port=port, skip_enroll=True, no_pair=False))
-        run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
-        say(f"HID bridge password: {keychain_get(PASSWORD_SERVICE, device_id)}")
-        say("HID setup and the helper communication test passed.")
+        with serial.Serial(port, baudrate=115200, timeout=0.2, write_timeout=2) as device:
+            exchange_serial(device, "PING", timeout=2)
+            exchange_serial(device, "STATUS", timeout=2)
+            for kind in ("EV", "EV2"):
+                lines = exchange_serial(device, f"TEST {kind}", timeout=2)
+                event = next((line for line in lines if line.startswith(kind + " ")), "")
+                response = helper.handle_event(
+                    event, password, pairing_key, {"seen_nonces": []},
+                    persist_state=False,
+                )
+                if response is None:
+                    raise ToolError("The HID helper rejected the simulated touch.")
+                exchange_serial(device, response.strip(), timeout=2)
+        say("HID helper protocol test passed (simulated serial device).")
     finally:
         stopped.set()
-        worker.join(timeout=1)
+        if worker.ident is not None:
+            worker.join(timeout=1)
         os.close(slave)
         os.close(master)
-        if previous_account is None:
-            os.environ.pop("TINYTOUCH_DEVICE_ACCOUNT", None)
-        else:
-            os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = previous_account
-        keychain_delete(PAIRING_SERVICE, device_id)
-        keychain_delete(PASSWORD_SERVICE, device_id)
-        remove_helper()
+        password[:] = bytes(len(password))
+        pairing_key[:] = bytes(len(pairing_key))
 
 
 def host_list(port: str) -> tuple[set[str], int]:
@@ -3155,7 +3184,7 @@ def parser() -> argparse.ArgumentParser:
     pair = sub.add_parser("pair", help="Pair the PIV identity with the current macOS user.")
     pair.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     pair.set_defaults(func=command_pair)
-    hid_smoke = sub.add_parser("hid-smoke", help="Test the HID helper without connecting a physical device.")
+    hid_smoke = sub.add_parser("hid-smoke", help="Test serial communication and encrypted HID helper replies with a simulated device.")
     hid_smoke.set_defaults(func=command_hid_smoke)
     enroll_demo = sub.add_parser("enroll-demo", help="Preview fingerprint enrollment without connecting a device.")
     enroll_demo.set_defaults(func=command_enroll_demo)

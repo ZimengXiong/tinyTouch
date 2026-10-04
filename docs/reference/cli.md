@@ -464,5 +464,5 @@ It applies to the next touch login without reconnecting. The other settings are 
 
 | Command | Action |
 |---|---|
-| `tinytouch hid-smoke` | Test HID setup against a simulated device on macOS |
+| `tinytouch hid-smoke` | Test serial communication and encrypted helper replies against a simulated device on macOS; saved passwords and the installed service are preserved |
 | `tinytouch enroll-demo` | Preview enrollment in an interactive terminal |
