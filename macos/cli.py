@@ -801,7 +801,7 @@ def install_helper(*, check_saved: bool = False) -> None:
         load_helper()
         if not helper_loaded():
             raise ToolError("The HID helper did not load.")
-    except (Exception, KeyboardInterrupt) as exc:
+    except BaseException as exc:
         try:
             unload_helper()
             if previous is None:
@@ -818,7 +818,7 @@ def install_helper(*, check_saved: bool = False) -> None:
             ) from rollback_error
         finally:
             _helper_suppressed = was_suppressed
-        if isinstance(exc, KeyboardInterrupt):
+        if not isinstance(exc, Exception):
             raise
         raise ToolError(
             "The replacement HID helper failed. The previous service was restored."
@@ -2265,7 +2265,10 @@ def command_update(args: argparse.Namespace) -> None:
         installed = subprocess.run(
             [executable, "--version"], capture_output=True, check=False, text=True
         )
-        if installed.returncode != 0 or not installed.stdout.rstrip().endswith(release_version):
+        if (
+            installed.returncode != 0
+            or installed.stdout.strip() != f"tinyTouch CLI {release_version}"
+        ):
             raise ToolError("The installed CLI version does not match the selected release.")
         command = [
             executable,
@@ -2276,7 +2279,13 @@ def command_update(args: argparse.Namespace) -> None:
         ]
         if args.port:
             command.extend(["--port", args.port])
-        os.execv(executable, command)
+        try:
+            os.execv(executable, command)
+        except OSError as exc:
+            raise ToolError(
+                "The CLI was installed, but the update could not restart. "
+                "Run 'tinytouch update' again. The firmware was not changed."
+            ) from exc
 
     command_upgrade_helper(args)
 

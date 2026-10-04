@@ -123,5 +123,80 @@ class LaunchAgentLifecycleTests(unittest.TestCase):
         self.assertEqual(payload["ProgramArguments"][0], str(executable))
 
 
+    def test_system_exit_during_replacement_restores_previous_helper_and_files(self):
+        self.loaded.return_value = True
+        with (
+            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+            mock.patch.object(cli, "unload_helper"),
+            mock.patch.object(cli, "load_helper", side_effect=[SystemExit(2), None]) as load,
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                cli.install_helper()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(self.agent.read_bytes(), self.previous)
+        self.assertEqual(load.call_count, 2)
+        self.assertFalse(cli._helper_suppressed)
+
+    def test_failed_fresh_install_removes_its_agent_and_restores_suppression(self):
+        self.agent.unlink()
+        self.loaded.return_value = False
+        cli._helper_suppressed = True
+        with (
+            mock.patch.object(cli, "ensure_helper_environment", return_value=Path("/new/cli")),
+            mock.patch.object(cli, "unload_helper"),
+            mock.patch.object(cli, "load_helper", side_effect=cli.ToolError("bootstrap failed")),
+        ):
+            with self.assertRaisesRegex(cli.ToolError, "previous service was restored"):
+                cli.install_helper()
+        self.assertFalse(self.agent.exists())
+        self.assertTrue(cli._helper_suppressed)
+
+
+class UpdateRestartTests(unittest.TestCase):
+    def setUp(self):
+        self.args = SimpleNamespace(port="/dev/cu.selected", firmware_only=False)
+        self.version = "9.9.9"
+        self.enterContext(mock.patch.object(cli, "update_release", return_value=(
+            "https://release", {"version": self.version},
+        )))
+        self.enterContext(mock.patch.object(cli, "download", return_value=b"installer"))
+        self.enterContext(mock.patch.object(cli, "say"))
+        self.enterContext(mock.patch.object(cli.shutil, "which", return_value="/bin/tinytouch"))
+        self.process = self.enterContext(mock.patch.object(cli.subprocess, "run"))
+        self.exec = self.enterContext(mock.patch.object(cli.os, "execv"))
+        self.ota = self.enterContext(mock.patch.object(cli, "stage_ota"))
+        self.upgrade = self.enterContext(mock.patch.object(cli, "command_upgrade_helper"))
+
+    def results(self, stdout):
+        self.process.side_effect = [
+            SimpleNamespace(returncode=0),
+            SimpleNamespace(returncode=0, stdout=stdout),
+        ]
+
+    def test_version_suffix_match_cannot_restart_the_wrong_release(self):
+        self.results("tinyTouch CLI 19.9.9\n")
+        with self.assertRaisesRegex(cli.ToolError, "does not match"):
+            cli.command_update(self.args)
+        self.exec.assert_not_called()
+        self.ota.assert_not_called()
+
+    def test_failed_exec_reports_retry_and_does_not_start_firmware_upload(self):
+        self.results(f"tinyTouch CLI {self.version}\n")
+        self.exec.side_effect = PermissionError("not executable")
+        with self.assertRaisesRegex(cli.ToolError, "Run 'tinytouch update' again"):
+            cli.command_update(self.args)
+        self.assertEqual(self.exec.call_args.args[1][-2:], ["--port", self.args.port])
+        self.ota.assert_not_called()
+        self.upgrade.assert_not_called()
+
+    def test_failed_installer_does_not_restart_or_touch_firmware(self):
+        self.process.return_value = SimpleNamespace(returncode=1)
+        with self.assertRaisesRegex(cli.ToolError, "firmware was not changed"):
+            cli.command_update(self.args)
+        self.exec.assert_not_called()
+        self.ota.assert_not_called()
+        self.upgrade.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
