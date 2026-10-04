@@ -50,7 +50,9 @@ SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
-STARTUP_STATUS_TIMEOUT_SECONDS = 2.0
+# STATUS includes three sensor probes and two UART recovery attempts, each with
+# bounded mutex and transport waits. Let that command finish before reopening.
+STARTUP_STATUS_TIMEOUT_SECONDS = 30.0
 KEYCHAIN_RETRY_SECONDS = 0.5
 MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
@@ -883,6 +885,7 @@ def run_manager() -> None:
 def _manage_workers(workers: dict[str, Worker]) -> None:
     failures: dict[str, int] = {}
     retry_after: dict[str, float] = {}
+    previous_endpoints: dict[str, DeviceEndpoint] = {}
     backoff = BackoffPolicy(initial=0.25, maximum=MAX_WORKER_RETRY_SECONDS)
     lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
     active_lease_nonce: str | None = None
@@ -906,7 +909,8 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
         now = time.monotonic()
         lease = lease_observer.active()
         if lease is not None:
-            transition(ManagerPhase.DRAINING, "foreground_lease")
+            if workers:
+                transition(ManagerPhase.DRAINING, "foreground_lease")
             for worker in workers.values():
                 worker.stop()
             for device_id, worker in list(workers.items()):
@@ -914,32 +918,42 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
                     worker.thread.join()
                     del workers[device_id]
             if not workers:
-                lease_observer.acknowledge(lease)
-                transition(ManagerPhase.SUSPENDED, "workers_drained")
                 if active_lease_nonce != lease.nonce:
+                    lease_observer.acknowledge(lease)
                     diagnostic("manager.suspended", owner_pid=lease.pid)
                     active_lease_nonce = lease.nonce
+                transition(ManagerPhase.SUSPENDED, "workers_drained")
             time.sleep(0.05)
             continue
         if active_lease_nonce is not None:
             diagnostic("manager.resumed")
             active_lease_nonce = None
+            # Foreground commands may have repaired credentials or changed mode.
+            failures.clear()
+            retry_after.clear()
         transition(ManagerPhase.RUNNING, "lease_released")
 
         endpoints = {endpoint.device_id: endpoint for endpoint in device_endpoints()}
+        for device_id, endpoint in endpoints.items():
+            if endpoint != previous_endpoints.get(device_id):
+                # A new USB endpoint can recover before the old retry is due.
+                failures.pop(device_id, None)
+                retry_after.pop(device_id, None)
+        previous_endpoints = endpoints
         for device_id in failures.keys() | retry_after.keys():
             if device_id not in endpoints and device_id not in workers:
                 failures.pop(device_id, None)
                 retry_after.pop(device_id, None)
         for device_id, worker in list(workers.items()):
             current = endpoints.get(device_id)
-            if current is None or current.port != worker.endpoint.port:
+            if current != worker.endpoint:
                 worker.stop()
             if worker.thread.is_alive():
                 continue
             worker.thread.join()
             del workers[device_id]
             if worker.planned_stop:
+                failures.pop(device_id, None)
                 retry_after[device_id] = now
                 continue
             if worker.started_at is not None and now - worker.started_at >= 30:

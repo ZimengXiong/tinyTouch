@@ -53,7 +53,7 @@ class Connection:
 
     def read(self, size):
         self.reads += 1
-        if self.reads > 100:
+        if self.reads > 200:
             raise AssertionError("The worker did not finish within the test window.")
         self.clock.now += 0.2
         if not self.chunks:
@@ -149,11 +149,8 @@ class StartupRecoveryTests(unittest.TestCase):
         self.assertFalse(any(key))
 
     def test_probe_keeps_oversized_frame_quarantine(self):
-        connection = Connection(Clock(), [b"OK STATUS protocol=6\n12345"])
-        decoder = helper.SerialFrameDecoder(4)
-        # The STATUS line must fit before reducing the limit for its trailing data.
-        decoder.maximum = helper.MAX_SERIAL_LINE_BYTES
-        connection.chunks = deque([b"OK STATUS protocol=6\n" + b"x" * 2049])
+        connection = Connection(Clock(), [b"OK STATUS protocol=6\n" + b"x" * 2049])
+        decoder = helper.SerialFrameDecoder(helper.MAX_SERIAL_LINE_BYTES)
         with mock.patch.object(helper.time, "monotonic", connection.clock.monotonic):
             self.assertEqual(
                 helper.require_startup_status(connection, DEVICE_ID, PORT, decoder=decoder), []
@@ -162,6 +159,14 @@ class StartupRecoveryTests(unittest.TestCase):
         for chunk in connection.chunks:
             decoder.feed(chunk)
         self.assertEqual(decoder.feed(event_frame() + event_frame()), [event_frame().rstrip(b"\n")])
+
+    def test_slow_sensor_status_is_allowed_to_finish_without_reopening(self):
+        connection = Connection(Clock(), [b""] * 60 + [b"OK STATUS sensor=ready\n", event_frame()])
+        with serving(connection):
+            helper.serve_port(PORT, once=True, device_id=DEVICE_ID)
+        self.assertGreater(connection.clock.now, 12)
+        self.assertEqual(connection.written[0], b"STATUS\n")
+        self.assertTrue(connection.written[1].startswith(b"PW "))
 
 
 class WatchdogRecoveryTests(unittest.TestCase):
@@ -316,6 +321,161 @@ class PseudoTerminalRecoveryTests(unittest.TestCase):
                 thread.join(1)
             os.close(master)
             os.close(slave)
+
+
+class EndManager(Exception):
+    """Stop a deterministic manager scenario after its final scan."""
+
+
+class ManagedWorker:
+    def __init__(self, endpoint, *, finish_on_stop=True):
+        self.endpoint = endpoint
+        self.error = None
+        self.started_at = 0.0
+        self.planned_stop = False
+        self.alive = True
+        self.finish_on_stop = finish_on_stop
+        self.thread = mock.Mock()
+        self.thread.is_alive.side_effect = lambda: self.alive
+
+    def start(self):
+        pass
+
+    def stop(self):
+        self.planned_stop = True
+        if self.finish_on_stop:
+            self.alive = False
+
+
+class ManagerRecoveryTests(unittest.TestCase):
+    @contextmanager
+    def manager(self, endpoints):
+        clock = Clock()
+        workers = []
+
+        def create(endpoint):
+            worker = ManagedWorker(endpoint)
+            workers.append(worker)
+            return worker
+
+        def sleep(delay):
+            clock.now += delay
+
+        with (
+            mock.patch.object(helper, "Worker", side_effect=create),
+            mock.patch.object(helper, "device_endpoints", side_effect=endpoints),
+            mock.patch.object(helper.LeaseObserver, "active", return_value=None),
+            mock.patch.object(helper, "credentials_exist", return_value=True),
+            mock.patch.object(helper.time, "monotonic", clock.monotonic),
+            mock.patch.object(helper.time, "sleep", side_effect=sleep),
+            mock.patch.object(helper, "diagnostic"),
+        ):
+            yield workers
+
+    def test_port_or_location_change_replaces_worker_for_same_identity(self):
+        old = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        for new in (
+            helper.DeviceEndpoint(DEVICE_ID, "/dev/cu.renumbered", "1-1"),
+            helper.DeviceEndpoint(DEVICE_ID, PORT, "2-3"),
+        ):
+            with self.subTest(new=new), self.manager([[old], [new], EndManager()]) as workers:
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+            self.assertEqual([worker.endpoint for worker in workers], [old, new])
+            self.assertTrue(workers[0].planned_stop)
+            workers[0].thread.join.assert_called_once()
+
+    def test_path_change_does_not_inherit_failed_path_backoff(self):
+        old = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        new = helper.DeviceEndpoint(DEVICE_ID, "/dev/cu.renumbered", "2-3")
+        failed = ManagedWorker(old)
+        failed.alive = False
+        failed.error = OSError("disconnected")
+        with self.manager([[old], [new], EndManager()]) as workers:
+            with self.assertRaises(EndManager):
+                helper._manage_workers({DEVICE_ID: failed})
+        self.assertEqual([worker.endpoint for worker in workers], [new])
+
+    def test_suspend_acknowledges_only_after_worker_exits_and_stays_quiet(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        worker = ManagedWorker(endpoint, finish_on_stop=False)
+        lease = mock.Mock(nonce="a" * 32, pid=123)
+        calls = 0
+
+        def active():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                worker.alive = False
+            if calls == 5:
+                raise EndManager()
+            return lease
+
+        def acknowledge(record):
+            self.assertIs(record, lease)
+            self.assertFalse(worker.alive)
+            worker.thread.join.assert_called_once()
+
+        with (
+            mock.patch.object(helper.LeaseObserver, "active", side_effect=active),
+            mock.patch.object(helper.LeaseObserver, "acknowledge", side_effect=acknowledge) as ack,
+            mock.patch.object(helper, "device_endpoints") as discovery,
+            mock.patch.object(helper.time, "sleep"),
+            mock.patch.object(helper, "diagnostic") as log,
+        ):
+            with self.assertRaises(EndManager):
+                helper._manage_workers({DEVICE_ID: worker})
+        ack.assert_called_once_with(lease)
+        discovery.assert_not_called()
+        transitions = [call.kwargs["current"] for call in log.call_args_list if call.args[0] == "manager.transition"]
+        self.assertEqual(transitions, ["running", "draining", "suspended"])
+
+    def test_foreground_repair_retries_credentials_as_soon_as_lease_ends(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        lease = mock.Mock(nonce="a" * 32, pid=123)
+        with self.manager([[endpoint], [endpoint], EndManager()]) as workers:
+            with (
+                mock.patch.object(helper.LeaseObserver, "active", side_effect=[None, lease, None, None]),
+                mock.patch.object(helper.LeaseObserver, "acknowledge"),
+                mock.patch.object(helper, "credentials_exist", side_effect=[False, True]) as credentials,
+            ):
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+        self.assertEqual(credentials.call_count, 2)
+        self.assertEqual([worker.endpoint for worker in workers], [endpoint])
+
+    def test_missing_credentials_are_rechecked_without_process_restart(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        scans = [[endpoint]] * 8 + [EndManager()]
+        with self.manager(scans) as workers:
+            with mock.patch.object(helper, "credentials_exist", side_effect=[False, True]) as credentials:
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+        self.assertEqual(credentials.call_count, 2)
+        self.assertEqual([worker.endpoint for worker in workers], [endpoint])
+
+    def test_replacement_waits_for_old_worker_to_release_transport(self):
+        old = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        new = helper.DeviceEndpoint(DEVICE_ID, "/dev/cu.renumbered", "2-3")
+        worker = ManagedWorker(old, finish_on_stop=False)
+        scans = 0
+        with self.manager([]) as replacements:
+            def discover():
+                nonlocal scans
+                scans += 1
+                if scans == 2:
+                    self.assertTrue(worker.planned_stop)
+                    self.assertEqual(replacements, [])
+                    worker.alive = False
+                if scans == 3:
+                    raise EndManager()
+                return [new]
+
+            with mock.patch.object(helper, "device_endpoints", side_effect=discover):
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({DEVICE_ID: worker})
+        worker.thread.join.assert_called_once()
+        self.assertEqual([item.endpoint for item in replacements], [new])
 
 
 if __name__ == "__main__":
