@@ -925,8 +925,9 @@ def exchange_serial(
 ) -> list[str]:
     lines: list[str] = []
     touch_prompted = False
+    # Serial.write has a deadline; the device reply confirms delivery. Avoid
+    # flush(), which waits in the macOS driver without a timeout.
     device.write((command + "\n").encode("ascii"))
-    device.flush()
     deadline = time.monotonic() + timeout
     frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
     animated_wait = bool(wait_message and sys.stdout.isatty())
@@ -2131,7 +2132,6 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
                     command = f"OTA WRITE {token} {start} {payload}"
                     device.write((command + "\n").encode("ascii"))
                     commands.append(command)
-                device.flush()
                 for command in commands:
                     lines = serial_response(device, command)
                     offset = response_next(lines, "OTA")
@@ -2156,7 +2156,6 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
 
 def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
     device.write((command + "\n").encode("ascii"))
-    device.flush()
     return serial_response(device, command, timeout=timeout)
 
 
