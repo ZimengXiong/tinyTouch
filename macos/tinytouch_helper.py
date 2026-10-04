@@ -564,23 +564,42 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     return lines, remainder
 
 
-def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> None:
-    """Run the probe that initializes HID after a USB reconnect."""
-    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+def require_startup_status(
+    ser: serial.Serial,
+    device_id: str,
+    port: str,
+    *,
+    decoder: SerialFrameDecoder | None = None,
+    stop_event: threading.Event | None = None,
+) -> list[bytes] | None:
+    """Probe HID readiness and retain events; return None when draining."""
+    decoder = decoder if decoder is not None else SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+    pending: deque[bytes] = deque(maxlen=MAX_SEEN_NONCES)
+    if stop_event is not None and stop_event.is_set():
+        return None
     ser.write(b"STATUS\n")
     ser.flush()
     deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return None
         chunk = read_available(ser)
         if not chunk:
             continue
+        status_received = False
         for raw in decoder.feed(chunk):
             try:
                 line = raw.decode("ascii").strip()
             except UnicodeDecodeError:
                 continue
             if line.startswith("OK STATUS "):
-                return
+                status_received = True
+            else:
+                line = resynchronize_event(line, device_id)
+                if line.startswith(("EV ", "EV2 ")):
+                    pending.append(line.encode("ascii"))
+        if status_received:
+            return list(pending)
     diagnostic("worker.startup_status_failed", level="warning", device_id=device_id, port=port)
     raise serial.SerialException(f'tinyTouch did not respond to STATUS on {port}.')
 
@@ -604,7 +623,12 @@ def serve_port(
         state = load_state(device_id)
         settings = load_settings(device_id)
         with open_serial(port) as ser:
-            require_startup_status(ser, device_id, port)
+            pending_frames = require_startup_status(
+                ser, device_id, port, decoder=decoder, stop_event=stop_event
+            )
+            if pending_frames is None or (stop_event is not None and stop_event.is_set()):
+                return
+            last_received = time.monotonic()
             if device_id not in REATTACHED_DEVICES:
                 # A new login creates a new helper process. Ask the firmware to
                 # re-enumerate once so macOS rebuilds stale CDC and HID endpoints.
@@ -618,8 +642,8 @@ def serve_port(
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return
-                chunk = read_available(ser)
-                if not chunk:
+                chunk = b"" if pending_frames else read_available(ser)
+                if not chunk and not pending_frames:
                     # pyserial can leave a descriptor open after macOS removes
                     # the USB device during sleep.  In that state readline()
                     # simply times out forever, so the manager never gets a
@@ -650,7 +674,9 @@ def serve_port(
                     continue
                 last_received = time.monotonic()
                 heartbeat_sent_at = None
-                for raw in decoder.feed(chunk):
+                frames = pending_frames or decoder.feed(chunk)
+                pending_frames = []
+                for raw in frames:
                     try:
                         line = raw.decode("ascii").strip()
                     except UnicodeDecodeError:
