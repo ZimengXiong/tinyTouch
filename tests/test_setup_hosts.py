@@ -210,6 +210,21 @@ class SetupFlowTests(unittest.TestCase):
         self.remove.assert_not_called()
         self.configure.assert_not_called()
 
+    def test_piv_pairing_uses_the_resumed_port(self):
+        self.args.mode = "piv"
+        piv = {**DEVICE, "mode": "piv", "piv": "ready"}
+        self.status.side_effect = [DEVICE, piv]
+        self.fresh.return_value = piv
+        with (
+            mock.patch.object(cli, "paired_piv_identities", return_value=[]),
+            mock.patch.object(cli, "command_pair") as pair,
+        ):
+            cli.command_setup(self.args)
+        self.assertEqual(pair.call_args.args[0].port, "/dev/cu.TT-NEW")
+        self.assertIsNone(self.args.port)
+        self.configure.assert_not_called()
+        self.install.assert_not_called()
+
 
 class ModeFlowTests(unittest.TestCase):
     def setUp(self):

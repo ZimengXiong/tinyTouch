@@ -1753,8 +1753,10 @@ def command_setup(args: argparse.Namespace) -> None:
         if not helper_loaded():
             raise ToolError("HID setup is incomplete. The helper is not loaded.")
     if mode == "piv" and not args.no_pair:
+        pair_args = argparse.Namespace(**vars(args))
+        pair_args.port = port
         command_pair(
-            args,
+            pair_args,
             identities=created_piv_identities,
             separate_identity_list=created_piv_identities is not None,
         )
