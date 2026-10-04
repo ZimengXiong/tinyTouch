@@ -27,8 +27,10 @@ class PivTouchFirmwareTests(unittest.TestCase):
                 header.parent.mkdir(parents=True, exist_ok=True)
                 header.write_text('#include "usb_stubs.h"\n')
             executable = build / "usb_test"
+            flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if os.environ.get("TINYTOUCH_TEST_SANITIZERS") else []
             result = subprocess.run([
                 os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                *flags,
                 "-I", str(build), "-I", str(ROOT / "tests/host"),
                 str(ROOT / "tests/host" / filename), "-o", str(executable),
             ], capture_output=True, text=True)

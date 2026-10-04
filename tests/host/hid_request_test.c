@@ -51,7 +51,7 @@ static int xQueueReceive(void *queue, void *out, uint32_t timeout) {
     ticks += timeout; return 0;
   }
   const char *kind = host_count > 1 && (v2_reply || (events == 2 && late_v2_reply)) ? "PW2" : "PW";
-  sprintf(out, "%s %s fixture", kind, invalid_replies > 0 ? "invalid" : "valid");
+  snprintf(out, 640, "%s %s fixture", kind, invalid_replies > 0 ? "invalid" : "valid");
   if (invalid_replies > 0) invalid_replies--;
   ticks++;
   return pdTRUE;

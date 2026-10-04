@@ -196,12 +196,13 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
         const uint8_t fail[] = {0x6f, 0x00};
         send_ccid(0x80, slot, seq, 0x00, 0x00, fail, sizeof(fail));
       } else {
-        if (!send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len)) {
+        bool queued = send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len);
+        if (!queued) {
           taskENTER_CRITICAL(&policy_lock);
           login_response_pending = false;
           taskEXIT_CRITICAL(&policy_lock);
         }
-        if (len >= 2 && msg[11] == 0xa4 && resp_len >= 2 &&
+        if (queued && len >= 2 && msg[11] == 0xa4 && resp_len >= 2 &&
             tx_buf[10 + resp_len - 2] == 0x90 && tx_buf[10 + resp_len - 1] == 0x00) {
           taskENTER_CRITICAL(&policy_lock);
           piv_selected = true;

@@ -1,4 +1,5 @@
 """Run the actual firmware hot paths against deterministic UART/USB clocks."""
+import os
 import shutil
 import subprocess
 import tempfile
@@ -22,8 +23,9 @@ class FirmwareLatencyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / "test.c").write_text(source)
+            flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if os.environ.get("TINYTOUCH_TEST_SANITIZERS") else []
             built = subprocess.run(
-                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", str(path / "test.c"),
+                [os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror", *flags, str(path / "test.c"),
                  "-o", str(path / "test")], capture_output=True, text=True,
             )
             self.assertEqual(built.returncode, 0, built.stderr)

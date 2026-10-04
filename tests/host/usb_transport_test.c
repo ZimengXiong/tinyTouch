@@ -101,5 +101,40 @@ int main(void) {
     if (!rejected) ccid_xfer_cb(0, CCID_EP_IN, 1, 0);
     assert(!in_busy && !login_response_pending && touch_until == lease);
   }
+
+  // Selection is not discoverable until its response is queued to the host.
+  start_transport();
+  uint8_t select[] = {0x6f, 4,0,0,0, 0,9,0,0,0, 0,0xa4,4,0};
+  transfer_queued = false;
+  handle_message(select, sizeof(select));
+  assert(!piv_selected && !login_response_pending);
+  transfer_queued = true;
+  handle_message(select, sizeof(select));
+  assert(piv_selected && in_busy);
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+
+  // Maximum-size messages fill the assembly buffer exactly. Oversized and
+  // truncated frames produce length errors without entering the APDU handler.
+  start_transport();
+  uint8_t maximum[CCID_BUF_SIZE] = {0x6f, 0,0,0,0, 0,10,0,0,0};
+  put_le32(maximum + 1, sizeof(maximum) - 10);
+  old_apdus = apdus;
+  for (size_t offset = 0; offset < sizeof(maximum); offset += 64) {
+    receive_packet(maximum + offset, 64);
+    assert(in_busy == (offset + 64 == sizeof(maximum)));
+  }
+  assert(apdus == old_apdus + 1);
+  ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 12);
+  for (int oversized = 0; oversized <= 1; oversized++) {
+    old_apdus = apdus;
+    put_le32(maximum + 1, oversized ? UINT32_MAX : 100);
+    receive_packet(maximum, 64);
+    if (!oversized) receive_packet(maximum + 64, 6);
+    assert(apdus == old_apdus && in_busy && tx_buf[7] == 0x42 && tx_buf[8] == 1);
+    ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 10);
+    receive_packet(status, sizeof(status));
+    assert(in_busy && tx_buf[7] == 0 && tx_buf[6] == 7);
+    ccid_xfer_cb(0, CCID_EP_IN, XFER_RESULT_SUCCESS, 10);
+  }
   return 0;
 }
