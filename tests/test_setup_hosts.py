@@ -146,7 +146,7 @@ class SetupFlowTests(unittest.TestCase):
         self.status.side_effect = [{**DEVICE, "mode": "piv"}, DEVICE]
         cli.command_setup(self.args)
         self.assertEqual(self.events, ["configure", "SET MODE HID"])
-        self.remove.assert_called_once()
+        self.remove.assert_not_called()
         self.configure.assert_called_once()
         self.assertEqual(self.session.call_count, 2)
         self.reconnect.assert_called_once_with(PORT)
@@ -195,6 +195,20 @@ class SetupFlowTests(unittest.TestCase):
         self.command.assert_not_called()
         self.reconnect.assert_not_called()
         self.install.assert_called_once()
+
+    def test_failed_hid_reconfiguration_preserves_the_installed_helper(self):
+        self.configure.side_effect = cli.ToolError("Password entry cancelled")
+        with self.assertRaisesRegex(cli.ToolError, "cancelled"):
+            cli.command_setup(self.args)
+        self.remove.assert_not_called()
+        self.install.assert_not_called()
+
+    def test_unavailable_sensor_does_not_remove_a_working_hid_helper(self):
+        self.status.return_value = {**DEVICE, "sensor": "unavailable"}
+        with self.assertRaises(cli.ToolError):
+            cli.command_setup(self.args)
+        self.remove.assert_not_called()
+        self.configure.assert_not_called()
 
 
 class ModeFlowTests(unittest.TestCase):
@@ -317,6 +331,18 @@ class HostRegistrationTests(unittest.TestCase):
         cli.configure_hid(PORT, DEVICE)
         self.assertEqual(self.commands, [f"HOST ADD {IDENTIFIER} {KEY.hex()}"])
         self.save.assert_not_called()
+
+    def test_new_pairing_keys_differ_for_the_same_mac_and_device(self):
+        keys = []
+        for _ in range(2):
+            self.credentials.clear()
+            self.registered.clear()
+            cli.configure_hid(PORT, DEVICE)
+            key = bytes.fromhex(self.credentials[cli.PAIRING_SERVICE])
+            self.assertEqual(len(key), 32)
+            self.assertEqual(self.registered, {cli.host_id(key)})
+            keys.append(key)
+        self.assertNotEqual(keys[0], keys[1])
 
     def test_setup_repairs_an_invalid_saved_key(self):
         self.credentials[cli.PAIRING_SERVICE] = "invalid"

@@ -1361,9 +1361,7 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
             key = hid_pairing_key(saved_key)
             valid_saved_key = True
         except HidSetupIncompleteError:
-            key = hashlib.sha256(
-                f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
-            ).digest()
+            key = secrets.token_bytes(32)
             valid_saved_key = False
         identifier = host_id(key)
         registered, capacity = host_list(port)
@@ -1625,9 +1623,10 @@ def command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
-    # Setup starts from one known state. Remove the old HID service before
-    # opening the CDC port. Keep that port open through the entire setup.
-    remove_helper()
+    # HID reconfiguration pauses the helper through its foreground lease.
+    # Keep that service available if device validation or password entry fails.
+    if mode == "piv":
+        remove_helper()
     piv_rescan_needed = False
     created_piv_identities = None
     previous_piv_identities: set[str] = set()
