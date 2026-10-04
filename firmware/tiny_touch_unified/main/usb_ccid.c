@@ -50,6 +50,9 @@ static SemaphoreHandle_t console_mutex;
 // Running on the USB task prevents descriptor and CCID transfer races.
 static void reconnect_on_usb_task(void *argument) {
   bool expose = *(bool *)argument;
+  // tud_disconnect() does not deliver an unmount callback. Cancel HID and
+  // helper work before explicitly dropping this connection.
+  touch_pin_hid_usb_detached();
   tud_disconnect();
   vTaskDelay(pdMS_TO_TICKS(250));
   tiny_touch_set_piv_descriptor(expose);
@@ -217,6 +220,7 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
 static void ccid_init(void) {}
 static void ccid_reset(uint8_t rhport) {
   (void)rhport;
+  touch_pin_hid_usb_detached();
   in_busy = false;
   in_zlp_pending = false;
   rx_length = 0;

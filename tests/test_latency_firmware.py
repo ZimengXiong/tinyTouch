@@ -35,7 +35,13 @@ class FirmwareLatencyTests(unittest.TestCase):
         self.run_harness("hid_latency_test.c", {
             "globals": section(source, "static SemaphoreHandle_t hid_signal;", "static uint32_t event_counter;"),
             "implementation": section(source, "static hid_transfer_t hid_transfer_status(", "static void bytes_to_hex("),
-            "callbacks": section(source, "void touch_pin_hid_usb_detached(", "bool touch_pin_hid_submit_response("),
+            "callbacks": section(source, "void touch_pin_hid_usb_attached(", "bool touch_pin_hid_submit_response("),
+        })
+
+    def test_helper_requests_end_when_usb_session_changes(self):
+        source = (MAIN / "touch_pin_hid.c").read_text()
+        self.run_harness("hid_request_test.c", {
+            "request": section(source, "static bool request_and_type_password(", "typedef enum {\n  AUTH_STATE_IDLE"),
         })
 
     def test_uart_framing_and_independent_result_feedback(self):
