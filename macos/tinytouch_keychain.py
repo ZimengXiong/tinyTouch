@@ -102,18 +102,6 @@ def _encoded(value: str) -> tuple[bytes, ctypes.Array]:
     return raw, ctypes.create_string_buffer(raw, len(raw) + 1)
 
 
-def _delete_with_security_tool(service: str, account: str) -> bool:
-    """Remove a legacy item whose old helper ACL blocks a replacement CLI."""
-    result = subprocess.run(
-        ["/usr/bin/security", "delete-generic-password", "-s", service, "-a", account],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def _find(service: str, account: str, *, include_secret: bool):
     service_raw, service_buffer = _encoded(service)
     account_raw, account_buffer = _encoded(account)
@@ -408,21 +396,22 @@ def authorize_executable(
 
 
 def set_password(service: str, account: str, value: str) -> None:
-    """Store a password using the current executable's default Keychain ACL.
+    """Update a saved password without replacing its item or access permissions.
 
-    Security.framework trusts the creating executable by default. A replacement
-    CLI or a separate helper must verify its own unattended access before use.
+    New items trust the creating executable. Existing items keep any permissions
+    granted during repair. Callers must repair denied access before updating.
     """
-    status, item, _, _ = _find(service, account, include_secret=False)
     value_raw, value_buffer = _encoded(value)
+    item = ctypes.c_void_p()
     try:
+        status, item, _, _ = _find(service, account, include_secret=False)
         if status == 0:
-            result = _SECURITY.SecKeychainItemDelete(item)
-            if result == -25293 and not _BACKGROUND_MODE:
-                if _delete_with_security_tool(service, account):
-                    result = 0
+            result = _SECURITY.SecKeychainItemModifyAttributesAndData(
+                item, None, len(value_raw), value_buffer
+            )
             if result != 0:
-                raise KeychainError("replace", result)
+                raise KeychainError("update", result)
+            return
         elif status != _NOT_FOUND:
             raise KeychainError("find", status)
         service_raw, service_buffer = _encoded(service)
@@ -438,6 +427,7 @@ def set_password(service: str, account: str, value: str) -> None:
             raise KeychainError("write", -1)
         _CORE_FOUNDATION.CFRelease(new_item)
     finally:
+        ctypes.memset(value_buffer, 0, ctypes.sizeof(value_buffer))
         if item:
             _CORE_FOUNDATION.CFRelease(item)
 
