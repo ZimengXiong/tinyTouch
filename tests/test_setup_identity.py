@@ -130,6 +130,7 @@ class SetupIdentityTests(unittest.TestCase):
 
         with (
             mock.patch.dict(cli.sys.modules, {"serial": serial}),
+            mock.patch.object(cli, "foreground_helper"),
             mock.patch.object(cli, "unload_helper", return_value=False),
             mock.patch.object(cli, "current_port", return_value=NEW_PORT),
             mock.patch.object(cli, "exchange_serial", return_value=["OK PING"]),
