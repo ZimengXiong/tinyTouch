@@ -1,6 +1,7 @@
 """Focused protocol-6 tests for the host state machine."""
 
 import base64
+from contextlib import nullcontext
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -1123,16 +1124,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertFalse(any("RESET" in command or "RECONNECT" in command for command in calls))
 
     def test_ota_staging_uses_inactive_slot_and_requires_power_cycle(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         writes = []
 
         class FakeSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1162,7 +1159,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(256)) * 2
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", FakeSerial),
+            mock.patch.object(cli, "_active_serial", FakeSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]) as command,
             mock.patch.object(cli, "unload_helper", return_value=False),
             mock.patch.object(cli, "say") as say,
@@ -1182,16 +1180,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("Verifying firmware...", output)
 
     def test_interrupted_ota_aborts_its_session(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         writes = []
 
         class InterruptedSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1218,7 +1212,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(64))
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", InterruptedSerial),
+            mock.patch.object(cli, "_active_serial", InterruptedSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]),
             mock.patch.object(cli, "unload_helper", return_value=False),
             self.assertRaises(KeyboardInterrupt),
@@ -1227,16 +1222,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertTrue(writes[-1].startswith("OTA ABORT "))
 
     def test_ota_writes_are_windowed(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         activity = []
 
         class WindowedSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1267,7 +1258,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(256)) * 40
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", WindowedSerial),
+            mock.patch.object(cli, "_active_serial", WindowedSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]),
             mock.patch.object(cli, "unload_helper", return_value=False),
             mock.patch.object(cli, "say"),

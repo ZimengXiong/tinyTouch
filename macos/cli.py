@@ -1922,61 +1922,57 @@ def response_next(lines: list[str], verb: str) -> int:
 
 
 def stage_ota(port: str, image: bytes, digest: str) -> None:
-    try:
-        import serial  # type: ignore
-    except ImportError as exc:
-        raise ToolError("The pyserial package is required for firmware updates.") from exc
-    # An interrupted older client may have left an incomplete upload active.
-    # Aborting is safe because committed firmware is already in another slot.
-    try:
-        serial_command(port, "OTA ABORT", timeout=2)
-    except (ToolError, SerialTimeout):
-        # Firmware before 0.1.1 does not support an unscoped abort.
-        pass
-    serial_command(
-        port,
-        "AUTH",
-        timeout=15,
-        touch_prompt="Touch the device with a registered finger to approve the firmware update.",
-    )
-    token = secrets.token_hex(16)
-    was_loaded = unload_helper()
-    try:
-        with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
+    with foreground_session(port) as session_port:
+        # Clear an incomplete upload from an interrupted client. Committed
+        # firmware remains in its separate OTA slot.
+        try:
+            serial_command(session_port, "OTA ABORT", timeout=2)
+        except ToolError:
+            # Firmware before 0.1.1 does not support an unscoped abort.
+            pass
+        serial_command(
+            session_port,
+            "AUTH",
+            timeout=15,
+            touch_prompt="Touch the device with a registered finger to approve the firmware update.",
+        )
+        token = secrets.token_hex(16)
+        device = _active_serial
+        previous_write_timeout = device.write_timeout
+        device.write_timeout = 5
+        try:
+            lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
+            offset = response_next(lines, "OTA")
+            say("Uploading firmware: 0%")
+            next_progress = 10
+            starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
+            for index in range(0, len(starts), OTA_WRITE_WINDOW):
+                commands = []
+                for start in starts[index:index + OTA_WRITE_WINDOW]:
+                    payload = base64.b64encode(
+                        image[start:start + OTA_CHUNK_SIZE]
+                    ).decode()
+                    command = f"OTA WRITE {token} {start} {payload}"
+                    device.write((command + "\n").encode("ascii"))
+                    commands.append(command)
+                device.flush()
+                for command in commands:
+                    lines = serial_response(device, command)
+                    offset = response_next(lines, "OTA")
+                progress = min(100, offset * 100 // len(image))
+                if progress >= next_progress:
+                    say(f"Uploading firmware: {progress}%")
+                    next_progress = progress + 10
+            say("Verifying firmware...")
+            commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
+        except BaseException:
             try:
-                lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
-                offset = response_next(lines, "OTA")
-                say("Uploading firmware: 0%")
-                next_progress = 10
-                starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
-                for index in range(0, len(starts), OTA_WRITE_WINDOW):
-                    commands = []
-                    for start in starts[index:index + OTA_WRITE_WINDOW]:
-                        payload = base64.b64encode(
-                            image[start:start + OTA_CHUNK_SIZE]
-                        ).decode()
-                        command = f"OTA WRITE {token} {start} {payload}"
-                        device.write((command + "\n").encode("ascii"))
-                        commands.append(command)
-                    device.flush()
-                    for command in commands:
-                        lines = serial_response(device, command)
-                        offset = response_next(lines, "OTA")
-                    progress = min(100, offset * 100 // len(image))
-                    if progress >= next_progress:
-                        say(f"Uploading firmware: {progress}%")
-                        next_progress = progress + 10
-                say("Verifying firmware...")
-                commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
-            except BaseException:
-                try:
-                    serial_exchange(device, f"OTA ABORT {token}", timeout=2)
-                except (ToolError, SerialTimeout):
-                    pass
-                raise
-    finally:
-        if was_loaded:
-            load_helper()
+                serial_exchange(device, f"OTA ABORT {token}", timeout=2)
+            except Exception:
+                pass
+            raise
+        finally:
+            device.write_timeout = previous_write_timeout
     line = next((item for item in commit if item.startswith("OK OTA STAGED")), "")
     if "power_cycle=required" not in line:
         raise ToolError("The firmware did not confirm that the OTA slot was staged safely.")

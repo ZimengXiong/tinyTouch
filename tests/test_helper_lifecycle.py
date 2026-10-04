@@ -205,6 +205,60 @@ class LeaseHandoffTests(ForegroundFixture, unittest.TestCase):
             first.release()
 
 
+class OtaSessionTests(ForegroundFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.device.write_timeout = 2
+        self.enterContext(mock.patch.object(cli, "say"))
+        self.stream = self.enterContext(mock.patch.object(
+            cli, "serial_exchange", side_effect=self.stream_response,
+        ))
+        self.enterContext(mock.patch.object(
+            cli, "serial_response", return_value=["OK OTA WRITE next=2"],
+        ))
+
+    def stream_response(self, device, command, **kwargs):
+        self.assertIs(device, self.device)
+        if command.startswith("OTA BEGIN"):
+            return ["OK OTA BEGIN next=0"]
+        return ["OK OTA STAGED power_cycle=required"]
+
+    def test_abort_auth_and_upload_share_one_verified_usb_session(self):
+        cli.stage_ota(self.port, b"fw", "a" * 64)
+        self.assertEqual(
+            [call.args[1] for call in self.exchange.call_args_list],
+            ["PING", "OTA ABORT", "AUTH"],
+        )
+        self.assertTrue(all(call.args[0] is self.device
+                            for call in self.exchange.call_args_list))
+        self.open.assert_called_once()
+        self.unload.assert_called_once()
+        self.device.close.assert_called_once()
+        self.load.assert_called_once()
+        self.assertEqual(self.device.write_timeout, 2)
+        self.assertFalse(self.suspend.exists())
+
+    def test_failed_abort_preserves_the_upload_error_and_releases_usb(self):
+        self.device.write.side_effect = KeyboardInterrupt()
+        self.stream.side_effect = [["OK OTA BEGIN next=0"], OSError("USB disconnected")]
+        with self.assertRaises(KeyboardInterrupt):
+            cli.stage_ota(self.port, b"fw", "a" * 64)
+        self.assertTrue(self.stream.call_args.args[1].startswith("OTA ABORT "))
+        self.device.close.assert_called_once()
+        self.load.assert_called_once()
+        self.assertEqual(self.device.write_timeout, 2)
+        self.assertIsNone(cli._active_serial)
+
+    def test_failed_authorization_never_starts_an_upload(self):
+        self.exchange.side_effect = [["PONG 6"], ["OK OTA ABORT"], cli.ToolError("denied")]
+        with self.assertRaisesRegex(cli.ToolError, "denied"):
+            cli.stage_ota(self.port, b"fw", "a" * 64)
+        self.stream.assert_not_called()
+        self.device.write.assert_not_called()
+        self.device.close.assert_called_once()
+        self.load.assert_called_once()
+
+
 class CrashRecoveryTests(unittest.TestCase):
     def test_killed_foreground_process_leaves_helper_registered_and_lease_recoverable(self):
         with tempfile.TemporaryDirectory() as directory:
