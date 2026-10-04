@@ -20,6 +20,10 @@ release. To test development firmware, select Development firmware in the web
 flasher. A dev CLI also uses the stable update channel.
 
 Do not rename the stable format without a migration plan for installed clients.
+
+Save release notes in `release/notes/VERSION.md`, for example
+`release/notes/0.1.35.md`. Publishing uses that file when it exists and generates
+GitHub notes otherwise.
 CLI compatibility tests check that the repository version and future versions
 with wider numeric components are accepted by the updater. The old
 `0.1.25-prod` updater requires the legacy `-prod` suffix and needs a one-time

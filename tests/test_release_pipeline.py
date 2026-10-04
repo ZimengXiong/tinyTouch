@@ -103,6 +103,35 @@ class ReleasePipelineTests(unittest.TestCase):
                     self.assertNotIn("--prerelease", flags)
                     self.assertNotIn("--latest=false", flags)
 
+    def test_publish_uses_written_notes_and_keeps_a_generated_fallback(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        publish = workflow.split("      - name: Publish release\n", 1)[1]
+        script = textwrap.dedent(publish.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            notes = root / "release/notes/0.1.35.md"
+            notes.parent.mkdir(parents=True)
+            for written in (True, False):
+                with self.subTest(written=written):
+                    if written:
+                        notes.write_text("- fixed helper reconnects\n")
+                    else:
+                        notes.unlink()
+                    result = subprocess.run(
+                        ["bash", "-e", "-c", 'gh() { printf "%s\\n" "$@"; }\n' + script],
+                        cwd=root,
+                        env={**os.environ, "RELEASE_TAG": "v0.1.35", "RELEASE_PRERELEASE": "false"},
+                        capture_output=True, text=True, check=True,
+                    )
+                    flags = result.stdout.splitlines()
+                    if written:
+                        index = flags.index("--notes-file")
+                        self.assertEqual(flags[index + 1], "release/notes/0.1.35.md")
+                        self.assertNotIn("--generate-notes", flags)
+                    else:
+                        self.assertIn("--generate-notes", flags)
+                        self.assertNotIn("--notes-file", flags)
+
     def make_app(self, path: Path, kind: str) -> None:
         payload = bytearray(512)
         offset = 32

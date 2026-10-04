@@ -1,6 +1,7 @@
 """Focused protocol-6 tests for the host state machine."""
 
 import base64
+from contextlib import nullcontext
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -20,6 +21,21 @@ loader.exec_module(cli)
 
 
 class ProtocolSixTests(unittest.TestCase):
+    def setUp(self):
+        service_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # Helper installation now acquires a lease. Keep every service path in
+        # the fixture, including paths computed when the CLI module was imported.
+        for name, value in (
+            ("LAUNCH_AGENT", service_root / "agent.plist"),
+            ("SUPPORT_DIR", service_root / "support"),
+            ("LOG_DIR", service_root / "logs"),
+            ("HELPER_SUSPEND", service_root / "suspend"),
+            ("HELPER_SUSPEND_ACK", service_root / "ack"),
+            ("_helper_suppressed", False),
+            ("_active_serial", None),
+        ):
+            self.enterContext(mock.patch.object(cli, name, value))
+
     def test_chime_is_nonblocking_and_does_not_overlap(self):
         process = mock.Mock()
         process.poll.return_value = None
@@ -759,13 +775,11 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertEqual(result["hosts"], "1")
 
     def test_hid_add_is_live_and_does_not_provision_piv(self):
-        computer = "test-mac"
-        key = hashlib.sha256(
-            f"tinyTouch HID pairing|TT-1234|{computer}".encode("utf-8")
-        ).digest()
+        key = bytes(range(32))
         commands = []
         identifier = cli.host_id(key)
         registered = set()
+        credentials = {}
 
         def exchange(_port, command, **_kwargs):
             commands.append(command)
@@ -781,15 +795,15 @@ class ProtocolSixTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "prepare_hid_password"),
-            mock.patch.object(cli, "keychain_get", return_value=None),
+            mock.patch.object(cli, "keychain_get", side_effect=lambda service, _account: credentials.get(service)),
             mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "keychain_exists", return_value=True),
-            mock.patch.object(cli, "keychain_set"),
-            mock.patch.object(cli, "password_for", return_value="test-password"),
+            mock.patch.object(cli, "keychain_set", side_effect=lambda service, _account, value: credentials.update({service: value})),
+            mock.patch.object(cli, "password_for", side_effect=lambda _account: credentials.update({cli.PASSWORD_SERVICE: "test-password"})),
             mock.patch.object(cli, "serial_command", side_effect=exchange),
             mock.patch.object(cli, "install_helper"),
             mock.patch.object(cli, "helper_loaded", return_value=True),
-            mock.patch.object(cli.platform, "node", return_value=computer),
+            mock.patch.object(cli.secrets, "token_bytes", return_value=key),
         ):
             cli.configure_hid("/dev/cu.TT-1234", {"mode": "piv", "hosts": "0"})
 
@@ -808,6 +822,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "require_macos"),
             mock.patch.object(cli, "choose_mode", return_value="piv"),
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
             mock.patch.object(cli, "status", return_value=device),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "sensor_ready"),
@@ -1053,6 +1068,7 @@ class ProtocolSixTests(unittest.TestCase):
         calls = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session") as session,
             mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "ask", return_value="y"),
@@ -1066,9 +1082,10 @@ class ProtocolSixTests(unittest.TestCase):
         ):
             cli.command_factory_reset(args)
         self.assertEqual(calls, ["RESET FACTORY"])
+        session.assert_called_once_with(args.port)
         output.assert_called_once_with("Factory reset complete.")
 
-    def test_factory_reset_unpairs_the_live_piv_identity_before_erasing_it(self):
+    def test_factory_reset_preserves_visible_smart_card_pairings(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234")
         identity = "A" * 40
         statuses = iter([
@@ -1078,10 +1095,11 @@ class ProtocolSixTests(unittest.TestCase):
         events = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session"),
             mock.patch.object(cli, "status", side_effect=lambda _port: next(statuses)),
             mock.patch.object(cli, "protocol6"),
             mock.patch.object(cli, "ask", return_value="y"),
-            mock.patch.object(cli, "unlock"),
+            mock.patch.object(cli, "unlock", side_effect=lambda *_a, **_k: events.append("unlock")),
             mock.patch.object(cli, "paired_piv_identities", return_value=[identity]),
             mock.patch.object(cli, "authorize_macos", side_effect=lambda: events.append("authorize")),
             mock.patch.object(cli, "run", side_effect=lambda command, **_kwargs: events.append(command)),
@@ -1092,15 +1110,16 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "say"),
         ):
             cli.command_factory_reset(args)
-        self.assertEqual(events[0], "authorize")
-        self.assertIn("unpair", events[1])
-        self.assertEqual(events[2], "reset")
+        self.assertEqual(events, ["unlock", "reset"])
 
     def test_mode_verifies_the_live_mode_without_reconnect_command(self):
         args = SimpleNamespace(port="/dev/cu.TT-1234", mode="hid")
         calls = []
         with (
             mock.patch.object(cli, "choose_port", return_value=args.port),
+            mock.patch.object(cli, "foreground_session"),
+            mock.patch.object(cli, "device_account", return_value="TT-1234"),
+            mock.patch.object(cli, "verify_hid_host"),
             mock.patch.object(cli, "status", side_effect=[
                 {"firmware": "unified", "protocol": "6", "mode": "piv", "sensor": "ready", "hosts": "1"},
                 {"firmware": "unified", "protocol": "6", "mode": "hid", "sensor": "ready", "hosts": "1"},
@@ -1111,6 +1130,7 @@ class ProtocolSixTests(unittest.TestCase):
             mock.patch.object(cli, "wait_for_reconnect", return_value=args.port),
             mock.patch.object(cli, "fresh_status", return_value={"mode": "hid"}),
             mock.patch.object(cli, "install_helper"),
+            mock.patch.object(cli, "helper_loaded", return_value=True),
             mock.patch.object(cli, "notify"),
         ):
             cli.command_mode(args)
@@ -1118,16 +1138,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertFalse(any("RESET" in command or "RECONNECT" in command for command in calls))
 
     def test_ota_staging_uses_inactive_slot_and_requires_power_cycle(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         writes = []
 
         class FakeSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1157,7 +1173,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(256)) * 2
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", FakeSerial),
+            mock.patch.object(cli, "_active_serial", FakeSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]) as command,
             mock.patch.object(cli, "unload_helper", return_value=False),
             mock.patch.object(cli, "say") as say,
@@ -1177,16 +1194,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertIn("Verifying firmware...", output)
 
     def test_interrupted_ota_aborts_its_session(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         writes = []
 
         class InterruptedSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1213,7 +1226,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(64))
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", InterruptedSerial),
+            mock.patch.object(cli, "_active_serial", InterruptedSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]),
             mock.patch.object(cli, "unload_helper", return_value=False),
             self.assertRaises(KeyboardInterrupt),
@@ -1222,16 +1236,12 @@ class ProtocolSixTests(unittest.TestCase):
         self.assertTrue(writes[-1].startswith("OTA ABORT "))
 
     def test_ota_writes_are_windowed(self):
-        try:
-            import serial  # type: ignore
-        except ImportError:
-            self.skipTest("pyserial is not installed")
-
         activity = []
 
         class WindowedSerial:
             def __init__(self, *_args, **_kwargs):
                 self.responses = []
+                self.write_timeout = 2
 
             def __enter__(self):
                 return self
@@ -1262,7 +1272,8 @@ class ProtocolSixTests(unittest.TestCase):
         image = bytes(range(256)) * 40
         digest = hashlib.sha256(image).hexdigest()
         with (
-            mock.patch.object(serial, "Serial", WindowedSerial),
+            mock.patch.object(cli, "_active_serial", WindowedSerial()),
+            mock.patch.object(cli, "foreground_session", return_value=nullcontext("/dev/cu.TT-1234")),
             mock.patch.object(cli, "serial_command", return_value=["OK"]),
             mock.patch.object(cli, "unload_helper", return_value=False),
             mock.patch.object(cli, "say"),

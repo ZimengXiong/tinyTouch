@@ -12,6 +12,10 @@ static bool ota_active;
 static bool complete_login;
 static bool transfer_queued = true;
 static uint16_t delay_ms = 50;
+static uint8_t *out_buffer;
+static uint16_t out_capacity, in_length;
+static int out_requests, in_requests;
+static size_t response_size = 2;
 
 int64_t esp_timer_get_time(void) { return now_us; }
 void vTaskDelay(uint32_t ticks) { now_us += (int64_t)ticks * 10000; }
@@ -32,7 +36,11 @@ bool tud_connect(void) { assert(deferred); connected = true; return true; }
 bool tud_mounted(void) { return configured; }
 bool tud_hid_ready(void) { return hid_ready; }
 bool usbd_edpt_xfer(uint8_t r, uint8_t e, uint8_t *b, uint16_t n) {
-  (void)r; (void)e; (void)b; (void)n; return transfer_queued;
+  (void)r;
+  if (!transfer_queued) return false;
+  if (e == CCID_EP_OUT) { out_buffer = b; out_capacity = n; out_requests++; }
+  else { assert(e == CCID_EP_IN); in_length = n; in_requests++; }
+  return true;
 }
 bool usbd_edpt_open(uint8_t r, const tusb_desc_endpoint_t *e) {
   (void)r; assert(e->bDescriptorType == 5); endpoints++; return true;
@@ -53,7 +61,9 @@ void piv_reset_transport_state(void) { resets++; }
 void touch_pin_hid_log_event(const char *event, int value) { (void)event; (void)value; }
 void touch_pin_hid_usb_attached(void) {}
 static bool apdu(const uint8_t *a, size_t n, uint8_t *r, size_t *rn, size_t cap) {
-  (void)a; (void)n; assert(cap >= 2); r[0] = 0x90; r[1] = 0; *rn = 2; apdus++;
+  (void)a; (void)n; assert(cap >= response_size);
+  memset(r, 0, response_size); r[response_size - 2] = 0x90;
+  *rn = response_size; apdus++;
   if (complete_login) usb_ccid_login_complete();
   return true;
 }

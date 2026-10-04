@@ -79,7 +79,19 @@ the current helper. For an older CLI without `repair`,
 follow [Upgrade an older CLI](/customer/update#upgrade-an-older-cli).
 
 If credentials are missing, run `tinytouch setup --mode hid --skip-enroll`.
-HID supports passwords up to 160 UTF-8 bytes and characters available in the active ASCII-capable keyboard layout.
+If the saved password is wrong, run `tinytouch password` and enter the correct
+password twice. For a password assigned to one finger, use
+`tinytouch password --finger NUMBER`. These commands preserve pairing and
+fingerprints.
+
+If HID types the wrong characters, select your intended layout in macOS, run
+`tinytouch keyboard-layout auto`, then save the actual password with
+`tinytouch password`. Use `tinytouch keyboard-layout us` only when you need
+US key positions or an existing manual character mapping.
+
+HID supports passwords up to 160 UTF-8 bytes and 160 typed keys in the active
+ASCII-capable layout. One accent key followed by a letter or space is supported;
+characters requiring Option or more than one accent key are unsupported.
 
 ## Flashing fails
 

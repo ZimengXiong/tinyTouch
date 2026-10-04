@@ -26,6 +26,7 @@ import textwrap
 import tty
 import time
 import urllib.request
+import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -58,7 +59,10 @@ _sound_process = None
 HELPER_MODULE_DIR = BUNDLE_ROOT if FROZEN else PROJECT_ROOT / "macos"
 if str(HELPER_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_MODULE_DIR))
-from tinytouch_runtime import atomic_write_bytes  # type: ignore  # noqa: E402
+from tinytouch_runtime import (  # type: ignore  # noqa: E402
+    ForegroundLease, LeaseBusyError, LeaseProtocolError, atomic_write_bytes,
+    atomic_write_json,
+)
 from tinytouch_menu import select_menu, supports_arrows  # type: ignore  # noqa: E402
 
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
@@ -75,6 +79,10 @@ class ToolError(RuntimeError):
 
 class HelperCredentialAccessError(ToolError):
     """The replacement helper needs permission to read saved credentials."""
+
+
+class HidSetupIncompleteError(ToolError):
+    """HID mode needs a usable local password and registered pairing key."""
 
 
 class SerialTimeout(ToolError):
@@ -487,7 +495,14 @@ def keychain_get(service: str, account: str) -> str | None:
 
 
 def keychain_set(service: str, account: str, value: str) -> None:
-    _keychain().set_password(service, account, value)
+    keychain = _keychain()
+    try:
+        keychain.set_password(service, account, value)
+    except keychain.KeychainError as exc:
+        raise ToolError(
+            "Could not save the HID credential. Unlock the login Keychain or "
+            "run 'tinytouch repair', then retry."
+        ) from exc
 
 
 def keychain_delete(service: str, account: str) -> None:
@@ -600,10 +615,14 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
     if line in {"ERR AUTH", "ERR AUTH no_match", "ERR AUTH sensor=offline"}:
         if line.endswith("sensor=offline"):
             return "Fingerprint sensor unavailable. Please reconnect tinyTouch."
+        if line.endswith("no_match"):
+            return (
+                "No enrolled fingerprint matched. Lift your finger and try an enrolled finger. "
+                f"If none work, use Recovery firmware at {FACTORY_FLASH_URL}?firmware=recovery. "
+                "Recovery erases fingerprints, device keys, registered computers, and settings."
+            )
         if touch_prompted:
             return "Fingerprint authentication timed out. Please try again."
-        if line.endswith("no_match"):
-            return "Fingerprint not recognized. Please try again."
         return "Fingerprint authentication could not start. Please try again."
     if line == "ERR FINGER update_cli":
         return "Update the tinyTouch CLI. Enrollment now uses complete fingerprint blocks instead of individual templates."
@@ -628,18 +647,9 @@ def unload_helper() -> bool:
     if _helper_suppressed:
         return False
     should_restart = LAUNCH_AGENT.exists()
-    loaded = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
-    if not loaded:
+    if not helper_loaded():
         return should_restart
-    result = subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/com.tinytouch.helper"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0 and helper_loaded():
-        raise ToolError("Could not stop the HID background service.")
+    stop_helper()
     HELPER_SUSPEND.unlink(missing_ok=True)
     HELPER_SUSPEND_ACK.unlink(missing_ok=True)
     return should_restart
@@ -649,41 +659,40 @@ def helper_loaded() -> bool:
     try:
         return subprocess.run(
             ["launchctl", "print", f"gui/{os.getuid()}/com.tinytouch.helper"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode == 0
-    except OSError:
-        return False
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(
+            "Could not check the HID background service. Please try again."
+        ) from exc
 
 
 def load_helper() -> None:
     if _helper_suppressed:
         return
-    if not helper_loaded():
-        run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)])
-
-
-def remove_helper() -> None:
-    global _helper_suppressed
-    _helper_suppressed = True
-    if LAUNCH_AGENT.exists():
-        process = subprocess.Popen(
-            ["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    if helper_loaded():
+        return
+    try:
+        run(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT)],
+            timeout=5,
         )
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        LAUNCH_AGENT.unlink(missing_ok=True)
-    HELPER_SUSPEND.unlink(missing_ok=True)
-    HELPER_SUSPEND_ACK.unlink(missing_ok=True)
+    except (ToolError, OSError, subprocess.TimeoutExpired) as exc:
+        # Another CLI can finish the same bootstrap between print and bootstrap.
+        if helper_loaded():
+            return
+        raise ToolError(
+            "Could not start the HID background service. Run 'tinytouch repair'."
+        ) from exc
+    if not helper_loaded():
+        raise ToolError(
+            "The HID background service did not load. Run 'tinytouch repair'."
+        )
 
 
-def command_uninstall(args: argparse.Namespace) -> None:
-    """Remove the background service without changing device or credential data."""
-    global _helper_suppressed
-    require_macos()
+def stop_helper() -> None:
+    """Verify that launchd released the service before changing its files."""
     service = f"gui/{os.getuid()}/com.tinytouch.helper"
     try:
         subprocess.run(
@@ -697,8 +706,19 @@ def command_uninstall(args: argparse.Namespace) -> None:
         raise ToolError(
             "Could not stop the background service. Please try again."
         ) from exc
-    if helper_loaded():
-        raise ToolError("Could not stop the background service. Please try again.")
+    # bootout can return while launchd still lists the terminating process.
+    # Wait for removal before replacing its files or bootstrapping a new job.
+    deadline = time.monotonic() + 5
+    while helper_loaded():
+        if time.monotonic() >= deadline:
+            raise ToolError("Could not stop the background service. Please try again.")
+        time.sleep(0.05)
+
+
+def remove_helper() -> None:
+    """Stop the helper before deleting its LaunchAgent and foreground state."""
+    global _helper_suppressed
+    stop_helper()
     _helper_suppressed = True
     try:
         LAUNCH_AGENT.unlink(missing_ok=True)
@@ -708,12 +728,18 @@ def command_uninstall(args: argparse.Namespace) -> None:
         raise ToolError(
             "Could not remove the background service. Please try again."
         ) from exc
+
+
+def command_uninstall(args: argparse.Namespace) -> None:
+    """Remove the background service without changing device or credential data."""
+    require_macos()
+    remove_helper()
     say("Background service uninstalled.")
 
 
 def ensure_helper_environment() -> Path:
     if FROZEN:
-        return Path(sys.executable)
+        return Path(sys.executable).resolve()
     python = VENV / "bin" / "python"
     if not python.exists():
         run([sys.executable, "-m", "venv", str(VENV)])
@@ -729,7 +755,7 @@ def install_helper(*, check_saved: bool = False) -> None:
     arguments = (
         [str(python), str(HELPER)]
         if not FROZEN
-        else [str(Path(sys.executable)), "_helper"]
+        else [str(python), "_helper"]
     )
     # Keychain access depends on the executable's identity. Check the exact
     # replacement process before stopping a helper that can still read secrets.
@@ -774,40 +800,47 @@ def install_helper(*, check_saved: bool = False) -> None:
         "StandardErrorPath": str(LOG_DIR / "helper.err"),
         "EnvironmentVariables": {"TINYTOUCH_SERVICE_SCHEMA": "3"},
     }
-    previous = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
-    was_loaded = helper_loaded()
-    was_suppressed = _helper_suppressed
-    _helper_suppressed = False
-    try:
-        unload_helper()
-        atomic_write_bytes(
-            LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644
-        )
-        load_helper()
-        if not helper_loaded():
-            raise ToolError("The HID helper did not load.")
-    except (Exception, KeyboardInterrupt) as exc:
+    # Use the foreground lock so a replacement cannot interrupt another CLI's
+    # USB session or remove its lease while changing the LaunchAgent.
+    with ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK) as lease:
+        try:
+            lease.acquire(wait_for_ack=False)
+        except (LeaseBusyError, OSError) as exc:
+            raise ToolError(f"Could not replace the HID background service: {exc}") from exc
+        previous = LAUNCH_AGENT.read_bytes() if LAUNCH_AGENT.exists() else None
+        was_loaded = helper_loaded()
+        was_suppressed = _helper_suppressed
+        _helper_suppressed = False
         try:
             unload_helper()
-            if previous is None:
-                LAUNCH_AGENT.unlink(missing_ok=True)
-            else:
-                atomic_write_bytes(LAUNCH_AGENT, previous, mode=0o644)
-                if was_loaded:
-                    load_helper()
-                    if not helper_loaded():
-                        raise ToolError("The previous HID helper did not reload.")
-        except Exception as rollback_error:
+            atomic_write_bytes(
+                LAUNCH_AGENT, plistlib.dumps(payload, sort_keys=False), mode=0o644
+            )
+            load_helper()
+            if not helper_loaded():
+                raise ToolError("The HID helper did not load.")
+        except BaseException as exc:
+            try:
+                unload_helper()
+                if previous is None:
+                    LAUNCH_AGENT.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(LAUNCH_AGENT, previous, mode=0o644)
+                    if was_loaded:
+                        load_helper()
+                        if not helper_loaded():
+                            raise ToolError("The previous HID helper did not reload.")
+            except Exception as rollback_error:
+                raise ToolError(
+                    "The replacement HID helper failed, and the previous service could not be restored."
+                ) from rollback_error
+            finally:
+                _helper_suppressed = was_suppressed
+            if not isinstance(exc, Exception):
+                raise
             raise ToolError(
-                "The replacement HID helper failed, and the previous service could not be restored."
-            ) from rollback_error
-        finally:
-            _helper_suppressed = was_suppressed
-        if isinstance(exc, KeyboardInterrupt):
-            raise
-        raise ToolError(
-            "The replacement HID helper failed. The previous service was restored."
-        ) from exc
+                "The replacement HID helper failed. The previous service was restored."
+            ) from exc
 
 
 def command_repair(args: argparse.Namespace) -> None:
@@ -822,6 +855,8 @@ def command_repair(args: argparse.Namespace) -> None:
 
         device_ids = known_device_ids()
     keychain = _keychain()
+    from tinytouch_helper import password_accounts
+
     accounts = []
     for account in sorted(device_ids):
         pairing = [(PAIRING_SERVICE, account), (PASSWORD_SERVICE, account)]
@@ -829,9 +864,9 @@ def command_repair(args: argparse.Namespace) -> None:
             continue
         accounts.extend(pairing)
         accounts.extend(
-            (PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
-            for slot in range(1, 41)
-            if keychain.has_password(PASSWORD_SERVICE, f"{account}:fingerprint:{slot}")
+            (PASSWORD_SERVICE, name)
+            for name in password_accounts(account)
+            if keychain.has_password(PASSWORD_SERVICE, name)
         )
     if not accounts:
         raise ToolError(
@@ -895,8 +930,9 @@ def exchange_serial(
 ) -> list[str]:
     lines: list[str] = []
     touch_prompted = False
+    # Serial.write has a deadline; the device reply confirms delivery. Avoid
+    # flush(), which waits in the macOS driver without a timeout.
     device.write((command + "\n").encode("ascii"))
-    device.flush()
     deadline = time.monotonic() + timeout
     frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
     animated_wait = bool(wait_message and sys.stdout.isatty())
@@ -949,46 +985,96 @@ def exchange_serial(
     return lines
 
 
+def active_session_port(port: str) -> str:
+    """Require nested commands to use the device owned by the outer session."""
+    active_port = _active_serial.port
+    if port != active_port and current_port(port) != active_port:
+        raise ToolError("A foreground session is already using another device.")
+    return active_port
+
+
+def helper_supports_foreground_lease() -> bool:
+    """Check whether the installed helper can drain USB workers for a lease."""
+    try:
+        payload = plistlib.loads(LAUNCH_AGENT.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    environment = payload.get("EnvironmentVariables", {})
+    return isinstance(environment, dict) and environment.get(
+        "TINYTOUCH_SERVICE_SCHEMA"
+    ) == "3"
+
+
+@contextmanager
+def foreground_helper():
+    """Pause a current helper without removing its launchd registration."""
+    use_lease = not _helper_suppressed and helper_supports_foreground_lease()
+    if use_lease:
+        load_helper()
+    was_loaded = False
+    # The lock also serializes commands when no helper has been installed.
+    with ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK) as lease:
+        try:
+            lease.acquire(wait_for_ack=use_lease)
+        except (LeaseBusyError, LeaseProtocolError) as exc:
+            raise ToolError(str(exc)) from exc
+        except OSError as exc:
+            raise ToolError("Could not reserve the tinyTouch USB connection.") from exc
+        try:
+            if not use_lease:
+                was_loaded = unload_helper()
+            yield
+        finally:
+            if was_loaded:
+                load_helper()
+
+
 @contextmanager
 def foreground_session(port: str):
     """Open one verified CDC session for a foreground device operation."""
     global _active_serial
+    if _active_serial is not None:
+        yield active_session_port(port)
+        return
     try:
         import serial  # type: ignore
     except ImportError as exc:
         raise ToolError("The pyserial package is required. Run setup again.") from exc
-    was_loaded = unload_helper()
-    deadline = time.monotonic() + 6.0
-    last_error: Exception | None = None
     device = None
-    while time.monotonic() < deadline:
+    with foreground_helper():
         try:
-            port = current_port(port)
-            device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
-            time.sleep(0.2)
-            device.reset_input_buffer()
-            exchange_serial(device, "PING", timeout=3)
-            break
-        except Exception as exc:
-            last_error = exc
+            deadline = time.monotonic() + 6.0
+            last_error: Exception | None = None
+            while time.monotonic() < deadline:
+                try:
+                    port = current_port(port)
+                    device = serial.Serial(port, 115200, timeout=0.25, write_timeout=2)
+                    time.sleep(0.2)
+                    device.reset_input_buffer()
+                    exchange_serial(device, "PING", timeout=3)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if device is not None:
+                        device.close()
+                        device = None
+                    time.sleep(0.25)
+            if device is None:
+                if "Device not configured" in str(last_error):
+                    raise ToolError(
+                        "tinyTouch is reconnecting. Please try again in a moment."
+                    ) from last_error
+                raise ToolError(
+                    f"Could not communicate with tinyTouch on {port}. Error: {last_error}"
+                ) from last_error
+            _active_serial = device
+            yield port
+        finally:
+            _active_serial = None
             if device is not None:
                 device.close()
-                device = None
-            time.sleep(0.25)
-    if device is None:
-        if "Device not configured" in str(last_error):
-            raise ToolError(
-                "tinyTouch is reconnecting. Please try again in a moment."
-            ) from last_error
-        raise ToolError(f'Could not communicate with tinyTouch on {port}. Error: {last_error}') from last_error
-    _active_serial = device
-    try:
-        yield port
-    finally:
-        _active_serial = None
-        device.close()
-        if was_loaded:
-            load_helper()
 
 
 def serial_command(
@@ -1000,6 +1086,7 @@ def serial_command(
     event_handler=None,
 ) -> list[str]:
     if _active_serial is not None:
+        active_session_port(port)
         try:
             return exchange_serial(
                 _active_serial, command, timeout=timeout, touch_prompt=touch_prompt,
@@ -1151,6 +1238,52 @@ def host_id(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
 
 
+def hid_pairing_key(value: str | None) -> bytes:
+    """Validate a saved pairing key before using its host identifier."""
+    if value is None:
+        raise HidSetupIncompleteError("This Mac has no saved HID pairing key. Run 'tinytouch setup --mode hid'.")
+    try:
+        key = bytes.fromhex(value.strip())
+    except ValueError as exc:
+        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.") from exc
+    if len(key) != 32:
+        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.")
+    return key
+
+
+def verify_hid_host(port: str, device: dict[str, str], account: str | None = None) -> None:
+    """Check that this Mac can use one of the device's registered hosts."""
+    account = account or device_account(port)
+    key = hid_pairing_key(keychain_get(PAIRING_SERVICE, account))
+    password = keychain_get(PASSWORD_SERVICE, account)
+    if not password or len(password.encode("utf-8")) > 160:
+        raise HidSetupIncompleteError("This Mac has no usable HID password. Run 'tinytouch setup --mode hid'.")
+    registered, _capacity = host_list(port)
+    try:
+        count = int(device["hosts"])
+    except (KeyError, ValueError) as exc:
+        raise ToolError("HID setup is incomplete. The device did not report a valid computer count.") from exc
+    if count < 1 or count != len(registered) or host_id(key) not in registered:
+        raise HidSetupIncompleteError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
+
+
+def prompt_hid_password() -> str:
+    """Confirm a password without including it in command arguments."""
+    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            first = getpass.getpass("Password: ")
+            second = getpass.getpass("Password again: ")
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise ToolError("Run this command in an interactive terminal.") from exc
+    if not first or first != second:
+        raise ToolError("Enter matching passwords. Neither password can be empty.")
+    if len(first.encode()) > 160:
+        raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
+    return first
+
+
 def password_for(account: str) -> str:
     global _setup_password
     if _setup_password is not None:
@@ -1163,65 +1296,214 @@ def password_for(account: str) -> str:
         finally:
             _setup_password[:] = b"\x00" * len(_setup_password)
             _setup_password = None
-    say("Nothing appears as you type. Enter the password twice to catch typing errors.")
-    first = getpass.getpass("Password: ")
-    second = getpass.getpass("Password again: ")
-    if not first or first != second:
-        raise ToolError("Enter matching passwords. Neither password can be empty.")
-    if len(first.encode()) > 160:
-        raise ToolError("Use a password of 160 UTF-8 bytes or fewer.")
+    first = prompt_hid_password()
     keychain_set(PASSWORD_SERVICE, account, first)
     return first
 
 
+@contextmanager
+def hid_settings_change():
+    """Drain helper workers while changing their saved credentials or settings."""
+    completed = False
+    operation_error = None
+    try:
+        with foreground_helper():
+            try:
+                yield
+            except BaseException as exc:
+                operation_error = exc
+                raise
+            completed = True
+    except (ToolError, OSError, subprocess.SubprocessError) as exc:
+        if exc is operation_error or (not completed and isinstance(exc, ToolError)):
+            raise
+        outcome = "was saved" if completed else "did not finish"
+        raise ToolError(
+            f"The HID change {outcome}, but the background service "
+            "could not resume. Run 'tinytouch repair'."
+        ) from exc
+
+
+def command_password(args: argparse.Namespace) -> None:
+    """Change a host password without repeating enrollment or HID pairing."""
+    require_macos()
+    from tinytouch_helper import (
+        current_keyboard_output_map, finger_password_account, load_settings,
+        translate_password,
+    )
+
+    account = device_account(choose_port(args.port))
+    keychain = _keychain()
+    try:
+        configured = all(keychain.has_password(service, account)
+                         for service in (PAIRING_SERVICE, PASSWORD_SERVICE))
+    except keychain.KeychainError as exc:
+        raise ToolError("Unlock the login Keychain, then retry.") from exc
+    if not configured:
+        raise ToolError("Run 'tinytouch setup --mode hid' before changing a password.")
+    value = prompt_hid_password()
+    try:
+        mapping = (current_keyboard_output_map()
+                   if load_settings(account)["keyboard_layout"] == "auto" else None)
+        translate_password(value.encode("utf-8"), mapping)
+    except (UnicodeError, ValueError, RuntimeError, OSError) as exc:
+        raise ToolError(
+            "This password cannot be typed with the selected keyboard layout. "
+            "Select a compatible macOS layout and use at most 160 typed keys."
+        ) from exc
+    target = finger_password_account(account, args.finger) if args.finger else account
+    with hid_settings_change():
+        keychain_set(PASSWORD_SERVICE, target, value)
+    say(f"HID password saved for finger {args.finger}." if args.finger
+        else "Default HID password saved.")
+
+
+def command_keyboard_layout(args: argparse.Namespace) -> None:
+    """Read or change the host layout used for HID password translation."""
+    require_macos()
+    from tinytouch_helper import load_settings, settings_path
+
+    account = device_account(choose_port(args.port))
+    if args.layout is None:
+        say(f'HID keyboard layout: {load_settings(account)["keyboard_layout"]}.')
+        return
+    path = settings_path(account)
+    try:
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
+            settings = {}
+        if not isinstance(settings, dict):
+            settings = {}
+        settings["keyboard_layout"] = args.layout
+        with hid_settings_change():
+            atomic_write_json(path, settings)
+    except OSError as exc:
+        raise ToolError("Could not save the HID keyboard layout. Check file permissions and retry.") from exc
+    say(f"HID keyboard layout saved: {args.layout}.")
+
+
 def configure_hid(port: str, device: dict[str, str]) -> None:
+    global _setup_password
     account = device_account(port)
-    prepare_hid_password()
-    key = hashlib.sha256(
-        f"tinyTouch HID pairing|{account}|{platform.node()}".encode("utf-8")
-    ).digest()
-    identifier = host_id(key)
-    registered, capacity = host_list(port)
-    if identifier not in registered:
-        if len(registered) >= capacity:
+    previous: dict[str, str | None] = {}
+    written: list[str] = []
+    added: str | None = None
+    try:
+        prepare_hid_password()
+        previous = {
+            service: keychain_get(service, account)
+            for service in (PAIRING_SERVICE, PASSWORD_SERVICE)
+        }
+        saved_key = previous[PAIRING_SERVICE]
+        try:
+            key = hid_pairing_key(saved_key)
+            valid_saved_key = True
+        except HidSetupIncompleteError:
+            key = secrets.token_bytes(32)
+            valid_saved_key = False
+        identifier = host_id(key)
+        registered, capacity = host_list(port)
+        if identifier not in registered and len(registered) >= capacity:
             raise ToolError("This device has no available HID computer slot. Remove a registered computer before adding another.")
-        serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
-    keychain_set(PAIRING_SERVICE, account, key.hex())
-    password_for(account)
-    current = status(port)
-    if current.get("hosts", "0") == "0":
-        raise ToolError("HID setup is incomplete. The device has no registered computer.")
-    if identifier not in host_list(port)[0]:
-        raise ToolError("HID setup is incomplete. The device has no registered computer.")
+        if not valid_saved_key:
+            written.append(PAIRING_SERVICE)
+            keychain_set(PAIRING_SERVICE, account, key.hex())
+        saved_password = previous[PASSWORD_SERVICE]
+        if not saved_password or len(saved_password.encode("utf-8")) > 160:
+            written.append(PASSWORD_SERVICE)
+            password_for(account)
+        if identifier not in registered:
+            # A timeout can occur after the device saves the host.
+            added = identifier
+            serial_command(port, f"HOST ADD {identifier} {key.hex()}", timeout=4)
+        verify_hid_host(port, status(port), account)
+    except (Exception, KeyboardInterrupt) as exc:
+        cleanup_failed = False
+        if added is not None:
+            try:
+                if added in host_list(port)[0]:
+                    serial_command(port, f"HOST REMOVE {added}", timeout=4)
+                    if added in host_list(port)[0]:
+                        raise ToolError("The new HID computer is still registered.")
+            except Exception:
+                cleanup_failed = True
+        for service in reversed(written):
+            try:
+                value = previous[service]
+                if value is None:
+                    keychain_delete(service, account)
+                else:
+                    keychain_set(service, account, value)
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
+            say("Some HID setup changes could not be restored. Reconnect tinyTouch and run 'tinytouch setup --mode hid' again.")
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        suffix = " Some setup changes could not be restored." if cleanup_failed else ""
+        raise ToolError(
+            f"HID setup did not finish. {exc}{suffix} Run 'tinytouch setup --mode hid' again."
+        ) from exc
+    finally:
+        if _setup_password is not None:
+            _setup_password[:] = b"\x00" * len(_setup_password)
+            _setup_password = None
 
 
 def command_hid_smoke(_: argparse.Namespace) -> None:
-    """Run the HID setup path against a temporary protocol-6 device."""
+    """Test serial framing and encrypted helper replies with temporary secrets."""
+    import hmac
+    import serial
+    import tinytouch_helper as helper
+
     require_macos()
-    device_id = "TT-SMOKE-" + secrets.token_hex(6).upper()
+    pairing_key = bytearray(secrets.token_bytes(32))
+    password = bytearray(b"smoke test password")
+    identifier = host_id(pairing_key)
+    nonce = secrets.token_hex(16)
     master, slave = pty.openpty()
     port = os.ttyname(slave)
     tty.setraw(slave)
-    state = {"mode": "piv", "hosts": set()}
     stopped = threading.Event()
 
     def reply(line: str) -> str:
+        if line == "PING":
+            return "PONG 6"
         if line == "STATUS":
-            return (
-                "OK STATUS firmware=0.8.4 protocol=6 mode=" + state["mode"]
-                + f" sensor=ready fingerprints=4 piv=none hosts={len(state['hosts'])}"
-            )
-        if line == "AUTH":
-            return "EVENT TOUCH\nOK AUTH"
-        if line == "HOST LIST":
-            identifiers = ",".join(sorted(state["hosts"])) or "none"
-            return f"OK HOST LIST capacity=8 ids={identifiers}"
-        if line.startswith("HOST ADD "):
-            state["hosts"].add(line.split()[2].lower())
-            return "OK ADD"
-        if line == "SET MODE HID":
-            state["mode"] = "hid"
-            return "OK MODE"
+            return f"OK STATUS firmware={CLI_VERSION} protocol=6 mode=hid sensor=ready hosts=1"
+        if line in {"TEST EV", "TEST EV2"}:
+            kind = line.split()[1]
+            material = (f"EV|{nonce}|1|1|123" if kind == "EV"
+                        else f"EV2|{identifier}|{nonce}|1|1|123")
+            authenticator = helper.mac_hex(pairing_key, material)
+            if kind == "EV2":
+                authenticator = f"{identifier}:{authenticator}"
+            return f"{kind} {nonce} 1 1 123 {authenticator}\nOK TEST"
+        if line.startswith(("PW ", "PW2 ")):
+            verb = line.split()[0]
+            try:
+                parts = line.split()
+                if parts[0] == "PW2":
+                    if len(parts) != 6 or parts[1] != identifier:
+                        return f"ERR {verb} invalid_reply"
+                    response_nonce, iv, ciphertext = parts[2:5]
+                else:
+                    if len(parts) != 5:
+                        return f"ERR {verb} invalid_reply"
+                    response_nonce, iv, ciphertext = parts[1:4]
+                material = "|".join(parts[:-1])
+                if response_nonce != nonce or not hmac.compare_digest(
+                    parts[-1], helper.mac_hex(pairing_key, material)
+                ):
+                    return f"ERR {verb} invalid_mac"
+                decoded = helper.aes_ctr_crypt(
+                    helper.session_key(pairing_key, nonce),
+                    bytes.fromhex(iv), bytes.fromhex(ciphertext),
+                )
+                return f"OK {verb}" if decoded == password else f"ERR {verb} invalid_password"
+            except (ValueError, RuntimeError):
+                return f"ERR {verb} invalid_reply"
         return "ERR COMMAND"
 
     def serve() -> None:
@@ -1243,59 +1525,87 @@ def command_hid_smoke(_: argparse.Namespace) -> None:
                 os.write(master, (response + "\n").encode("ascii"))
 
     worker = threading.Thread(target=serve, daemon=True)
-    previous_account = os.environ.get("TINYTOUCH_DEVICE_ACCOUNT")
     try:
-        remove_helper()
-        os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = device_id
         worker.start()
-        command_setup(argparse.Namespace(mode="hid", port=port, skip_enroll=True, no_pair=False))
-        run([sys.executable, "_helper", "--self-test", "--device-id", device_id])
-        say(f"HID bridge password: {keychain_get(PASSWORD_SERVICE, device_id)}")
-        say("HID setup and the helper communication test passed.")
+        with serial.Serial(port, baudrate=115200, timeout=0.2, write_timeout=2) as device:
+            exchange_serial(device, "PING", timeout=2)
+            exchange_serial(device, "STATUS", timeout=2)
+            for kind in ("EV", "EV2"):
+                lines = exchange_serial(device, f"TEST {kind}", timeout=2)
+                event = next((line for line in lines if line.startswith(kind + " ")), "")
+                response = helper.handle_event(
+                    event, password, pairing_key, {"seen_nonces": []},
+                    persist_state=False,
+                )
+                if response is None:
+                    raise ToolError("The HID helper rejected the simulated touch.")
+                exchange_serial(device, response.strip(), timeout=2)
+        say("HID helper protocol test passed (simulated serial device).")
     finally:
         stopped.set()
-        worker.join(timeout=1)
+        if worker.ident is not None:
+            worker.join(timeout=1)
         os.close(slave)
         os.close(master)
-        if previous_account is None:
-            os.environ.pop("TINYTOUCH_DEVICE_ACCOUNT", None)
-        else:
-            os.environ["TINYTOUCH_DEVICE_ACCOUNT"] = previous_account
-        keychain_delete(PAIRING_SERVICE, device_id)
-        keychain_delete(PASSWORD_SERVICE, device_id)
-        remove_helper()
+        password[:] = bytes(len(password))
+        pairing_key[:] = bytes(len(pairing_key))
 
 
 def host_list(port: str) -> tuple[set[str], int]:
     lines = serial_command(port, "HOST LIST", timeout=4)
-    line = next((item for item in lines if item.startswith("OK HOST LIST")), "")
-    data = dict(re.findall(r"([A-Za-z_]+)=([^ ]+)", line))
-    ids = set() if data.get("ids") in {None, "none"} else {
-        value.lower() for value in data["ids"].split(",")
-    }
+    line = next((item for item in reversed(lines) if item.startswith("OK HOST LIST ")), "")
+    data = dict(re.findall(r"([A-Za-z_]+)=([^ ]*)", line))
     try:
-        capacity = int(data.get("capacity", "8"))
-    except ValueError as exc:
-        raise ToolError("The device returned an invalid HID computer capacity.") from exc
+        capacity = int(data["capacity"])
+        values = [] if data["ids"] in {"", "none"} else data["ids"].lower().split(",")
+        ids = set(values)
+        if (
+            not 1 <= capacity <= 8
+            or len(values) != len(ids)
+            or len(ids) > capacity
+            or any(re.fullmatch(r"[0-9a-f]{16}", value) is None for value in ids)
+        ):
+            raise ValueError()
+    except (KeyError, ValueError) as exc:
+        raise ToolError("The device returned an invalid HID computer inventory.") from exc
     return ids, capacity
 
 
-def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int], int]:
+def finger_slots(finger: int) -> tuple[int, ...]:
+    """Map a fingerprint block to sensor slots, including slot zero."""
+    return tuple(slot % 40 for slot in range((finger - 1) * 4 + 1, finger * 4 + 1))
+
+
+def finger_inventory(
+    port: str, device: dict[str, str], *, required_finger: int | None = None,
+) -> tuple[dict[int, int], int]:
     if device.get("finger_groups") != "1":
         raise ToolError(
             "This firmware requires an update for fingerprint block enrollment. Run 'tinytouch update'. Then unplug and reconnect tinyTouch."
         )
     data = fields_from(serial_command(port, "FINGER LIST", timeout=6), "OK FINGER LIST")
     try:
-        groups = {} if data["groups"] == "none" else {
-            int(number): int(views) for number, views in
-            (entry.split(":") for entry in data["groups"].split(","))
-        }
+        entries = [] if data["groups"] == "none" else [
+            tuple(map(int, entry.split(":"))) for entry in data["groups"].split(",")
+        ]
+        groups = dict(entries)
         available = int(data["available"])
+        capacity = int(data["capacity"])
         pending = int(data["pending"])
-        if not 0 <= available <= 10 or any(
+        if not 1 <= capacity <= 40 or len(groups) != len(entries) or any(
             not 1 <= number <= 10 or not 0 <= views <= 4 for number, views in groups.items()
         ):
+            raise ValueError()
+        for number, views in groups.items():
+            if views > sum(slot < capacity for slot in finger_slots(number)):
+                raise ValueError()
+            if views == 0 and number != pending:
+                raise ValueError()
+        expected_available = sum(
+            finger not in groups and max(finger_slots(finger)) < capacity
+            for finger in range(1, 11)
+        )
+        if available != expected_available:
             raise ValueError()
         if pending:
             if pending not in groups:
@@ -1303,11 +1613,16 @@ def finger_inventory(port: str, device: dict[str, str]) -> tuple[dict[int, int],
             groups[pending] = -1
     except (KeyError, ValueError) as exc:
         raise ToolError("The device returned an invalid fingerprint inventory.") from exc
+    if required_finger is not None and max(finger_slots(required_finger)) >= capacity:
+        raise ToolError(
+            f"This sensor cannot store all four views for finger {required_finger}. "
+            "Run 'tinytouch fingers' and choose a fingerprint block within its capacity."
+        )
     return groups, available
 
 
 def enroll_finger(port: str, device: dict[str, str], finger: int, replace: bool = False) -> None:
-    groups, available = finger_inventory(port, device)
+    groups, available = finger_inventory(port, device, required_finger=finger)
     occupied = finger in groups
     if occupied and not replace:
         say(f'Finger {finger} already has fingerprint enrollment data.')
@@ -1376,74 +1691,80 @@ def command_setup(args: argparse.Namespace) -> None:
     require_macos()
     mode = choose_mode(args.mode)
     port = choose_port(args.port)
-    # Setup starts from one known state. Remove the old HID service before
-    # opening the CDC port. Keep that port open through the entire setup.
-    remove_helper()
+    # HID reconfiguration pauses the helper through its foreground lease.
+    # Keep that service available if device validation or password entry fails.
+    if mode == "piv":
+        remove_helper()
     piv_rescan_needed = False
     created_piv_identities = None
     previous_piv_identities: set[str] = set()
-    mode_changed = False
-    with foreground_session(port):
-        device = status(port)
-        protocol6(device)
-        sensor_ready(device)
-        if (
-            mode == "piv"
-            and device.get("mode") == "piv"
-            and device.get("piv") == "ready"
-            and int(device.get("fingerprints", "0")) > 0
-            and paired_piv_identities()
-        ):
-            say("PIV setup is already complete on this Mac.")
-            explain_piv_pin()
-            return
-        if device.get("mode") != mode:
-            unlock(
-                port,
-                reason=f"switch to {mode.upper()} mode",
-            )
-            serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
-            mode_changed = True
-        elif mode == "hid":
-            unlock(port, reason="configure HID mode")
-            configure_hid(port, device)
-        else:
-            if device.get("piv") != "ready":
+    expected_account: str | None = None
+    reconnected = False
+    hid_configured = False
+    while True:
+        mode_changed = False
+        with foreground_session(port) as connected_port:
+            if isinstance(connected_port, str):
+                port = connected_port
+            if expected_account is not None and device_account(port) != expected_account:
+                raise ToolError("A different device reconnected. Connect the original tinyTouch and run setup again.")
+            device = fresh_status(port, {"mode": mode}) if reconnected else status(port)
+            protocol6(device)
+            sensor_ready(device)
+            if (
+                mode == "piv"
+                and device.get("mode") == "piv"
+                and device.get("piv") == "ready"
+                and int(device.get("fingerprints", "0")) > 0
+                and paired_piv_identities()
+            ):
+                say("PIV setup is already complete on this Mac.")
+                explain_piv_pin()
+                return
+            if mode == "hid" and not hid_configured:
+                expected_account = device_account(port)
+                unlock(port, reason="configure HID mode")
+                configure_hid(port, device)
+                hid_configured = True
+            if device.get("mode") != mode:
+                expected_account = device_account(port)
+                unlock(
+                    port,
+                    reason=f"switch to {mode.upper()} mode",
+                )
+                serial_command(port, f"SET MODE {mode.upper()}", timeout=4)
+                mode_changed = True
+            elif mode == "piv" and device.get("piv") != "ready":
                 say("")
                 say("Setting up PIV certificates. This can take up to 30 seconds.")
                 paired, available = piv_identities()
                 previous_piv_identities = set(paired + available)
-                unlock(
-                    port,
-                    reason="create your PIV identity",
-                )
+                unlock(port, reason="create your PIV identity")
                 serial_command(
-                    port,
-                    "PIV CREATE",
-                    timeout=45,
-                    wait_message=(
-                        "Creating PIV identities. This can take up to 30 seconds. Keep your finger off the sensor."
-                    ),
+                    port, "PIV CREATE", timeout=45,
+                    wait_message="Creating PIV identities. This can take up to 30 seconds. Keep your finger off the sensor.",
                 )
                 piv_rescan_needed = True
-        if not mode_changed and not piv_rescan_needed:
-            enroll(port, args.skip_enroll)
-            device = status(port)
-            protocol6(device)
-            sensor_ready(device)
-            device = status(port)
-    if mode_changed:
+            if not mode_changed and not piv_rescan_needed:
+                enroll(port, args.skip_enroll)
+                device = status(port)
+                protocol6(device)
+                sensor_ready(device)
+        if not mode_changed:
+            break
         notify(
             "tinyTouch mode changed",
             "Reconnect tinyTouch to apply the new device mode.",
         )
         say(f"Unplug and reconnect tinyTouch to use {mode.upper()} mode.")
-        reconnected_port = wait_for_reconnect(port)
-        resumed = argparse.Namespace(**vars(args))
-        resumed.mode = mode
-        resumed.port = reconnected_port
-        command_setup(resumed)
-        return
+        try:
+            port = wait_for_reconnect(port)
+        except ToolError as exc:
+            raise ToolError(
+                f"{mode.upper()} mode was selected, but setup did not finish. {exc} "
+                f"Unplug and reconnect tinyTouch, then run 'tinytouch setup --mode {mode}' again."
+            ) from exc
+        reconnected = True
     if piv_rescan_needed:
         say("")
         created_piv_identities = wait_for_piv_identities(
@@ -1458,15 +1779,20 @@ def command_setup(args: argparse.Namespace) -> None:
         device = status(port)
         protocol6(device)
         sensor_ready(device)
+    if device.get("mode") != mode:
+        raise ToolError(f"Setup is incomplete. The device did not remain in {mode.upper()} mode. Run 'tinytouch setup --mode {mode}' again.")
     if mode == "piv" and device.get("piv") != "ready":
         raise ToolError("PIV setup is incomplete. The identity is not ready.")
     if mode == "hid":
+        verify_hid_host(port, device)
         install_helper()
         if not helper_loaded():
             raise ToolError("HID setup is incomplete. The helper is not loaded.")
     if mode == "piv" and not args.no_pair:
+        pair_args = argparse.Namespace(**vars(args))
+        pair_args.port = port
         command_pair(
-            args,
+            pair_args,
             identities=created_piv_identities,
             separate_identity_list=created_piv_identities is not None,
         )
@@ -1476,24 +1802,46 @@ def command_setup(args: argparse.Namespace) -> None:
 
 def command_mode(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    unlock(
-        port,
-        reason=f"switch to {args.mode.upper()} mode",
-    )
-    serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
-    if args.mode == "piv":
-        remove_helper()
+    with foreground_session(port) as connected_port:
+        if isinstance(connected_port, str):
+            port = connected_port
+        device = status(port)
+        protocol6(device)
+        account = device_account(port)
+        if args.mode == "hid":
+            try:
+                verify_hid_host(port, device, account)
+            except HidSetupIncompleteError as exc:
+                say(f"HID password typing needs setup on this Mac. {exc}")
+        unlock(port, reason=f"switch to {args.mode.upper()} mode")
+        serial_command(port, f"SET MODE {args.mode.upper()}", timeout=4)
+        if args.mode == "piv":
+            remove_helper()
     notify("tinyTouch mode changed", "Reconnect tinyTouch to apply the new device mode.")
     say(f"{args.mode.upper()} mode was selected.")
     say("")
     say("Unplug and reconnect tinyTouch to apply the new device mode.")
     say("Waiting for the device to disconnect from USB.")
-    reconnected_port = wait_for_reconnect(port)
-    fresh_status(reconnected_port, {"mode": args.mode.lower()})
+    try:
+        reconnected_port = wait_for_reconnect(port)
+    except ToolError as exc:
+        recovery = "tinytouch setup --mode hid" if args.mode == "hid" else "tinytouch mode piv"
+        raise ToolError(
+            f"{args.mode.upper()} mode was selected, but reconnect did not finish. {exc} "
+            f"Unplug and reconnect tinyTouch, then run '{recovery}' again."
+        ) from exc
+    with foreground_session(reconnected_port) as connected_port:
+        if isinstance(connected_port, str):
+            reconnected_port = connected_port
+        if device_account(reconnected_port) != account:
+            raise ToolError("A different device reconnected. Connect the original tinyTouch and run the mode command again.")
+        device = fresh_status(reconnected_port, {"mode": args.mode.lower()})
+        if args.mode == "hid":
+            verify_hid_host(reconnected_port, device, account)
     if args.mode == "hid":
         install_helper()
+        if not helper_loaded():
+            raise ToolError("HID mode was selected, but the helper is not loaded. Run 'tinytouch setup --mode hid'.")
     say(f"{args.mode.upper()} mode is active.")
 
 
@@ -1746,34 +2094,30 @@ def command_computers(args: argparse.Namespace) -> None:
 
 def command_factory_reset(args: argparse.Namespace) -> None:
     port = choose_port(args.port)
-    device = status(port)
-    protocol6(device)
-    if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
-        raise ToolError("Factory reset cancelled.")
-    remove_helper()
-    unlock(port, reason="confirm the factory reset")
-    paired_identities = paired_piv_identities()
-    if paired_identities:
-        authorize_macos()
-        for identity in paired_identities:
-            run(
-                [
-                    "sudo", "-n", "sc_auth", "unpair", "-u",
-                    getpass.getuser(), "-h", identity,
-                ]
-            )
-    serial_command(port, "RESET FACTORY", timeout=15)
-    cleared = status(port)
-    for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
-        if key == "piv" and key not in cleared:
-            continue
-        if cleared.get(key) != expected:
-            raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
-    remove_helper()
-    account = device_account(port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        if ask("Factory reset clears fingerprints, keys, registered computers, and device settings. Continue? [y/N] ").lower() not in {"y", "yes"}:
+            raise ToolError("Factory reset cancelled.")
+        # Capture HID cleanup data while the device identity still exists.
+        account = device_account(port)
+        paired_identities = paired_piv_identities()
+        # Visible sc_auth hashes do not identify the selected USB device.
+        # Preserve those pairings rather than unpairing another smart card.
+        unlock(port, reason="confirm the factory reset")
+        serial_command(port, "RESET FACTORY", timeout=15)
+        cleared = status(port)
+        for key, expected in (("fingerprints", "0"), ("hosts", "0"), ("piv", "unconfigured")):
+            if key == "piv" and key not in cleared:
+                continue
+            if cleared.get(key) != expected:
+                raise ToolError(f"Factory reset verification failed. {key}={cleared.get(key)!r}.")
+        # Keep the saved service and Mac pairings if approval or reset fails.
+        remove_helper()
     keychain_delete(PAIRING_SERVICE, account)
     keychain_delete(PASSWORD_SERVICE, account)
-    say("Factory reset complete.")
+    suffix = " macOS smart-card pairings were preserved." if paired_identities else ""
+    say("Factory reset complete." + suffix)
 
 
 def response_next(lines: list[str], verb: str) -> int:
@@ -1785,61 +2129,56 @@ def response_next(lines: list[str], verb: str) -> int:
 
 
 def stage_ota(port: str, image: bytes, digest: str) -> None:
-    try:
-        import serial  # type: ignore
-    except ImportError as exc:
-        raise ToolError("The pyserial package is required for firmware updates.") from exc
-    # An interrupted older client may have left an incomplete upload active.
-    # Aborting is safe because committed firmware is already in another slot.
-    try:
-        serial_command(port, "OTA ABORT", timeout=2)
-    except (ToolError, SerialTimeout):
-        # Firmware before 0.1.1 does not support an unscoped abort.
-        pass
-    serial_command(
-        port,
-        "AUTH",
-        timeout=15,
-        touch_prompt="Touch the device with a registered finger to approve the firmware update.",
-    )
-    token = secrets.token_hex(16)
-    was_loaded = unload_helper()
-    try:
-        with serial.Serial(port, 115200, timeout=0.25, write_timeout=5) as device:
+    with foreground_session(port) as session_port:
+        # Clear an incomplete upload from an interrupted client. Committed
+        # firmware remains in its separate OTA slot.
+        try:
+            serial_command(session_port, "OTA ABORT", timeout=2)
+        except ToolError:
+            # Firmware before 0.1.1 does not support an unscoped abort.
+            pass
+        serial_command(
+            session_port,
+            "AUTH",
+            timeout=15,
+            touch_prompt="Touch the device with a registered finger to approve the firmware update.",
+        )
+        token = secrets.token_hex(16)
+        device = _active_serial
+        previous_write_timeout = device.write_timeout
+        device.write_timeout = 5
+        try:
+            lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
+            offset = response_next(lines, "OTA")
+            say("Uploading firmware: 0%")
+            next_progress = 10
+            starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
+            for index in range(0, len(starts), OTA_WRITE_WINDOW):
+                commands = []
+                for start in starts[index:index + OTA_WRITE_WINDOW]:
+                    payload = base64.b64encode(
+                        image[start:start + OTA_CHUNK_SIZE]
+                    ).decode()
+                    command = f"OTA WRITE {token} {start} {payload}"
+                    device.write((command + "\n").encode("ascii"))
+                    commands.append(command)
+                for command in commands:
+                    lines = serial_response(device, command)
+                    offset = response_next(lines, "OTA")
+                progress = min(100, offset * 100 // len(image))
+                if progress >= next_progress:
+                    say(f"Uploading firmware: {progress}%")
+                    next_progress = progress + 10
+            say("Verifying firmware...")
+            commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
+        except BaseException:
             try:
-                lines = serial_exchange(device, f"OTA BEGIN {token} {len(image)} {digest}")
-                offset = response_next(lines, "OTA")
-                say("Uploading firmware: 0%")
-                next_progress = 10
-                starts = list(range(offset, len(image), OTA_CHUNK_SIZE))
-                for index in range(0, len(starts), OTA_WRITE_WINDOW):
-                    commands = []
-                    for start in starts[index:index + OTA_WRITE_WINDOW]:
-                        payload = base64.b64encode(
-                            image[start:start + OTA_CHUNK_SIZE]
-                        ).decode()
-                        command = f"OTA WRITE {token} {start} {payload}"
-                        device.write((command + "\n").encode("ascii"))
-                        commands.append(command)
-                    device.flush()
-                    for command in commands:
-                        lines = serial_response(device, command)
-                        offset = response_next(lines, "OTA")
-                    progress = min(100, offset * 100 // len(image))
-                    if progress >= next_progress:
-                        say(f"Uploading firmware: {progress}%")
-                        next_progress = progress + 10
-                say("Verifying firmware...")
-                commit = serial_exchange(device, f"OTA COMMIT {token}", timeout=10)
-            except BaseException:
-                try:
-                    serial_exchange(device, f"OTA ABORT {token}", timeout=2)
-                except (ToolError, SerialTimeout):
-                    pass
-                raise
-    finally:
-        if was_loaded:
-            load_helper()
+                serial_exchange(device, f"OTA ABORT {token}", timeout=2)
+            except Exception:
+                pass
+            raise
+        finally:
+            device.write_timeout = previous_write_timeout
     line = next((item for item in commit if item.startswith("OK OTA STAGED")), "")
     if "power_cycle=required" not in line:
         raise ToolError("The firmware did not confirm that the OTA slot was staged safely.")
@@ -1847,7 +2186,6 @@ def stage_ota(port: str, image: bytes, digest: str) -> None:
 
 def serial_exchange(device, command: str, *, timeout: float = 8.0) -> list[str]:
     device.write((command + "\n").encode("ascii"))
-    device.flush()
     return serial_response(device, command, timeout=timeout)
 
 
@@ -1956,6 +2294,22 @@ def network_test() -> None:
 
 
 def command_update(args: argparse.Namespace) -> None:
+    firmware_file = getattr(args, "firmware_file", None)
+    if firmware_file is not None:
+        try:
+            image = firmware_file.read_bytes()
+        except OSError as exc:
+            raise ToolError(f"Could not read the local OTA image: {firmware_file}.") from exc
+        if not image:
+            raise ToolError("The local OTA image is empty. Select a signed firmware image.")
+        port = choose_port(args.port)
+        protocol6(status(port))
+        # The device verifies the OTA signature before activating the image.
+        stage_ota(port, image, hashlib.sha256(image).hexdigest())
+        message = "Update ready. Unplug and reconnect tinyTouch to finish."
+        notify("tinyTouch update ready", message)
+        say(message)
+        return
     root, manifest = update_release(getattr(args, "release_version", None))
     release_version = manifest["version"]
     if not getattr(args, "firmware_only", False) and release_version != CLI_VERSION:
@@ -1972,7 +2326,10 @@ def command_update(args: argparse.Namespace) -> None:
         installed = subprocess.run(
             [executable, "--version"], capture_output=True, check=False, text=True
         )
-        if installed.returncode != 0 or not installed.stdout.rstrip().endswith(release_version):
+        if (
+            installed.returncode != 0
+            or installed.stdout.strip() != f"tinyTouch CLI {release_version}"
+        ):
             raise ToolError("The installed CLI version does not match the selected release.")
         command = [
             executable,
@@ -1983,7 +2340,13 @@ def command_update(args: argparse.Namespace) -> None:
         ]
         if args.port:
             command.extend(["--port", args.port])
-        os.execv(executable, command)
+        try:
+            os.execv(executable, command)
+        except OSError as exc:
+            raise ToolError(
+                "The CLI was installed, but the update could not restart. "
+                "Run 'tinytouch update' again. The firmware was not changed."
+            ) from exc
 
     command_upgrade_helper(args)
 
@@ -2692,6 +3055,18 @@ def parser() -> argparse.ArgumentParser:
     )
     repair.add_argument("--port")
     repair.set_defaults(func=command_repair)
+    password = sub.add_parser("password", help="Change the password typed on this Mac.")
+    password.add_argument("--finger", type=int, choices=range(1, 11),
+                          help="Set one password for all four views of this finger.")
+    password.add_argument("--port", default=argparse.SUPPRESS,
+                          help="Use this USB serial path instead of the global --port value.")
+    password.set_defaults(func=command_password)
+    layout = sub.add_parser("keyboard-layout", help="Read or change HID keyboard translation.")
+    layout.add_argument("layout", nargs="?", choices=("auto", "us"),
+                        help="Use the active macOS layout with auto, or US key positions with us.")
+    layout.add_argument("--port", default=argparse.SUPPRESS,
+                        help="Use this USB serial path instead of the global --port value.")
+    layout.set_defaults(func=command_keyboard_layout)
     upgrade_helper = sub.add_parser("_upgrade-helper", help=argparse.SUPPRESS)
     upgrade_helper.add_argument("--port")
     upgrade_helper.set_defaults(func=command_upgrade_helper)
@@ -2771,7 +3146,10 @@ def parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update", help="Update the CLI, HID helper, and device firmware.")
     update.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
-    update.add_argument("--release-version", help=argparse.SUPPRESS)
+    update_source = update.add_mutually_exclusive_group()
+    update_source.add_argument("--release-version", help=argparse.SUPPRESS)
+    update_source.add_argument("--file", dest="firmware_file", type=Path,
+                               help="Stage a local signed firmware image over USB using OTA.")
     update.set_defaults(func=command_update)
     rom = sub.add_parser(
         "rom",
@@ -2822,7 +3200,7 @@ def parser() -> argparse.ArgumentParser:
     pair = sub.add_parser("pair", help="Pair the PIV identity with the current macOS user.")
     pair.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     pair.set_defaults(func=command_pair)
-    hid_smoke = sub.add_parser("hid-smoke", help="Test the HID helper without connecting a physical device.")
+    hid_smoke = sub.add_parser("hid-smoke", help="Test serial communication and encrypted HID helper replies with a simulated device.")
     hid_smoke.set_defaults(func=command_hid_smoke)
     enroll_demo = sub.add_parser("enroll-demo", help="Preview fingerprint enrollment without connecting a device.")
     enroll_demo.set_defaults(func=command_enroll_demo)
@@ -2840,8 +3218,8 @@ def parser() -> argparse.ArgumentParser:
         "delete": ("Delete all views in the selected fingerprint block after fingerprint approval. Keep the other fingerprint blocks.", "tinytouch delete 2"),
         "fingers": ("Read occupied fingerprint blocks, partial enrollment, pending cleanup, and available capacity. Keep the existing enrollment.", "tinytouch fingers"),
         "computers": ("List or remove registered HID computers. Use HID setup to add this Mac. Removing the last computer selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
-        "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and local pairing. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
-        "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
+        "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and this device's local HID credentials. macOS smart-card pairings are preserved. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
+        "update": ("Update from one verified release, or use --file to stage a local signed firmware image over USB using OTA. Approve with an enrolled finger, then reconnect after staging.", "tinytouch update\ntinytouch update --file signed-firmware.bin"),
         "uninstall": ("Stop and remove the background service. Saved credentials and the CLI stay installed.", "tinytouch uninstall"),
         "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),
         "status": ("Show full device status as JSON, or use --summary for a short overview.", "tinytouch status --summary\ntinytouch status"),

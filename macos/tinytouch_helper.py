@@ -50,7 +50,9 @@ SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 HEARTBEAT_TIMEOUT_SECONDS = 2.0
-STARTUP_STATUS_TIMEOUT_SECONDS = 2.0
+# STATUS includes three sensor probes and two UART recovery attempts, each with
+# bounded mutex and transport waits. Let that command finish before reopening.
+STARTUP_STATUS_TIMEOUT_SECONDS = 30.0
 KEYCHAIN_RETRY_SECONDS = 0.5
 MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
@@ -136,10 +138,33 @@ def fingerprint_account(device_id: str, slot: int) -> str:
     return f"{device_id}:fingerprint:{slot}"
 
 
+def finger_password_account(device_id: str, finger: int) -> str:
+    """Name one password shared by all four views of an enrolled finger."""
+    return f"{device_id}:fingerprint:group:{finger}"
+
+
+def password_accounts(device_id: str) -> list[str]:
+    """List override accounts that may need Keychain access repair."""
+    return [fingerprint_account(device_id, slot) for slot in range(1, 41)] + [
+        finger_password_account(device_id, finger) for finger in range(1, 11)
+    ]
+
+
 def load_passwords(device_id: str) -> dict[int, bytearray]:
     passwords = {0: keychain_get(device_id)}
     try:
+        for finger in range(1, 11):
+            account = finger_password_account(device_id, finger)
+            if has_password(SERVICE, account):
+                # Store one item so a failed update cannot leave a finger's
+                # four views using different passwords.
+                value = keychain_get(account)
+                first_slot = (finger - 1) * 4 + 1
+                for slot in range(first_slot, first_slot + 4):
+                    passwords[slot] = value
         for slot in range(1, 41):
+            if slot in passwords:
+                continue
             account = fingerprint_account(device_id, slot)
             if has_password(SERVICE, account):
                 try:
@@ -160,10 +185,12 @@ def settings_path(device_id: str) -> Path:
 def load_settings(device_id: str) -> dict[str, str]:
     try:
         value = json.loads(settings_path(device_id).read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return {"keyboard_layout": "auto"}
+    if not isinstance(value, dict):
         return {"keyboard_layout": "auto"}
     layout = value.get("keyboard_layout", "auto")
-    return {"keyboard_layout": layout if layout in {"auto", "us"} else "auto"}
+    return {"keyboard_layout": layout if layout in ("auto", "us") else "auto"}
 
 
 @lru_cache(maxsize=1)
@@ -219,29 +246,69 @@ def _keyboard_output_map(layout_bytes: bytes) -> dict[str, str]:
     hitoolbox, _, _ = _keyboard_layout_libraries()
     layout = ctypes.create_string_buffer(layout_bytes)
     output_map: dict[str, str] = {}
+    keys: dict[str, tuple[int, int]] = {}
     for wire in (chr(value) for value in range(32, 127)):
         base = _US_SHIFTED.get(wire, wire)
         keycode = _MAC_KEYCODES.get(base.lower())
         if keycode is None:
             continue
         modifiers = 2 if wire in _US_SHIFTED else 0  # Carbon shiftKey >> 8
-        dead_key = ctypes.c_uint32(0)
+        keys[wire] = (keycode, modifiers)
+
+    def translate(wire: str, state: int = 0) -> tuple[str, int]:
+        keycode, modifiers = keys[wire]
+        dead_key = ctypes.c_uint32(state)
         actual = ctypes.c_uint32(0)
         chars = (ctypes.c_uint16 * 4)()
-        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 1,
+        # Keep dead-key state: suppressing it predicts characters the physical
+        # key does not type until a second key completes the sequence.
+        status = hitoolbox.UCKeyTranslate(layout, keycode, 0, modifiers, 0, 0,
                                         ctypes.byref(dead_key), len(chars),
                                         ctypes.byref(actual), chars)
-        if status == 0 and actual.value == 1 and dead_key.value == 0:
-            output_map[chr(chars[0])] = wire
+        if status != 0 or actual.value > len(chars):
+            return "", 0
+        raw = b"".join(chars[index].to_bytes(2, "little")
+                       for index in range(actual.value))
+        try:
+            return raw.decode("utf-16-le"), dead_key.value
+        except UnicodeError:
+            return "", 0
+
+    neutral = {wire: translate(wire) for wire in keys}
+    idle_states = {0: True}
+
+    def is_idle(state: int) -> bool:
+        if state not in idle_states:
+            # The state is opaque and can retain metadata after composition.
+            # A completed sequence makes subsequent keys behave as they do
+            # with no pending accent. Do not infer this from state bits.
+            idle_states[state] = all(
+                translate(wire, state)[0] == output[0]
+                for wire, output in neutral.items()
+            )
+        return idle_states[state]
+
+    dead_keys: dict[str, int] = {}
+    for wire, (text, state) in neutral.items():
+        if len(text) == 1 and is_idle(state):
+            output_map.setdefault(text, wire)
+        elif not text and state:
+            dead_keys[wire] = state
+    for first, state in dead_keys.items():
+        for second in keys:
+            text, remaining = translate(second, state)
+            if len(text) == 1 and is_idle(remaining):
+                output_map.setdefault(text, first + second)
     return output_map
 
 
 def translate_password(password: bytes, output_map: dict[str, str] | None) -> bytes:
+    text = password.decode("utf-8")
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("Passwords cannot contain control characters.")
     if output_map is None:
-        password.decode("ascii")
-        result = password
+        result = text.encode("ascii")
     else:
-        text = password.decode("utf-8")
         try:
             result = "".join(output_map[char] for char in text).encode("ascii")
         except KeyError as exc:
@@ -482,12 +549,11 @@ def handle_event(
         return None
     try:
         wire_password = translate_password(selected_password, keyboard_map)
-    except (UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError):
         diagnostic(
             "protocol.event_rejected",
             level="warning",
             reason="keyboard_layout_unrepresentable",
-            detail=str(exc),
         )
         return None
     iv_hex, ct_hex = encrypt_password(pairing_key, nonce, wire_password)
@@ -564,23 +630,43 @@ def split_serial_lines(buffer: bytes, chunk: bytes) -> tuple[list[bytes], bytes]
     return lines, remainder
 
 
-def require_startup_status(ser: serial.Serial, device_id: str, port: str) -> None:
-    """Run the probe that initializes HID after a USB reconnect."""
-    decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+def require_startup_status(
+    ser: serial.Serial,
+    device_id: str,
+    port: str,
+    *,
+    decoder: SerialFrameDecoder | None = None,
+    stop_event: threading.Event | None = None,
+) -> list[bytes] | None:
+    """Probe HID readiness and retain events; return None when draining."""
+    decoder = decoder if decoder is not None else SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
+    pending: deque[bytes] = deque(maxlen=MAX_SEEN_NONCES)
+    if stop_event is not None and stop_event.is_set():
+        return None
+    # Serial.write uses write_timeout. flush waits in tcdrain without a deadline
+    # and can prevent a disconnected worker from releasing its port.
     ser.write(b"STATUS\n")
-    ser.flush()
     deadline = time.monotonic() + STARTUP_STATUS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return None
         chunk = read_available(ser)
         if not chunk:
             continue
+        status_received = False
         for raw in decoder.feed(chunk):
             try:
                 line = raw.decode("ascii").strip()
             except UnicodeDecodeError:
                 continue
             if line.startswith("OK STATUS "):
-                return
+                status_received = True
+            else:
+                line = resynchronize_event(line, device_id)
+                if re.match(r"EV[0-9]* ", line):
+                    pending.append(line.encode("ascii"))
+        if status_received:
+            return list(pending)
     diagnostic("worker.startup_status_failed", level="warning", device_id=device_id, port=port)
     raise serial.SerialException(f'tinyTouch did not respond to STATUS on {port}.')
 
@@ -595,7 +681,6 @@ def serve_port(
     password: dict[int, bytearray] = {}
     pairing_key = bytearray()
     last_port_check = 0.0
-    last_received = time.monotonic()
     heartbeat_sent_at: float | None = None
     decoder = SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     try:
@@ -604,13 +689,18 @@ def serve_port(
         state = load_state(device_id)
         settings = load_settings(device_id)
         with open_serial(port) as ser:
-            require_startup_status(ser, device_id, port)
+            pending_frames = require_startup_status(
+                ser, device_id, port, decoder=decoder, stop_event=stop_event
+            )
+            if pending_frames is None or (stop_event is not None and stop_event.is_set()):
+                return
+            last_heartbeat = time.monotonic()
+            partial_started_at = last_heartbeat if decoder.buffer else None
             if device_id not in REATTACHED_DEVICES:
                 # A new login creates a new helper process. Ask the firmware to
                 # re-enumerate once so macOS rebuilds stale CDC and HID endpoints.
                 REATTACHED_DEVICES.append(device_id)
                 ser.write(b"USB RECONNECT\n")
-                ser.flush()
                 diagnostic("worker.usb_reattach_requested", device_id=device_id, port=port)
                 raise serial.SerialException("USB reattach requested")
             diagnostic("worker.connected", device_id=device_id, port=port)
@@ -618,39 +708,28 @@ def serve_port(
                 if stop_event is not None and stop_event.is_set():
                     diagnostic("worker.drained", device_id=device_id, port=port)
                     return
-                chunk = read_available(ser)
-                if not chunk:
-                    # pyserial can leave a descriptor open after macOS removes
-                    # the USB device during sleep.  In that state readline()
-                    # simply times out forever, so the manager never gets a
-                    # chance to open the device again after wake.
-                    now = time.monotonic()
-                    if now - last_received >= PARTIAL_FRAME_TIMEOUT_SECONDS:
-                        if decoder.discard_partial():
-                            diagnostic(
-                                "protocol.partial_frame_expired",
-                                level="warning",
-                                device_id=device_id,
-                            )
-                    if now - last_port_check >= 1.0:
-                        last_port_check = now
-                        if port not in device_ports():
-                            raise serial.SerialException(
-                                f"serial device disappeared: {port}"
-                            )
-                    if heartbeat_sent_at is not None:
-                        if now - heartbeat_sent_at >= HEARTBEAT_TIMEOUT_SECONDS:
-                            raise serial.SerialException(
-                                f'The serial device stopped responding after sleep. Port: {port}.'
-                            )
-                    elif now - last_received >= HEARTBEAT_INTERVAL_SECONDS:
-                        ser.write(b"PING\n")
-                        ser.flush()
-                        heartbeat_sent_at = now
-                    continue
-                last_received = time.monotonic()
-                heartbeat_sent_at = None
-                for raw in decoder.feed(chunk):
+                chunk = b"" if pending_frames else read_available(ser)
+                now = time.monotonic()
+                # Check discovery even when stale descriptors keep yielding bytes.
+                if now - last_port_check >= 1.0:
+                    last_port_check = now
+                    if port not in device_ports():
+                        raise serial.SerialException(f"serial device disappeared: {port}")
+                if partial_started_at is not None and now - partial_started_at >= PARTIAL_FRAME_TIMEOUT_SECONDS:
+                    if decoder.discard_partial():
+                        diagnostic(
+                            "protocol.partial_frame_expired",
+                            level="warning",
+                            device_id=device_id,
+                        )
+                    partial_started_at = None
+                frames = pending_frames or decoder.feed(chunk)
+                pending_frames = []
+                if not decoder.buffer:
+                    partial_started_at = None
+                elif frames or partial_started_at is None:
+                    partial_started_at = now
+                for raw in frames:
                     try:
                         line = raw.decode("ascii").strip()
                     except UnicodeDecodeError:
@@ -661,9 +740,22 @@ def serve_port(
                             reason="non_ascii",
                         )
                         continue
-                    if line == "PONG":
+                    if re.fullmatch(r"PONG(?: [0-9]+)?", line):
+                        if heartbeat_sent_at is not None:
+                            heartbeat_sent_at = None
+                            last_heartbeat = now
                         continue
                     line = resynchronize_event(line, device_id)
+                    version = re.match(r"(EV[0-9]+) ", line)
+                    if version is not None and version[1] != "EV2":
+                        diagnostic(
+                            "protocol.frame_rejected",
+                            level="warning",
+                            device_id=device_id,
+                            reason="unsupported_event_version",
+                            version=version[1],
+                        )
+                        continue
                     if not (line.startswith("EV ") or line.startswith("EV2 ")):
                         continue
                     keyboard_map = (current_keyboard_output_map()
@@ -673,7 +765,6 @@ def serve_port(
                                          record_nonce=False)
                     if reply:
                         ser.write(reply.encode("ascii"))
-                        ser.flush()
                         remember_nonce(state, line.split()[1], device_id)
                         diagnostic(
                             "protocol.password_delivered",
@@ -682,6 +773,16 @@ def serve_port(
                         )
                         if once:
                             return
+                # Only a complete PONG acknowledges PING. Diagnostics, malformed
+                # frames, and fingerprint events cannot hide a stuck console.
+                if heartbeat_sent_at is not None:
+                    if now - heartbeat_sent_at >= HEARTBEAT_TIMEOUT_SECONDS:
+                        raise serial.SerialException(
+                            f'The serial device stopped responding to PING. Port: {port}.'
+                        )
+                elif now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                    ser.write(b"PING\n")
+                    heartbeat_sent_at = time.monotonic()
     finally:
         for value in password.values():
             value[:] = b"\x00" * len(value)
@@ -832,6 +933,7 @@ def run_manager() -> None:
 def _manage_workers(workers: dict[str, Worker]) -> None:
     failures: dict[str, int] = {}
     retry_after: dict[str, float] = {}
+    previous_endpoints: dict[str, DeviceEndpoint] = {}
     backoff = BackoffPolicy(initial=0.25, maximum=MAX_WORKER_RETRY_SECONDS)
     lease_observer = LeaseObserver(SUSPEND_PATH, SUSPEND_ACK_PATH)
     active_lease_nonce: str | None = None
@@ -855,7 +957,8 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
         now = time.monotonic()
         lease = lease_observer.active()
         if lease is not None:
-            transition(ManagerPhase.DRAINING, "foreground_lease")
+            if workers:
+                transition(ManagerPhase.DRAINING, "foreground_lease")
             for worker in workers.values():
                 worker.stop()
             for device_id, worker in list(workers.items()):
@@ -863,32 +966,42 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
                     worker.thread.join()
                     del workers[device_id]
             if not workers:
-                lease_observer.acknowledge(lease)
-                transition(ManagerPhase.SUSPENDED, "workers_drained")
                 if active_lease_nonce != lease.nonce:
+                    lease_observer.acknowledge(lease)
                     diagnostic("manager.suspended", owner_pid=lease.pid)
                     active_lease_nonce = lease.nonce
+                transition(ManagerPhase.SUSPENDED, "workers_drained")
             time.sleep(0.05)
             continue
         if active_lease_nonce is not None:
             diagnostic("manager.resumed")
             active_lease_nonce = None
+            # Foreground commands may have repaired credentials or changed mode.
+            failures.clear()
+            retry_after.clear()
         transition(ManagerPhase.RUNNING, "lease_released")
 
         endpoints = {endpoint.device_id: endpoint for endpoint in device_endpoints()}
+        for device_id, endpoint in endpoints.items():
+            if endpoint != previous_endpoints.get(device_id):
+                # A new USB endpoint can recover before the old retry is due.
+                failures.pop(device_id, None)
+                retry_after.pop(device_id, None)
+        previous_endpoints = endpoints
         for device_id in failures.keys() | retry_after.keys():
             if device_id not in endpoints and device_id not in workers:
                 failures.pop(device_id, None)
                 retry_after.pop(device_id, None)
         for device_id, worker in list(workers.items()):
             current = endpoints.get(device_id)
-            if current is None or current.port != worker.endpoint.port:
+            if current != worker.endpoint:
                 worker.stop()
             if worker.thread.is_alive():
                 continue
             worker.thread.join()
             del workers[device_id]
             if worker.planned_stop:
+                failures.pop(device_id, None)
                 retry_after[device_id] = now
                 continue
             if worker.started_at is not None and now - worker.started_at >= 30:

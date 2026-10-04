@@ -239,7 +239,7 @@ jobs:
           tag_sha="$(gh api --method POST \
             "repos/$GITHUB_REPOSITORY/git/tags" \
             -f tag="$RELEASE_TAG" \
-            -f message="Release $RELEASE_TAG" \
+            -f message="release $RELEASE_TAG" \
             -f object="$RELEASE_COMMIT" \
             -f type=commit --jq .sha)"
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
@@ -250,7 +250,13 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
-          flags=(--verify-tag --generate-notes)
+          flags=(--verify-tag)
+          notes_file="release/notes/${RELEASE_TAG#v}.md"
+          if [[ -f "$notes_file" ]]; then
+            flags+=(--notes-file "$notes_file")
+          else
+            flags+=(--generate-notes)
+          fi
           if [[ "$RELEASE_PRERELEASE" == true ]]; then
             flags+=(--prerelease --latest=false)
           fi

@@ -28,6 +28,8 @@ static esp_timer_handle_t hid_pacing_timer;
 typedef enum { HID_IDLE, HID_PENDING, HID_COMPLETE, HID_FAILED } hid_transfer_t;
 static hid_transfer_t hid_transfer;
 static portMUX_TYPE hid_transfer_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t hid_session;
+static char password_request_nonce[33];
 static uint32_t event_counter;
 static volatile bool usb_sensor_probe_pending;
 static volatile TickType_t usb_sensor_probe_at;
@@ -90,6 +92,13 @@ static void hid_set_transfer(hid_transfer_t state) {
   taskEXIT_CRITICAL(&hid_transfer_lock);
 }
 
+static uint32_t hid_session_id(void) {
+  taskENTER_CRITICAL(&hid_transfer_lock);
+  uint32_t session = hid_session;
+  taskEXIT_CRITICAL(&hid_transfer_lock);
+  return session;
+}
+
 static void hid_wake(void *arg) {
   (void)arg;
   if (hid_signal) xSemaphoreGive(hid_signal);
@@ -102,18 +111,19 @@ static void hid_finish_report(bool success) {
   hid_wake(NULL);
 }
 
-static bool wait_hid_ready(void) {
+static bool wait_hid_ready(uint32_t session) {
   TickType_t started = xTaskGetTickCount();
   while (!tud_hid_ready() || hid_transfer_status() == HID_PENDING) {
+    if (hid_session_id() != session) return false;
     TickType_t elapsed = xTaskGetTickCount() - started;
     if (elapsed >= pdMS_TO_TICKS(2000)) return false;
     xSemaphoreTake(hid_signal, pdMS_TO_TICKS(2000) - elapsed);
   }
-  return true;
+  return hid_session_id() == session;
 }
 
-static bool send_hid_report(uint8_t modifier, const uint8_t *keys) {
-  if (!wait_hid_ready()) return false;
+static bool send_hid_report(uint8_t modifier, const uint8_t *keys, uint32_t session) {
+  if (!wait_hid_ready(session)) return false;
   int64_t earliest_next = esp_timer_get_time() + device_config_typing_delay_ms() * 1000LL;
   hid_set_transfer(HID_PENDING);
   if (!tud_hid_keyboard_report(0, modifier, keys)) {
@@ -126,7 +136,7 @@ static bool send_hid_report(uint8_t modifier, const uint8_t *keys) {
     if (elapsed >= pdMS_TO_TICKS(2000)) return false;
     xSemaphoreTake(hid_signal, pdMS_TO_TICKS(2000) - elapsed);
   }
-  if (hid_transfer_status() != HID_COMPLETE) return false;
+  if (hid_transfer_status() != HID_COMPLETE || hid_session_id() != session) return false;
 
   // USB completion and the configured minimum spacing are independent. A
   // high-resolution timer honors 1–9 ms settings without rounding to zero or
@@ -136,17 +146,18 @@ static bool send_hid_report(uint8_t modifier, const uint8_t *keys) {
     if (esp_timer_start_once(hid_pacing_timer, remaining) != ESP_OK) return false;
     xSemaphoreTake(hid_signal, pdMS_TO_TICKS(2000));
     (void)esp_timer_stop(hid_pacing_timer);
-    if (hid_transfer_status() != HID_COMPLETE) return false;
+    if (hid_transfer_status() != HID_COMPLETE || hid_session_id() != session) return false;
   }
   return true;
 }
 
-static bool send_key(uint8_t modifier, uint8_t key) {
+static bool send_key(uint8_t modifier, uint8_t key, uint32_t session) {
   uint8_t report[6] = {key, 0, 0, 0, 0, 0};
-  return send_hid_report(modifier, report) && send_hid_report(0, NULL);
+  return send_hid_report(modifier, report, session) && send_hid_report(0, NULL, session);
 }
 
-static bool type_ascii(const uint8_t *data, size_t length) {
+static bool type_ascii_in_session(const uint8_t *data, size_t length, uint32_t session) {
+  if (hid_session_id() != session) return false;
   // Validate the complete payload before emitting any key. A malformed helper
   // response must never leave a password prefix in the focused field.
   for (size_t i = 0; i < length; i++) {
@@ -154,18 +165,22 @@ static bool type_ascii(const uint8_t *data, size_t length) {
   }
   for (size_t i = 0; i < length; i++) {
     uint8_t modifier = ascii_to_keycode[data[i]][0] ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
-    if (!send_key(modifier, ascii_to_keycode[data[i]][1])) goto failed;
+    if (!send_key(modifier, ascii_to_keycode[data[i]][1], session)) goto failed;
   }
-  if (device_config_submit_enter() && !send_key(0, HID_KEY_ENTER)) goto failed;
+  if (device_config_submit_enter() && !send_key(0, HID_KEY_ENTER, session)) goto failed;
   return true;
 
 failed:
   // Never submit Enter after a partial password. Release any pressed key if
   // the transport can still accept it; a pending transfer must finish first.
-  if (tud_hid_ready() && hid_transfer_status() != HID_PENDING) {
-    (void)send_hid_report(0, NULL);
+  if (hid_session_id() == session && tud_hid_ready() && hid_transfer_status() != HID_PENDING) {
+    (void)send_hid_report(0, NULL, session);
   }
   return false;
+}
+
+static bool type_ascii(const uint8_t *data, size_t length) {
+  return type_ascii_in_session(data, length, hid_session_id());
 }
 
 static void bytes_to_hex(const uint8_t *data, size_t length, char *output) {
@@ -334,6 +349,48 @@ done:
   return ok;
 }
 
+static bool begin_password_request(const char *nonce, uint32_t session) {
+  xQueueReset(password_responses);
+  taskENTER_CRITICAL(&hid_transfer_lock);
+  bool current = hid_session == session;
+  if (current) memcpy(password_request_nonce, nonce, sizeof(password_request_nonce));
+  taskEXIT_CRITICAL(&hid_transfer_lock);
+  return current;
+}
+
+static void end_password_request(void) {
+  taskENTER_CRITICAL(&hid_transfer_lock);
+  password_request_nonce[0] = '\0';
+  taskEXIT_CRITICAL(&hid_transfer_lock);
+}
+
+static bool wait_for_password(const char *nonce, uint32_t session,
+                              const device_hid_host_t *hosts, size_t host_count,
+                              bool legacy, TickType_t timeout, char response[640],
+                              uint8_t *password, size_t *password_length) {
+  TickType_t started = xTaskGetTickCount();
+  size_t capacity = *password_length;
+  while (hid_session_id() == session) {
+    TickType_t elapsed = xTaskGetTickCount() - started;
+    if (elapsed >= timeout ||
+        xQueueReceive(password_responses, response, timeout - elapsed) != pdTRUE ||
+        hid_session_id() != session) return false;
+    *password_length = capacity;
+    bool valid = false;
+    if (host_count > 1 && strncmp(response, "PW2 ", 4) == 0) {
+      valid = decrypt_password_v2(nonce, response, hosts, host_count, password, password_length);
+    } else if (legacy && strncmp(response, "PW ", 3) == 0) {
+      valid = decrypt_password(hosts[0].key, nonce, response, password, password_length);
+    }
+    if (valid) return true;
+    // A delayed or malformed reply must not consume the current touch. Keep
+    // the original deadline while waiting for an authenticated response.
+    secure_wipe(response, 640);
+    secure_wipe(password, capacity);
+  }
+  return false;
+}
+
 static bool request_and_type_password(fingerprint_match_t match) {
   uint8_t pairing_key[32];
   uint8_t nonce_bytes[16];
@@ -347,6 +404,7 @@ static bool request_and_type_password(fingerprint_match_t match) {
   device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS] = {0};
   size_t password_length = sizeof(password);
   bool result = false;
+  uint32_t session = hid_session_id();
 
   size_t host_count = device_config_copy_hid_hosts(hosts);
   if (host_count == 0) return false;
@@ -354,7 +412,7 @@ static bool request_and_type_password(fingerprint_match_t match) {
   esp_fill_random(nonce_bytes, sizeof(nonce_bytes));
   bytes_to_hex(nonce_bytes, sizeof(nonce_bytes), nonce);
   event_counter++;
-  xQueueReset(password_responses);
+  if (!begin_password_request(nonce, session)) goto done;
   if (host_count == 1) {
     snprintf(material, sizeof(material), "EV|%s|%lu|%u|%u", nonce,
              (unsigned long)event_counter, match.slot, match.score);
@@ -364,12 +422,12 @@ static bool request_and_type_password(fingerprint_match_t match) {
              (unsigned long)event_counter, match.slot, match.score, mac_hex);
     touch_pin_hid_log_event("hid_requested", match.slot);
     config_console_send_line(event);
-    if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(6000)) != pdTRUE ||
-        !decrypt_password(pairing_key, nonce, response, password, &password_length)) goto done;
+    if (!wait_for_password(nonce, session, hosts, host_count, true,
+                           pdMS_TO_TICKS(6000), response, password, &password_length)) goto done;
   } else {
     int used = snprintf(event, sizeof(event), "EV2 %s %lu %u %u", nonce,
                         (unsigned long)event_counter, match.slot, match.score);
-    for (size_t i = 0; i < host_count && used > 0 && used < sizeof(event); i++) {
+    for (size_t i = 0; i < host_count && used > 0 && (size_t)used < sizeof(event); i++) {
       const device_hid_host_t *host = &hosts[i];
       char id_hex[DEVICE_CONFIG_HID_KEY_ID_SIZE * 2 + 1];
       bytes_to_hex(host->id, sizeof(host->id), id_hex);
@@ -379,16 +437,16 @@ static bool request_and_type_password(fingerprint_match_t match) {
       bytes_to_hex(event_mac, sizeof(event_mac), mac_hex);
       used += snprintf(event + used, sizeof(event) - used, " %s:%s", id_hex, mac_hex);
     }
-    if (used <= 0 || used >= sizeof(event)) goto done;
+    if (used <= 0 || (size_t)used >= sizeof(event)) goto done;
     touch_pin_hid_log_event("hid_requested", match.slot);
     config_console_send_line(event);
-    if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(1500)) == pdTRUE &&
-        decrypt_password_v2(nonce, response, hosts, host_count, password,
-                            &password_length)) {
+    if (wait_for_password(nonce, session, hosts, host_count, false,
+                          pdMS_TO_TICKS(1500), response, password, &password_length)) {
       touch_pin_hid_log_event("hid_typing", match.slot);
-      result = type_ascii(password, password_length);
+      result = type_ascii_in_session(password, password_length, session);
       goto done;
     }
+    if (hid_session_id() != session) goto done;
     password_length = sizeof(password);
     snprintf(material, sizeof(material), "EV|%s|%lu|%u|%u", nonce,
              (unsigned long)event_counter, match.slot, match.score);
@@ -398,23 +456,26 @@ static bool request_and_type_password(fingerprint_match_t match) {
              (unsigned long)event_counter, match.slot, match.score, mac_hex);
     touch_pin_hid_log_event("hid_legacy_retry", match.slot);
     config_console_send_line(event);
-    if (xQueueReceive(password_responses, response, pdMS_TO_TICKS(4500)) != pdTRUE ||
-        !decrypt_password(pairing_key, nonce, response, password, &password_length)) goto done;
+    if (!wait_for_password(nonce, session, hosts, host_count, true,
+                           pdMS_TO_TICKS(4500), response, password, &password_length)) goto done;
   }
   touch_pin_hid_log_event("hid_typing", match.slot);
-  result = type_ascii(password, password_length);
+  result = type_ascii_in_session(password, password_length, session);
 
 done:
+  end_password_request();
   secure_wipe(pairing_key, sizeof(pairing_key));
   secure_wipe(nonce_bytes, sizeof(nonce_bytes));
   secure_wipe(event_mac, sizeof(event_mac));
   secure_wipe(password, sizeof(password));
   secure_wipe(hosts, sizeof(hosts));
+  secure_wipe(response, sizeof(response));
   return result;
 }
 
 typedef enum {
   AUTH_STATE_IDLE = 0,
+  AUTH_STATE_CAPTURING,
   AUTH_STATE_WAITING_FOR_LIFT,
 } auth_state_t;
 
@@ -481,6 +542,7 @@ static void touch_hid_task(void *arg) {
       // still touching the sensor. Disarm that touch until a lift is observed
       // so it cannot become a second background match and type into the CLI.
       runtime.presence_armed = false;
+      if (runtime.state == AUTH_STATE_CAPTURING) usb_ccid_touch_cancel();
       auth_wait_for_lift(&runtime, xTaskGetTickCount());
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
@@ -518,6 +580,16 @@ static void touch_hid_task(void *arg) {
       continue;
     }
 
+    // Retry only while the same finger is present, for at most 750 ms. A
+    // missing touch wire or a completed mismatch cannot start another scan.
+    if (runtime.state == AUTH_STATE_CAPTURING &&
+        (!present || (TickType_t)(now - runtime.state_started) >= pdMS_TO_TICKS(750))) {
+      usb_ccid_touch_cancel();
+      touch_pin_hid_log_event("finger_capture_cancelled", 0);
+      auth_wait_for_lift(&runtime, now);
+      continue;
+    }
+
     // Presence is the sole trigger for a capture. Idle lighting maintenance
     // never captures or matches a fingerprint.
     if (!fingerprint_is_ready()) {
@@ -535,19 +607,27 @@ static void touch_hid_task(void *arg) {
     // Fingerprint capture must not depend on macOS having polled the HID
     // endpoint. A fresh USB connection can delay that poll until a serial
     // command runs; wait_hid_ready() handles delivery only after a match.
-    if (!present || !runtime.presence_armed) {
-      fingerprint_wait_for_touch();
-      continue;
+    if (runtime.state == AUTH_STATE_IDLE) {
+      if (!present || !runtime.presence_armed) {
+        fingerprint_wait_for_touch();
+        continue;
+      }
+      runtime.presence_armed = false;
+      runtime.state = AUTH_STATE_CAPTURING;
+      runtime.state_started = now;
+      touch_pin_hid_log_event("touch_detected", 0);
+      usb_ccid_touch_begin();
     }
 
-    runtime.presence_armed = false;
-    touch_pin_hid_log_event("touch_detected", 0);
-    usb_ccid_touch_begin();
-    fingerprint_match_t match = fingerprint_authorize_poll_match();
+    fingerprint_match_t match;
+    if (!fingerprint_try_poll_match(&match)) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
     if (match.slot == 0) {
       usb_ccid_touch_cancel();
       touch_pin_hid_log_event("finger_no_match", 0);
-      auth_wait_for_lift(&runtime, now);
+      auth_wait_for_lift(&runtime, xTaskGetTickCount());
       continue;
     }
 
@@ -572,15 +652,22 @@ void touch_pin_hid_start(void) {
 void touch_pin_hid_usb_attached(void) {
   // A bus reset can remount without an unmount callback. Abandon the old
   // transfer so its missing completion cannot wedge the next login.
-  hid_set_transfer(HID_FAILED);
-  hid_wake(NULL);
+  touch_pin_hid_usb_detached();
   touch_pin_hid_log_event("usb_attached", 0);
   usb_sensor_probe_pending = true;
   usb_sensor_probe_at = xTaskGetTickCount() + pdMS_TO_TICKS(500);
 }
 
 void touch_pin_hid_usb_detached(void) {
-  hid_set_transfer(HID_FAILED);
+  taskENTER_CRITICAL(&hid_transfer_lock);
+  hid_session++;
+  password_request_nonce[0] = '\0';
+  hid_transfer = HID_FAILED;
+  taskEXIT_CRITICAL(&hid_transfer_lock);
+  // Wake a pending helper request immediately. The empty item cannot pass
+  // password authentication, and a new request resets the single-item queue.
+  static const char cancelled[640] = {0};
+  if (password_responses) xQueueOverwrite(password_responses, cancelled);
   hid_wake(NULL);
 }
 
@@ -602,8 +689,21 @@ bool touch_pin_hid_submit_response(const char *response) {
       strlen(response) >= 640) {
     return false;
   }
+  const char *nonce = response + 3;
+  if (strncmp(response, "PW2 ", 4) == 0) {
+    const char *separator = strchr(response + 4, ' ');
+    if (!separator || separator - (response + 4) != DEVICE_CONFIG_HID_KEY_ID_SIZE * 2)
+      return false;
+    nonce = separator + 1;
+  }
+  if (strcspn(nonce, " ") != 32 || nonce[32] != ' ') return false;
+  taskENTER_CRITICAL(&hid_transfer_lock);
+  bool expected = password_request_nonce[0] &&
+                  memcmp(nonce, password_request_nonce, 32) == 0;
+  taskEXIT_CRITICAL(&hid_transfer_lock);
+  if (!expected) return false;
   char queued[640] = {0};
-  strlcpy(queued, response, sizeof(queued));
+  memcpy(queued, response, strlen(response) + 1);
   touch_pin_hid_log_event("hid_response", 0);
   bool accepted = xQueueSend(password_responses, queued, 0) == pdTRUE;
   secure_wipe(queued, sizeof(queued));

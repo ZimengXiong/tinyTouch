@@ -23,6 +23,9 @@ bool fingerprint_set_led_mode(device_led_mode_t mode);
 bool fingerprint_set_option(device_option_t option, uint16_t value);
 bool fingerprint_preview_led(uint8_t color, uint8_t effect, uint16_t duration_ms);
 fingerprint_match_t fingerprint_authorize_poll_match(void);
+// Returns false when the UART is busy or the sensor has no image yet.
+// A completed attempt returns true, including an image that did not match.
+bool fingerprint_try_poll_match(fingerprint_match_t *match);
 bool fingerprint_authorize_prompted(void (*prompt)(void));
 bool fingerprint_prompted_authorization_active(void);
 int fingerprint_count(void);

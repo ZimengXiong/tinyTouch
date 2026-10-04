@@ -121,6 +121,18 @@ class StreamDecoderTests(unittest.TestCase):
         self.assertTrue(decoder.discard_partial())
         self.assertFalse(decoder.discard_partial())
 
+    def test_idle_expiry_cannot_release_oversized_frame_quarantine(self):
+        decoder = SerialFrameDecoder(4)
+        decoder.feed(b"12345")
+        decoder.discard_partial()
+        self.assertEqual(decoder.feed(b"EV\nOK\n"), [b"OK"])
+
+    def test_expiry_does_not_reset_size_budget_before_delimiter(self):
+        decoder = SerialFrameDecoder(4)
+        decoder.feed(b"123")
+        decoder.discard_partial()
+        self.assertEqual(decoder.feed(b"45EV\nOK\n"), [b"OK"])
+
 
 class DiagnosticTests(unittest.TestCase):
     def test_structured_log_rotation_is_bounded(self):

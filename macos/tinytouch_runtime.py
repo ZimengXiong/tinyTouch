@@ -148,10 +148,14 @@ class ForegroundLease:
             raise LeaseBusyError("Another tinyTouch command is using the device.") from exc
         self._lock = lock
         self.record = LeaseRecord(os.getpid(), secrets.token_hex(16), time.time())
-        self.acknowledgement_path.unlink(missing_ok=True)
-        atomic_write_json(self.path, self.record.as_json())
-        if wait_for_ack:
-            self._wait_for_ack(timeout)
+        try:
+            self.acknowledgement_path.unlink(missing_ok=True)
+            atomic_write_json(self.path, self.record.as_json())
+            if wait_for_ack:
+                self._wait_for_ack(timeout)
+        except BaseException:
+            self.release()
+            raise
         return self
 
     def _wait_for_ack(self, timeout: float) -> None:
@@ -168,18 +172,23 @@ class ForegroundLease:
         )
 
     def release(self) -> None:
-        if self.record is not None:
-            current = LeaseRecord.parse(read_json_object(self.path))
-            if current == self.record:
-                self.path.unlink(missing_ok=True)
-            acknowledgement = read_json_object(self.acknowledgement_path)
-            if acknowledgement and acknowledgement.get("nonce") == self.record.nonce:
-                self.acknowledgement_path.unlink(missing_ok=True)
-        if self._lock is not None:
-            fcntl.flock(self._lock.fileno(), fcntl.LOCK_UN)
-            self._lock.close()
-        self.record = None
-        self._lock = None
+        try:
+            if self.record is not None:
+                current = LeaseRecord.parse(read_json_object(self.path))
+                if current == self.record:
+                    self.path.unlink(missing_ok=True)
+                acknowledgement = read_json_object(self.acknowledgement_path)
+                if acknowledgement and acknowledgement.get("nonce") == self.record.nonce:
+                    self.acknowledgement_path.unlink(missing_ok=True)
+        finally:
+            lock = self._lock
+            self.record = None
+            self._lock = None
+            if lock is not None:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock.close()
 
     def __enter__(self) -> "ForegroundLease":
         return self
@@ -194,13 +203,29 @@ class LeaseObserver:
     def __init__(self, path: Path, acknowledgement_path: Path):
         self.path = path
         self.acknowledgement_path = acknowledgement_path
+        self.lock_path = path.with_suffix(path.suffix + ".lock")
 
     def active(self) -> LeaseRecord | None:
         record = LeaseRecord.parse(read_json_object(self.path))
         if record is not None and record.is_live():
             return record
-        self.path.unlink(missing_ok=True)
-        self.acknowledgement_path.unlink(missing_ok=True)
+        if not self.path.exists() and not self.acknowledgement_path.exists():
+            return None
+        # The CLI can publish a new lease after the first read. Hold its lock
+        # and check again before removing either state file.
+        with self.lock_path.open("a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            try:
+                record = LeaseRecord.parse(read_json_object(self.path))
+                if record is not None and record.is_live():
+                    return record
+                self.path.unlink(missing_ok=True)
+                self.acknowledgement_path.unlink(missing_ok=True)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return None
 
     def acknowledge(self, record: LeaseRecord) -> None:
@@ -234,28 +259,32 @@ class SerialFrameDecoder:
         self.maximum = maximum
         self.buffer = bytearray()
         self.discarding = False
+        self._line_bytes = 0
 
     def feed(self, chunk: bytes) -> list[bytes]:
         frames: list[bytes] = []
         for value in chunk:
-            if self.discarding:
-                if value == 0x0A:
-                    self.discarding = False
-                continue
             if value == 0x0A:
-                frames.append(bytes(self.buffer))
+                if not self.discarding:
+                    frames.append(bytes(self.buffer))
                 self.buffer.clear()
+                self.discarding = False
+                self._line_bytes = 0
                 continue
-            self.buffer.append(value)
-            if len(self.buffer) > self.maximum:
+            if self.discarding:
+                continue
+            self._line_bytes += 1
+            if self._line_bytes > self.maximum:
                 self.buffer.clear()
                 self.discarding = True
+            else:
+                self.buffer.append(value)
         return frames
 
     def discard_partial(self) -> bool:
-        had_partial = bool(self.buffer) or self.discarding
+        """Expire buffered bytes without resetting the line's size or quarantine."""
+        had_partial = bool(self.buffer)
         self.buffer.clear()
-        self.discarding = False
         return had_partial
 
 

@@ -22,12 +22,16 @@ static const char *TAG = "usb_ccid";
 #define CCID_EP_OUT 0x01
 #define CCID_EP_IN 0x81
 #define CCID_BUF_SIZE 2048
+#define CCID_PACKET_SIZE 64
 
 static uint8_t rx_buf[CCID_BUF_SIZE];
+static uint8_t rx_packet[CCID_PACKET_SIZE];
+static size_t rx_length;
 static uint8_t tx_buf[CCID_BUF_SIZE];
 static uint8_t rhport_active;
 static ccid_apdu_handler_t apdu_handler;
 static bool in_busy;
+static bool in_zlp_pending;
 static bool touch_enabled;
 static bool piv_exposed;
 static bool piv_selected;
@@ -46,6 +50,9 @@ static SemaphoreHandle_t console_mutex;
 // Running on the USB task prevents descriptor and CCID transfer races.
 static void reconnect_on_usb_task(void *argument) {
   bool expose = *(bool *)argument;
+  // tud_disconnect() does not deliver an unmount callback. Cancel HID and
+  // helper work before explicitly dropping this connection.
+  touch_pin_hid_usb_detached();
   tud_disconnect();
   vTaskDelay(pdMS_TO_TICKS(250));
   tiny_touch_set_piv_descriptor(expose);
@@ -130,7 +137,11 @@ static bool send_ccid(uint8_t msg_type, uint8_t slot, uint8_t seq, uint8_t statu
   tx_buf[9] = 0x00;
   if (data_len) memcpy(tx_buf + 10, data, data_len);
   bool queued = usbd_edpt_xfer(rhport_active, CCID_EP_IN, tx_buf, data_len + 10);
-  if (queued) in_busy = true;
+  if (queued) {
+    in_busy = true;
+    // CCID requires a terminating ZLP for full-size Bulk-IN messages.
+    in_zlp_pending = (data_len + 10) % CCID_PACKET_SIZE == 0;
+  }
   return queued;
 }
 
@@ -185,12 +196,13 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
         const uint8_t fail[] = {0x6f, 0x00};
         send_ccid(0x80, slot, seq, 0x00, 0x00, fail, sizeof(fail));
       } else {
-        if (!send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len)) {
+        bool queued = send_ccid(0x80, slot, seq, 0x00, 0x00, tx_buf + 10, resp_len);
+        if (!queued) {
           taskENTER_CRITICAL(&policy_lock);
           login_response_pending = false;
           taskEXIT_CRITICAL(&policy_lock);
         }
-        if (len >= 2 && msg[11] == 0xa4 && resp_len >= 2 &&
+        if (queued && len >= 2 && msg[11] == 0xa4 && resp_len >= 2 &&
             tx_buf[10 + resp_len - 2] == 0x90 && tx_buf[10 + resp_len - 1] == 0x00) {
           taskENTER_CRITICAL(&policy_lock);
           piv_selected = true;
@@ -209,9 +221,13 @@ static void handle_message(uint8_t *msg, size_t msg_len) {
 static void ccid_init(void) {}
 static void ccid_reset(uint8_t rhport) {
   (void)rhport;
+  touch_pin_hid_usb_detached();
   in_busy = false;
+  in_zlp_pending = false;
+  rx_length = 0;
   taskENTER_CRITICAL(&policy_lock);
   piv_selected = false;
+  login_response_pending = false;
   taskEXIT_CRITICAL(&policy_lock);
   piv_reset_transport_state();
 }
@@ -237,7 +253,9 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
 
   rhport_active = rhport;
   in_busy = false;
-  usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+  in_zlp_pending = false;
+  rx_length = 0;
+  usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_packet, sizeof(rx_packet));
   return required_len;
 }
 
@@ -251,33 +269,53 @@ static bool ccid_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_req
 static bool ccid_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
                          uint32_t xferred_bytes) {
   if (result != XFER_RESULT_SUCCESS) {
+    rx_length = 0;
     if (ep_addr == CCID_EP_IN) {
       in_busy = false;
+      in_zlp_pending = false;
       taskENTER_CRITICAL(&policy_lock);
       login_response_pending = false;
       taskEXIT_CRITICAL(&policy_lock);
     }
-    if (ep_addr == CCID_EP_OUT || ep_addr == CCID_EP_IN) {
-      usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+    if (!in_busy && (ep_addr == CCID_EP_OUT || ep_addr == CCID_EP_IN)) {
+      usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_packet, sizeof(rx_packet));
     }
     return true;
   }
   if (ep_addr == CCID_EP_OUT) {
-    handle_message(rx_buf, xferred_bytes);
+    if (xferred_bytes > sizeof(rx_packet) || xferred_bytes > sizeof(rx_buf) - rx_length) {
+      rx_length = 0;
+    } else {
+      memcpy(rx_buf + rx_length, rx_packet, xferred_bytes);
+      rx_length += xferred_bytes;
+      // A host need not send a ZLP after a full-size OUT message. Dispatch
+      // when dwLength is satisfied, or reject a truncated short transfer.
+      bool complete = rx_length >= 10 &&
+          (le32(rx_buf + 1) <= rx_length - 10 || le32(rx_buf + 1) > sizeof(rx_buf) - 10);
+      if (complete || xferred_bytes < sizeof(rx_packet)) {
+        handle_message(rx_buf, rx_length);
+        rx_length = 0;
+      }
+    }
     // Keep tx_buf immutable until the IN transfer completes. Only accept the
     // next command immediately if no response was queued.
-    if (!in_busy) usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+    if (!in_busy) usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_packet, sizeof(rx_packet));
   } else if (ep_addr == CCID_EP_IN) {
+    bool complete = true;
+    if (in_zlp_pending) {
+      in_zlp_pending = false;
+      if (usbd_edpt_xfer(rhport, CCID_EP_IN, NULL, 0)) return true;
+      complete = false;
+    }
     in_busy = false;
     // The host has received the final login/Keychain response. Changing the
     // descriptor earlier could discard that response and break login.
     taskENTER_CRITICAL(&policy_lock);
-    if (login_response_pending) {
-      touch_until = 0;
-      login_response_pending = false;
-    }
+    if (complete && login_response_pending) touch_until = 0;
+    login_response_pending = false;
     taskEXIT_CRITICAL(&policy_lock);
-    usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_buf, sizeof(rx_buf));
+    rx_length = 0;
+    usbd_edpt_xfer(rhport, CCID_EP_OUT, rx_packet, sizeof(rx_packet));
   }
   return true;
 }
