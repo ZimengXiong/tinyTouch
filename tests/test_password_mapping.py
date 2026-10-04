@@ -27,7 +27,8 @@ class PasswordMappingTests(unittest.TestCase):
                       state, capacity, actual, chars):
             actual._obj.value = 0
             if state._obj.value == 1:
-                state._obj.value = 0
+                # Native macOS keeps layout metadata after completing an accent.
+                state._obj.value = 65536
                 if key in (helper._MAC_KEYCODES[" "], helper._MAC_KEYCODES["e"]):
                     actual._obj.value = 1
                     chars[0] = ord("^" if key == helper._MAC_KEYCODES[" "]

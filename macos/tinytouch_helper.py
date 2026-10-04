@@ -274,17 +274,30 @@ def _keyboard_output_map(layout_bytes: bytes) -> dict[str, str]:
         except UnicodeError:
             return "", 0
 
+    neutral = {wire: translate(wire) for wire in keys}
+    idle_states = {0: True}
+
+    def is_idle(state: int) -> bool:
+        if state not in idle_states:
+            # The state is opaque and can retain metadata after composition.
+            # A completed sequence makes subsequent keys behave as they do
+            # with no pending accent. Do not infer this from state bits.
+            idle_states[state] = all(
+                translate(wire, state)[0] == output[0]
+                for wire, output in neutral.items()
+            )
+        return idle_states[state]
+
     dead_keys: dict[str, int] = {}
-    for wire in keys:
-        text, state = translate(wire)
-        if len(text) == 1 and state == 0:
+    for wire, (text, state) in neutral.items():
+        if len(text) == 1 and is_idle(state):
             output_map.setdefault(text, wire)
         elif not text and state:
             dead_keys[wire] = state
     for first, state in dead_keys.items():
         for second in keys:
             text, remaining = translate(second, state)
-            if len(text) == 1 and remaining == 0:
+            if len(text) == 1 and is_idle(remaining):
                 output_map.setdefault(text, first + second)
     return output_map
 
