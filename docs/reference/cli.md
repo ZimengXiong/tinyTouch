@@ -375,9 +375,16 @@ remain in place. If credentials are missing, run HID setup.
 
 ```text
 tinytouch update [--port PATH]
+tinytouch update --file signed-firmware.bin [--port PATH]
 ```
 
 Updates the CLI, HID helper, and firmware. Reconnect the device after staging.
+
+Use `--file` to upload a local signed firmware image through the same OTA path.
+Keep the device connected normally and approve with an enrolled finger when
+prompted. The device verifies the signature before selecting the new image.
+This option updates device firmware without downloading a release or replacing
+the installed CLI and helper. Unplug and reconnect after the update is ready.
 
 ## `factory-reset`
 

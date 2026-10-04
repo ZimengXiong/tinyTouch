@@ -2294,6 +2294,22 @@ def network_test() -> None:
 
 
 def command_update(args: argparse.Namespace) -> None:
+    firmware_file = getattr(args, "firmware_file", None)
+    if firmware_file is not None:
+        try:
+            image = firmware_file.read_bytes()
+        except OSError as exc:
+            raise ToolError(f"Could not read the local OTA image: {firmware_file}.") from exc
+        if not image:
+            raise ToolError("The local OTA image is empty. Select a signed firmware image.")
+        port = choose_port(args.port)
+        protocol6(status(port))
+        # The device verifies the OTA signature before activating the image.
+        stage_ota(port, image, hashlib.sha256(image).hexdigest())
+        message = "Update ready. Unplug and reconnect tinyTouch to finish."
+        notify("tinyTouch update ready", message)
+        say(message)
+        return
     root, manifest = update_release(getattr(args, "release_version", None))
     release_version = manifest["version"]
     if not getattr(args, "firmware_only", False) and release_version != CLI_VERSION:
@@ -3130,7 +3146,10 @@ def parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update", help="Update the CLI, HID helper, and device firmware.")
     update.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     update.add_argument("--firmware-only", action="store_true", help=argparse.SUPPRESS)
-    update.add_argument("--release-version", help=argparse.SUPPRESS)
+    update_source = update.add_mutually_exclusive_group()
+    update_source.add_argument("--release-version", help=argparse.SUPPRESS)
+    update_source.add_argument("--file", dest="firmware_file", type=Path,
+                               help="Stage a local signed firmware image over USB using OTA.")
     update.set_defaults(func=command_update)
     rom = sub.add_parser(
         "rom",
@@ -3200,7 +3219,7 @@ def parser() -> argparse.ArgumentParser:
         "fingers": ("Read occupied fingerprint blocks, partial enrollment, pending cleanup, and available capacity. Keep the existing enrollment.", "tinytouch fingers"),
         "computers": ("List or remove registered HID computers. Use HID setup to add this Mac. Removing the last computer selects PIV mode.", "tinytouch computers\ntinytouch computers remove HOST_ID\ntinytouch setup --mode hid"),
         "factory-reset": ("Clear fingerprints, PIV identities, registered computers, device settings, and this device's local HID credentials. macOS smart-card pairings are preserved. Confirm the reset and approve it with an enrolled fingerprint.", "tinytouch factory-reset"),
-        "update": ("Update the CLI, HID helper, and firmware from one verified release. Reconnect after the firmware update is staged.", "tinytouch update"),
+        "update": ("Update from one verified release, or use --file to stage a local signed firmware image over USB using OTA. Approve with an enrolled finger, then reconnect after staging.", "tinytouch update\ntinytouch update --file signed-firmware.bin"),
         "uninstall": ("Stop and remove the background service. Saved credentials and the CLI stay installed.", "tinytouch uninstall"),
         "rom": ("Show the physical ROM bootloader instructions. This command does not flash the device.", "tinytouch rom"),
         "status": ("Show full device status as JSON, or use --summary for a short overview.", "tinytouch status --summary\ntinytouch status"),
