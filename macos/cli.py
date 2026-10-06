@@ -3025,13 +3025,17 @@ def command_completion(args: argparse.Namespace) -> None:
         COMPREPLY=("${COMPREPLY[@]#"$option="}")
     fi
 }
-complete -o nospace -o default -o bashdefault -F _tinytouch tinytouch
+complete -o default -o bashdefault -F _tinytouch tinytouch
 ''', end="")
     elif args.shell == "zsh":
         print('''_tinytouch() {
     _python_argcomplete "$@" || _files
 }
 compdef _tinytouch tinytouch
+''', end="")
+    elif args.shell == "fish":
+        # Force native paths only while filling a file or serial-port argument.
+        print('''complete -c tinytouch -F -n 'string match -qr -- "^--(file|port)=" (commandline -ct); or contains -- (commandline -opc)[-1] --file --port'
 ''', end="")
 
 
