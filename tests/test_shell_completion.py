@@ -80,8 +80,11 @@ class ShellCompletionTests(unittest.TestCase):
             wrapper.chmod(0o755)
             (root / "firmware=one.bin").touch()
             (root / "image with spaces.bin").touch()
+            (root / "images").mkdir()
+            (root / "images" / "firmware.bin").touch()
             env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
-                   "TERM": "xterm", "INPUTRC": "/dev/null", "ZDOTDIR": directory}
+                   "TERM": "xterm", "INPUTRC": "/dev/null", "ZDOTDIR": directory,
+                   "TT_COMPLETION_DIR": directory}
             for shell in ("bash", "zsh", "fish"):
                 with self.subTest(shell=shell):
                     executable = shutil.which(shell)
@@ -103,6 +106,22 @@ class ShellCompletionTests(unittest.TestCase):
                         self.assertIn("purple", result.stdout)
                         self.assertIn("--file=firmware=one.bin", result.stdout)
                         self.assertIn("off\non\n", result.stdout)
+                        for line, expected in (
+                            ("update --file $TT_COMPLETION_DIR/firmw", "$TT_COMPLETION_DIR/firmware=one.bin"),
+                            ("update --file=$TT_COMPLETION_DIR/firmw", "--file=$TT_COMPLETION_DIR/firmware=one.bin"),
+                            ("--port $TT_COMPLETION_DIR/firmw", "$TT_COMPLETION_DIR/firmware=one.bin"),
+                            ("--port=$TT_COMPLETION_DIR/firmw", "--port=$TT_COMPLETION_DIR/firmware=one.bin"),
+                            ("update --file $TT_COMPLETION_DIR/images/firmw", "$TT_COMPLETION_DIR/images/firmware.bin"),
+                            ("led color idle firmw", ""),
+                            ("--port /dev/test firmw", ""),
+                            ("config --fi", ""),
+                        ):
+                            with self.subTest(line=line):
+                                result = subprocess.run([executable, "--no-config", "-c", source +
+                                    "complete -C " + shlex.quote("tinytouch " + line)],
+                                    env=env, cwd=root, text=True, capture_output=True, check=True)
+                                self.assertEqual(result.stderr, "")
+                                self.assertEqual(result.stdout.strip(), expected)
                         continue
                     if shell == "zsh":
                         source = "autoload -Uz compinit; compinit -D\n" + source
@@ -127,6 +146,11 @@ class ShellCompletionTests(unittest.TestCase):
                             ('tinytouch update --file=./"firmw', ["update", "--file=./firmware=one.bin"]),
                             ('tinytouch --port=./"firmw', ["--port=./firmware=one.bin"]),
                             ('tinytouch update --file "image w', ["update", "--file", "image with spaces.bin"]),
+                            ("tinytouch update --file firmw\t--port /safe", ["update", "--file", "firmware=one.bin", "--port", "/safe"]),
+                            ("tinytouch update --file=firmw\t--port /safe", ["update", "--file=firmware=one.bin", "--port", "/safe"]),
+                            ("tinytouch --port firmw\tstatus", ["--port", "firmware=one.bin", "status"]),
+                            ("tinytouch --port=firmw\tstatus", ["--port=firmware=one.bin", "status"]),
+                            ("tinytouch update --file images\tfirmw", ["update", "--file", "images/firmware.bin"]),
                         ):
                             with self.subTest(line=line):
                                 os.write(master, (line + "\t\n").encode())
