@@ -6,10 +6,12 @@ altgraph==0.17.5 \
     # via
     #   macholib
     #   pyinstaller
-argcomplete==3.7.2 ; sys_platform != 'win32' \
+argcomplete==3.7.2 \
     --hash=sha256:6029205678bdd9c1c728a155f5f9ecf5812393f969eef58807641a2bc2aa5b19 \
     --hash=sha256:aad8b69a0b9969edb62db0d1752354c0d50717b10e0cbb00e2a958381b9fc6b9
-    # via esptool
+    # via
+    #   -r macos/requirements-release.in
+    #   esptool
 bitarray==3.10.1 \
     --hash=sha256:019d072e59b8f8cc8524794cccef857a31138e065c2cdbb902dde21f3e7e9744 \
     --hash=sha256:0531dce521e00d0d9ee36984f8b198bcd3455f1b8b3cc635efe21114b88e74b6 \

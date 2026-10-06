@@ -1,3 +1,4 @@
 pyserial>=3.5
+argcomplete>=3.7,<4
 esptool>=4.8,<5
 certifi>=2026.2.25

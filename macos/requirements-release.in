@@ -1,5 +1,6 @@
 # Runtime and build dependencies for the distributable macOS CLI.
 pyserial==3.5
+argcomplete==3.7.2
 esptool==4.8.1
 # cryptography 50 no longer publishes Intel macOS wheels. Keep the universal2
 # wheel so the Intel release job does not need a Rust source build.
