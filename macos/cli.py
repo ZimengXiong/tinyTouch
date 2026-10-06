@@ -3021,7 +3021,8 @@ def command_completion(args: argparse.Namespace) -> None:
         --file|--port) COMPREPLY=(); return ;;
     esac
     _python_argcomplete "$@"
-    if [[ "$cur" == --*=* || "$prev" == = ]]; then
+    if [[ "$cur" == --*=* || "$prev" == = ]] &&
+       [[ "$COMP_WORDBREAKS" == *=* || "$cur" == --*=[\"\']* ]]; then
         COMPREPLY=("${COMPREPLY[@]#"$option="}")
     fi
 }
@@ -3029,7 +3030,11 @@ complete -o default -o bashdefault -F _tinytouch tinytouch
 ''', end="")
     elif args.shell == "zsh":
         print('''_tinytouch() {
-    _python_argcomplete "$@" || _files
+    _python_argcomplete "$@" && return
+    case "${words[CURRENT]}" in
+        --file=*|--port=*) _files -P "${words[CURRENT]%%=*}=" ;;
+        *) _files ;;
+    esac
 }
 compdef _tinytouch tinytouch
 ''', end="")

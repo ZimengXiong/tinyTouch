@@ -141,6 +141,7 @@ class ShellCompletionTests(unittest.TestCase):
                         self.read_until(master, b"__TT_READY__")
                         for line, expected in (
                             ("tinytouch led color idle p", ["led", "color", "idle", "purple"]),
+                            ("tinytouch setup --mode=p", ["setup", "--mode=piv"]),
                             ('tinytouch setup --mode="p', ["setup", "--mode=piv"]),
                             ('tinytouch update --file="firmw"', ["update", "--file=firmware=one.bin"]),
                             ('tinytouch update --file=./"firmw', ["update", "--file=./firmware=one.bin"]),
@@ -151,12 +152,27 @@ class ShellCompletionTests(unittest.TestCase):
                             ("tinytouch --port firmw\tstatus", ["--port", "firmware=one.bin", "status"]),
                             ("tinytouch --port=firmw\tstatus", ["--port=firmware=one.bin", "status"]),
                             ("tinytouch update --file images\tfirmw", ["update", "--file", "images/firmware.bin"]),
+                            ("tinytouch update --file $TT_COMPLETION_DIR/firmw", ["update", "--file", str(root / "firmware=one.bin")]),
+                            ("tinytouch update --file=$TT_COMPLETION_DIR/firmw", ["update", "--file=" + str(root / "firmware=one.bin")]),
+                            ("tinytouch --port $TT_COMPLETION_DIR/firmw", ["--port", str(root / "firmware=one.bin")]),
+                            ("tinytouch --port=$TT_COMPLETION_DIR/firmw", ["--port=" + str(root / "firmware=one.bin")]),
                         ):
                             with self.subTest(line=line):
                                 os.write(master, (line + "\t\n").encode())
                                 output = self.read_until(master, b"TTDONE")
                                 arguments = output.split(b"TTARGS:", 1)[1].splitlines()[0]
                                 self.assertEqual(json.loads(arguments), expected)
+                        if shell == "bash":
+                            os.write(master, b"COMP_WORDBREAKS=${COMP_WORDBREAKS//=/}\n"
+                                             b"printf '__TT_%s__\\n' WORDBREAKS\n")
+                            self.read_until(master, b"__TT_WORDBREAKS__")
+                            for line in ("tinytouch setup --mode=p", 'tinytouch setup --mode="p',
+                                         "tinytouch setup --mode='p"):
+                                with self.subTest(line=line, wordbreaks="without equals"):
+                                    os.write(master, (line + "\t\n").encode())
+                                    output = self.read_until(master, b"TTDONE")
+                                    arguments = output.split(b"TTARGS:", 1)[1].splitlines()[0]
+                                    self.assertEqual(json.loads(arguments), ["setup", "--mode=piv"])
                     finally:
                         process.kill()
                         process.wait(timeout=5)
