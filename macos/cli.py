@@ -17,6 +17,7 @@ import pty
 import re
 import select
 import secrets
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -3003,6 +3004,156 @@ def command_help(args: argparse.Namespace) -> None:
         parser().print_help()
 
 
+COMPLETION_SCRIPTS = {
+    "bash": r'''_tinytouch() {
+    local candidate cur="${COMP_WORDS[COMP_CWORD]}"
+    COMPREPLY=()
+    while IFS= read -r candidate; do
+        if [[ "$candidate" == __tinytouch_files__ ]]; then
+            IFS= read -r cur
+            while IFS= read -r candidate; do
+                COMPREPLY+=("$candidate")
+            done < <(compgen -f -- "${cur#*=}")
+            return
+        fi
+        if [[ "$cur" == --*=* && "$COMP_WORDBREAKS" == *=* ]]; then
+            candidate="${candidate#*=}"
+        fi
+        COMPREPLY+=("$candidate")
+    done < <(tinytouch _complete --bash "${COMP_WORDS[@]:1:COMP_CWORD}")
+}
+complete -o filenames -F _tinytouch tinytouch
+''',
+    "zsh": r'''#compdef tinytouch
+_tinytouch() {
+    local -a candidates
+    candidates=("${(@f)$(tinytouch _complete -- "${(@Q)words[@]:1:$((CURRENT-2))}" "$PREFIX")}")
+    if [[ "${candidates[1]}" == __tinytouch_files__ ]]; then
+        compset -P '*='
+        _files
+    else
+        compadd -- "${candidates[@]}"
+    fi
+}
+compdef _tinytouch tinytouch
+''',
+    "fish": r'''function __tinytouch_complete
+    set -l words (commandline -xpc)
+    set -l current (commandline -ct | string unescape -n)
+    set -l candidates (tinytouch _complete -- $words[2..-1] "$current")
+    if test "$candidates[1]" = __tinytouch_files__
+        set -l prefix (string match -r '^--[^=]+=' -- "$current")
+        for path in (__fish_complete_path (string replace -r '^--[^=]+=' '' -- "$current"))
+            printf '%s%s\n' "$prefix" "$path"
+        end
+    else
+        printf '%s\n' $candidates
+    end
+end
+complete -c tinytouch -f -a '(__tinytouch_complete)'
+''',
+}
+
+
+def command_completion(args: argparse.Namespace) -> None:
+    print(COMPLETION_SCRIPTS[args.shell], end="")
+
+
+def completion_unquote(word: str) -> str:
+    """Bash passes raw tokens, including unfinished quotes; never evaluate them."""
+    lexer = shlex.shlex(word, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return lexer.get_token() or ""
+    except ValueError:
+        return lexer.token
+
+
+def completion_candidates(words: list[str]) -> list[str]:
+    """Inspect argparse metadata only: never parse or dispatch an incomplete command.
+
+    The last word is the current prefix (possibly empty). A file marker delegates
+    path matching and quoting to the shell's native completion functions.
+    """
+    current = parser()
+    prefix = words[-1] if words else ""
+    pending = None
+    positional = 0
+    values = {}
+    options_enabled = True
+    for word in words[:-1]:
+        if pending is not None:
+            # Bash treats '=' as a word break in --option=value.
+            if word != "=":
+                pending = None
+            continue
+        if word == "--" and options_enabled:
+            options_enabled = False
+            continue
+        if word.startswith("-") and options_enabled:
+            option, equals, _ = word.partition("=")
+            action = current._option_string_actions.get(option)
+            if action is None:
+                return []
+            if action.nargs != 0 and not equals:
+                pending = action
+            continue
+        positionals = current._get_positional_actions()
+        if positional >= len(positionals):
+            return []
+        action = positionals[positional]
+        if isinstance(action, argparse._SubParsersAction):
+            if word not in action.choices:
+                return []
+            current = action.choices[word]
+            positional = 0
+            values = {}
+            options_enabled = True
+        else:
+            values[action.dest] = word
+            positional += 1
+
+    attached = ""
+    if pending is not None and prefix == "=":
+        prefix = ""
+    elif pending is None and options_enabled and prefix.startswith("-"):
+        option, equals, prefix_value = prefix.partition("=")
+        if not equals:
+            return [name for name, action in current._option_string_actions.items()
+                    if action.help != argparse.SUPPRESS and name.startswith(prefix)]
+        pending = current._option_string_actions.get(option)
+        if pending is None or pending.nargs == 0:
+            return []
+        attached, prefix = option + "=", prefix_value
+
+    positionals = current._get_positional_actions()
+    action = pending or (positionals[positional] if positional < len(positionals) else None)
+    candidates = []
+    if action is not None:
+        if isinstance(action, argparse._SubParsersAction):
+            hidden = {entry.dest for entry in action._choices_actions
+                      if entry.help == argparse.SUPPRESS}
+            candidates = [name for name in action.choices if name not in hidden]
+        elif action.choices is not None:
+            candidates = [str(choice) for choice in action.choices]
+        elif action.dest == "name" and current.get_default("func") == command_config:
+            candidates = ["show", "list", *SETTINGS]
+        elif action.dest == "value" and current.get_default("func") == command_config:
+            try:
+                candidates = list(SETTINGS[setting_name(values.get("name", ""))].choices or {})
+            except ToolError:
+                pass
+        elif action.dest == "topic" and current.get_default("func") == command_help:
+            candidates = completion_candidates([""])
+        elif action.type is Path or action.dest == "port":
+            return ["__tinytouch_files__"]
+    if pending is None and options_enabled and not prefix:
+        candidates += [name for name, option in current._option_string_actions.items()
+                       if option.help != argparse.SUPPRESS]
+    return [attached + candidate for candidate in candidates if candidate.startswith(prefix)]
+
+
 def prepare_piv_discovery(port: str, *, refresh: bool = False) -> bool | None:
     """Expose for pairing; return whether USB resets, or None for legacy mode."""
     with foreground_session(port):
@@ -3210,6 +3361,9 @@ def parser() -> argparse.ArgumentParser:
     help_cmd = sub.add_parser("help", help="Show general or command help.")
     help_cmd.add_argument("topic", nargs="?", help="Select a command to explain.")
     help_cmd.set_defaults(func=command_help)
+    completion = sub.add_parser("completion", help="Print a shell completion script.")
+    completion.add_argument("shell", choices=tuple(COMPLETION_SCRIPTS))
+    completion.set_defaults(func=command_completion)
     examples = {
         "menu": ("Choose an action with the arrow keys and Enter. The CLI exits after the action finishes.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
         "setup": ("Configure this Mac. Enroll a fingerprint if the sensor is empty. Keep any existing fingerprint enrollment.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
@@ -3240,6 +3394,16 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     global VERBOSE
+    if len(sys.argv) > 2 and sys.argv[1] == "_complete" and sys.argv[2] in {"--", "--bash"}:
+        words = sys.argv[3:]
+        if sys.argv[2] == "--bash":
+            words = [completion_unquote(word) for word in words]
+        candidates = completion_candidates(words)
+        for candidate in candidates:
+            print(candidate)
+        if sys.argv[2] == "--bash" and candidates == ["__tinytouch_files__"]:
+            print(words[-1] if words else "")
+        return 0
     if len(sys.argv) > 1 and sys.argv[1] == "_package_test":
         package_test()
         return 0
@@ -3257,7 +3421,7 @@ def main() -> int:
         return 0
     args = parser().parse_args()
     VERBOSE = args.verbose
-    if args.command != "help" and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
+    if args.command not in {"help", "completion"} and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
         show_startup_mark(args.command or "menu")
     try:
         args.func(args)

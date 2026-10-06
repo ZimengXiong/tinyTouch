@@ -8,6 +8,41 @@ description: Complete protocol-6 tinyTouch command reference for the current mac
 Run `tinytouch` in Terminal to open the interactive menu. For installed command
 help, run `tinytouch COMMAND --help`.
 
+## Shell completions
+
+`tinytouch completion bash|zsh|fish` prints a completion script. Completions cover
+commands, nested commands, options, known argument values, and setting names and
+values. File and serial-port paths use the shell's native file completion.
+Completing a command does not connect to the device or access saved credentials.
+
+For Bash, add this to `~/.bashrc` (or `~/.bash_profile` for macOS login shells):
+
+```bash
+eval "$(tinytouch completion bash)"
+```
+
+For Zsh, add this to `~/.zshrc`, after any existing `compinit` setup:
+
+```zsh
+autoload -Uz compinit
+compinit
+source <(tinytouch completion zsh)
+```
+
+For Fish, save the script in its completion directory:
+
+```fish
+mkdir -p ~/.config/fish/completions
+tinytouch completion fish > ~/.config/fish/completions/tinytouch.fish
+source ~/.config/fish/completions/tinytouch.fish
+```
+
+Use `$XDG_CONFIG_HOME/fish/completions` instead if you customized Fish's config
+location. Restart Bash or Zsh, or run the corresponding snippet in the current
+shell. `tinytouch` must be on `PATH`. For example, try `tinytouch led color idle p`
+followed by Tab. Completions read the installed CLI's command definitions, so
+new commands and choices become available after an update.
+
 ## Interactive menu
 
 ```sh
