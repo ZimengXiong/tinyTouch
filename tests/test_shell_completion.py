@@ -3,13 +3,17 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
+import pty
+import select
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -67,34 +71,18 @@ class ShellCompletionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wrapper = root / "tinytouch"
-            wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
-                               f"{shlex.quote(str(ROOT / 'macos/cli.py'))} \"$@\"\n")
+            python = shlex.quote(sys.executable)
+            # Real completion invokes the CLI; pressing Enter only records argv.
+            capture = "import json,sys; print('TTARGS:' + json.dumps(sys.argv[1:])); print('TTDONE')"
+            wrapper.write_text("#!/bin/sh\nif [ -n \"${_ARGCOMPLETE-}\" ]; then\n"
+                               f"exec {python} {shlex.quote(str(ROOT / 'macos/cli.py'))} \"$@\"\nfi\n"
+                               f"exec {python} -c {shlex.quote(capture)} \"$@\"\n")
             wrapper.chmod(0o755)
-            (root / "firmware image.bin").touch()
-            env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"]}
-            programs = {
-                "bash": '''
-COMP_LINE='tinytouch led color idle p'; COMP_POINT=${#COMP_LINE}; COMP_TYPE=9
-_python_argcomplete tinytouch; printf '%s\\n' "${COMPREPLY[@]}"
-COMP_LINE='tinytouch update --file "firmware i'; COMP_POINT=${#COMP_LINE}
-_python_argcomplete tinytouch; printf '%s\\n' "${COMPREPLY[@]}"
-COMP_LINE='tinytouch setup --mode="p'; COMP_POINT=${#COMP_LINE}
-COMP_WORDS=(tinytouch setup '--mode="p'); COMP_CWORD=2
-_tinytouch tinytouch; printf '%s\\n' "${COMPREPLY[@]}"
-''',
-                "zsh": '''
-_describe() { print -rl -- "${completions[@]}"; }
-words=(tinytouch); BUFFER='tinytouch led color idle p'; CURSOR=${#BUFFER}
-_python_argcomplete
-''',
-                "fish": '''
-complete -C 'tinytouch led color idle p'
-complete -C 'tinytouch update --file=firm'
-complete -C 'tinytouch mode "p'
-complete -C 'tinytouch config submit_enter o'
-''',
-            }
-            for shell, program in programs.items():
+            (root / "firmware=one.bin").touch()
+            (root / "image with spaces.bin").touch()
+            env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+                   "TERM": "xterm", "INPUTRC": "/dev/null", "ZDOTDIR": directory}
+            for shell in ("bash", "zsh", "fish"):
                 with self.subTest(shell=shell):
                     executable = shutil.which(shell)
                     if executable is None:
@@ -105,20 +93,61 @@ complete -C 'tinytouch config submit_enter o'
                             self.assertEqual(cli.main(), 0)
                     completion.write_text(output.getvalue())
                     source = f"source {shlex.quote(str(completion))}\n"
+                    if shell == "fish":
+                        result = subprocess.run([executable, "--no-config", "-c", source +
+                            "complete -C 'tinytouch led color idle p'; "
+                            "complete -C 'tinytouch update --file=firm'; "
+                            "complete -C 'tinytouch config submit_enter o'"],
+                            env=env, cwd=root, text=True, capture_output=True, check=True)
+                        self.assertEqual(result.stderr, "")
+                        self.assertIn("purple", result.stdout)
+                        self.assertIn("--file=firmware=one.bin", result.stdout)
+                        self.assertIn("off\non\n", result.stdout)
+                        continue
                     if shell == "zsh":
                         source = "autoload -Uz compinit; compinit -D\n" + source
-                    flags = ["--no-config"] if shell == "fish" else ["-f"] if shell == "zsh" else ["--noprofile", "--norc"]
-                    result = subprocess.run([executable, *flags, "-c", source + program], env=env,
-                                            cwd=root, text=True, capture_output=True, check=True)
-                    self.assertEqual(result.stderr, "")
-                    self.assertIn("purple", result.stdout)
-                    if shell == "bash":
-                        self.assertIn("firmware image.bin", result.stdout)
-                        self.assertIn("\npiv\n", result.stdout)
-                    if shell == "fish":
-                        self.assertIn("--file=firmware image.bin", result.stdout)
-                        self.assertIn("piv", result.stdout)
-                        self.assertIn("off\non\n", result.stdout)
+                        registration = '[[ ${_comps[tinytouch]} == _tinytouch ]]'
+                        flags = ["-f"]
+                    else:
+                        registration = '[[ $(complete -p tinytouch) == *"-F _tinytouch tinytouch" ]]'
+                        flags = ["--noprofile", "--norc"]
+                    subprocess.run([executable, *flags, "-c", source + registration],
+                                   env=env, cwd=root, capture_output=True, check=True)
+                    master, slave = pty.openpty()
+                    process = subprocess.Popen([executable, *flags, "-i"], cwd=root, env=env,
+                                               stdin=slave, stdout=slave, stderr=slave,
+                                               start_new_session=True)
+                    try:
+                        os.write(master, (source + "printf '__TT_%s__\\n' READY\n").encode())
+                        self.read_until(master, b"__TT_READY__")
+                        for line, expected in (
+                            ("tinytouch led color idle p", ["led", "color", "idle", "purple"]),
+                            ('tinytouch setup --mode="p', ["setup", "--mode=piv"]),
+                            ('tinytouch update --file="firmw"', ["update", "--file=firmware=one.bin"]),
+                            ('tinytouch update --file=./"firmw', ["update", "--file=./firmware=one.bin"]),
+                            ('tinytouch --port=./"firmw', ["--port=./firmware=one.bin"]),
+                            ('tinytouch update --file "image w', ["update", "--file", "image with spaces.bin"]),
+                        ):
+                            with self.subTest(line=line):
+                                os.write(master, (line + "\t\n").encode())
+                                output = self.read_until(master, b"TTDONE")
+                                arguments = output.split(b"TTARGS:", 1)[1].splitlines()[0]
+                                self.assertEqual(json.loads(arguments), expected)
+                    finally:
+                        process.kill()
+                        process.wait(timeout=5)
+                        os.close(master)
+                        os.close(slave)
+
+    def read_until(self, fd, marker):
+        output = b""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if select.select([fd], [], [], 0.1)[0]:
+                output += os.read(fd, 65536)
+                if marker in output:
+                    return output
+        self.fail(f"Shell did not produce {marker!r}: {output!r}")
 
 
 if __name__ == "__main__":
