@@ -139,6 +139,8 @@ jobs:
         with:
           python-version: "3.13"
           architecture: ${{ matrix.architecture }}
+      - name: Install Fish for completion tests
+        run: brew install fish
       - name: Test CLI and HID protocol
         run: |
           python -m pip install --require-hashes -r macos/requirements-bootstrap.txt
