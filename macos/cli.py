@@ -3007,15 +3007,31 @@ def command_help(args: argparse.Namespace) -> None:
 def command_completion(args: argparse.Namespace) -> None:
     print(argcomplete.shellcode(["tinytouch"], shell=args.shell), end="")
     if args.shell == "bash":
-        # argcomplete 3.7.2 repeats --option= when Bash completes a quoted value.
+        # Let Readline handle paths; argcomplete 3.7.2 mishandles mixed quoting.
         print(r'''_tinytouch() {
+    local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}" option
+    if [[ "$cur" == --*=* ]]; then
+        option="${cur%%=*}"
+    elif [[ "$prev" == = ]]; then
+        option="${COMP_WORDS[COMP_CWORD-2]}"
+    else
+        option="$prev"
+    fi
+    case "$option" in
+        --file|--port) COMPREPLY=(); return ;;
+    esac
     _python_argcomplete "$@"
-    local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}"
-    if [[ "$cur" == --*=[\"\']* || ( "$prev" == = && "$cur" == [\"\']* ) ]]; then
-        COMPREPLY=("${COMPREPLY[@]#*=}")
+    if [[ "$cur" == --*=* || "$prev" == = ]]; then
+        COMPREPLY=("${COMPREPLY[@]#"$option="}")
     fi
 }
 complete -o nospace -o default -o bashdefault -F _tinytouch tinytouch
+''', end="")
+    elif args.shell == "zsh":
+        print('''_tinytouch() {
+    _python_argcomplete "$@" || _files
+}
+compdef _tinytouch tinytouch
 ''', end="")
 
 
