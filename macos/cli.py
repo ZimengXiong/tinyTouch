@@ -30,6 +30,7 @@ import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
+import argcomplete
 import certifi
 
 FROZEN = bool(getattr(sys, "frozen", False))
@@ -3003,6 +3004,53 @@ def command_help(args: argparse.Namespace) -> None:
         parser().print_help()
 
 
+def command_completion(args: argparse.Namespace) -> None:
+    print(argcomplete.shellcode(["tinytouch"], shell=args.shell), end="")
+    if args.shell == "bash":
+        # Let Readline handle paths; argcomplete 3.7.2 mishandles mixed quoting.
+        print(r'''_tinytouch() {
+    local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}" option
+    if [[ "$cur" == --*=* ]]; then
+        option="${cur%%=*}"
+    elif [[ "$prev" == = ]]; then
+        option="${COMP_WORDS[COMP_CWORD-2]}"
+    else
+        option="$prev"
+    fi
+    case "$option" in
+        --file|--port) COMPREPLY=(); return ;;
+    esac
+    _python_argcomplete "$@"
+    if [[ "$cur" == --*=* || "$prev" == = ]] &&
+       [[ "$COMP_WORDBREAKS" == *=* || "$cur" == --*=[\"\']* ]]; then
+        COMPREPLY=("${COMPREPLY[@]#"$option="}")
+    fi
+}
+complete -o default -o bashdefault -F _tinytouch tinytouch
+''', end="")
+    elif args.shell == "zsh":
+        print('''_tinytouch() {
+    _python_argcomplete "$@" && return
+    case "${words[CURRENT]}" in
+        --file=*|--port=*) _files -P "${words[CURRENT]%%=*}=" ;;
+        *) _files ;;
+    esac
+}
+compdef _tinytouch tinytouch
+''', end="")
+    elif args.shell == "fish":
+        # Force native paths only while filling a file or serial-port argument.
+        print('''complete -c tinytouch -F -n 'string match -qr -- "^--(file|port)=" (commandline -ct); or contains -- (commandline -opc)[-1] --file --port'
+''', end="")
+
+
+def complete_setting_value(parsed_args, **kwargs):
+    try:
+        return tuple(SETTINGS[setting_name(parsed_args.name or "")].choices or ())
+    except ToolError:
+        return ()
+
+
 def prepare_piv_discovery(port: str, *, refresh: bool = False) -> bool | None:
     """Expose for pairing; return whether USB resets, or None for legacy mode."""
     with foreground_session(port):
@@ -3110,8 +3158,8 @@ def parser() -> argparse.ArgumentParser:
                             formatter_class=argparse.RawDescriptionHelpFormatter,
                             description="With no arguments, show the current settings. Use 'list' to list settings without connecting a device. Use NAME to read a setting. Use NAME VALUE to change it.",
                             epilog=config_help + "\n\nExamples:\n  tinytouch config --json\n  tinytouch config led_idle_color purple\n  tinytouch config submit_enter off\n  tinytouch config piv_auto_type off\n  tinytouch config typing_delay_ms 7")
-    config.add_argument("name", nargs="?", help="Select a setting name, 'show', or 'list'.")
-    config.add_argument("value", nargs="?", help="Set a new value. Omit the value to read the current setting.")
+    config.add_argument("name", nargs="?", help="Select a setting name, 'show', or 'list'.").completer = argcomplete.ChoicesCompleter(["show", "list", *SETTINGS])
+    config.add_argument("value", nargs="?", help="Set a new value. Omit the value to read the current setting.").completer = complete_setting_value
     config.add_argument("--json", action="store_true", help="Show current values as JSON.")
     config.add_argument("--port", default=argparse.SUPPRESS, help="Use this USB serial path instead of the global --port value.")
     config.set_defaults(func=command_config)
@@ -3208,8 +3256,11 @@ def parser() -> argparse.ArgumentParser:
     ports.add_argument("--json", action="store_true", help="Show USB serial paths as JSON.")
     ports.set_defaults(func=command_ports)
     help_cmd = sub.add_parser("help", help="Show general or command help.")
-    help_cmd.add_argument("topic", nargs="?", help="Select a command to explain.")
+    help_cmd.add_argument("topic", nargs="?", help="Select a command to explain.").completer = lambda **_: [name for name in sub.choices if not name.startswith("_")]
     help_cmd.set_defaults(func=command_help)
+    completion = sub.add_parser("completion", help="Print a shell completion script.")
+    completion.add_argument("shell", choices=("bash", "zsh", "fish"))
+    completion.set_defaults(func=command_completion)
     examples = {
         "menu": ("Choose an action with the arrow keys and Enter. The CLI exits after the action finishes.", "tinytouch\ntinytouch menu --port /dev/cu.usbmodem101"),
         "setup": ("Configure this Mac. Enroll a fingerprint if the sensor is empty. Keep any existing fingerprint enrollment.", "tinytouch setup\ntinytouch setup --mode hid\ntinytouch setup --mode piv --no-pair"),
@@ -3255,9 +3306,11 @@ def main() -> int:
         sys.argv = [str(HELPER), *sys.argv[2:]]
         helper_main()
         return 0
-    args = parser().parse_args()
+    argument_parser = parser()
+    argcomplete.autocomplete(argument_parser, exclude=("_upgrade-helper",))
+    args = argument_parser.parse_args()
     VERBOSE = args.verbose
-    if args.command != "help" and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
+    if args.command not in {"help", "completion"} and (args.command or (sys.stdin.isatty() and sys.stdout.isatty())):
         show_startup_mark(args.command or "menu")
     try:
         args.func(args)
