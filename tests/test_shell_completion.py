@@ -1,6 +1,9 @@
-"""Exercise TinyTouch's argcomplete integration without dispatching commands."""
+"""Check documented shell setup and real Tab insertion without dispatching commands.
 
-import contextlib
+Commands/choices and representative native paths run in Bash, Zsh, and Fish;
+candidate checks cover hidden/invalid contexts and completion exits before I/O.
+"""
+
 import importlib.util
 import io
 import json
@@ -13,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 from unittest import mock
@@ -42,6 +46,7 @@ class ShellCompletionTests(unittest.TestCase):
             ("completion f", ["fish"]),
             ("_upgrade", []),
             ("update --firmware", []),
+            ("update --release", []),
             ("factory-reset --p", ["--port"]),
         ):
             command = "tinytouch " + line
@@ -57,6 +62,9 @@ class ShellCompletionTests(unittest.TestCase):
                                            append_space=False, **kwargs)),
                 mock.patch.object(cli, "command_factory_reset") as reset,
                 mock.patch.object(cli, "choose_port") as port,
+                mock.patch.object(cli, "detect_ports", side_effect=AssertionError("device discovery")) as devices,
+                mock.patch("serial.Serial", side_effect=AssertionError("serial access")) as serial,
+                mock.patch.object(cli, "_keychain", side_effect=AssertionError("credential access")) as keychain,
                 mock.patch.object(cli, "show_startup_mark") as banner,
                 self.assertRaises(SystemExit) as exit,
             ):
@@ -65,6 +73,9 @@ class ShellCompletionTests(unittest.TestCase):
             self.assertEqual(output.getvalue().splitlines(), expected)
             reset.assert_not_called()
             port.assert_not_called()
+            devices.assert_not_called()
+            serial.assert_not_called()
+            keychain.assert_not_called()
             banner.assert_not_called()
 
     def test_generated_scripts_in_shells(self):
@@ -72,10 +83,12 @@ class ShellCompletionTests(unittest.TestCase):
             root = Path(directory)
             wrapper = root / "tinytouch"
             python = shlex.quote(sys.executable)
+            command = ([os.environ["TINYTOUCH_TEST_CLI"]] if os.environ.get("TINYTOUCH_TEST_CLI")
+                       else [sys.executable, str(ROOT / "macos/cli.py")])
             # Real completion invokes the CLI; pressing Enter only records argv.
             capture = "import json,sys; print('TTARGS:' + json.dumps(sys.argv[1:])); print('TTDONE')"
-            wrapper.write_text("#!/bin/sh\nif [ -n \"${_ARGCOMPLETE-}\" ]; then\n"
-                               f"exec {python} {shlex.quote(str(ROOT / 'macos/cli.py'))} \"$@\"\nfi\n"
+            wrapper.write_text("#!/bin/sh\nif [ -n \"${_ARGCOMPLETE-}\" ] || [ \"${1-}\" = completion ]; then\n"
+                               f"exec {shlex.join(command)} \"$@\"\nfi\n"
                                f"exec {python} -c {shlex.quote(capture)} \"$@\"\n")
             wrapper.chmod(0o755)
             (root / "firmware=one.bin").touch()
@@ -84,19 +97,19 @@ class ShellCompletionTests(unittest.TestCase):
             (root / "images" / "firmware.bin").touch()
             env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
                    "TERM": "xterm", "INPUTRC": "/dev/null", "ZDOTDIR": directory,
+                   "XDG_CONFIG_HOME": str(root / "config"),
                    "TT_COMPLETION_DIR": directory}
             for shell in ("bash", "zsh", "fish"):
                 with self.subTest(shell=shell):
                     executable = shutil.which(shell)
                     if executable is None:
                         self.skipTest(f"{shell} is not installed")
-                    completion = root / f"completion.{shell}"
-                    with contextlib.redirect_stdout(io.StringIO()) as output:
-                        with mock.patch.object(sys, "argv", ["tinytouch", "completion", shell]):
-                            self.assertEqual(cli.main(), 0)
-                    completion.write_text(output.getvalue())
-                    source = f"source {shlex.quote(str(completion))}\n"
                     if shell == "fish":
+                        source = ("mkdir -p $XDG_CONFIG_HOME/fish/completions\n"
+                                  "tinytouch completion fish > $XDG_CONFIG_HOME/fish/completions/tinytouch.fish\n"
+                                  "source $XDG_CONFIG_HOME/fish/completions/tinytouch.fish\n")
+                        registration = "complete -c tinytouch | string match -q '*__fish_tinytouch_complete*'"
+                        flags = ["--no-config"]
                         result = subprocess.run([executable, "--no-config", "-c", source +
                             "complete -C 'tinytouch led color idle p'; "
                             "complete -C 'tinytouch update --file=firm'; "
@@ -122,36 +135,53 @@ class ShellCompletionTests(unittest.TestCase):
                                     env=env, cwd=root, text=True, capture_output=True, check=True)
                                 self.assertEqual(result.stderr, "")
                                 self.assertEqual(result.stdout.strip(), expected)
-                        continue
-                    if shell == "zsh":
-                        source = "autoload -Uz compinit; compinit -D\n" + source
+                    elif shell == "zsh":
+                        source = "autoload -Uz compinit\ncompinit\nsource <(tinytouch completion zsh)\n"
                         registration = '[[ ${_comps[tinytouch]} == _tinytouch ]]'
                         flags = ["-f"]
                     else:
+                        source = 'eval "$(tinytouch completion bash)"\n'
                         registration = '[[ $(complete -p tinytouch) == *"-F _tinytouch tinytouch" ]]'
                         flags = ["--noprofile", "--norc"]
                     subprocess.run([executable, *flags, "-c", source + registration],
                                    env=env, cwd=root, capture_output=True, check=True)
                     master, slave = pty.openpty()
+                    termios.tcsetwinsize(slave, (24, 120))
                     process = subprocess.Popen([executable, *flags, "-i"], cwd=root, env=env,
                                                stdin=slave, stdout=slave, stderr=slave,
-                                               start_new_session=True)
+                                               preexec_fn=lambda: os.login_tty(0))
                     try:
                         os.write(master, (source + "printf '__TT_%s__\\n' READY\n").encode())
                         self.read_until(master, b"__TT_READY__")
                         for line, expected in (
+                            ("tinytouch sta", ["status"]),
+                            ("tinytouch led col", ["led", "color"]),
                             ("tinytouch led color idle p", ["led", "color", "idle", "purple"]),
+                            ("tinytouch setup --m", ["setup", "--mode"]),
+                            ("tinytouch setup --mode p", ["setup", "--mode", "piv"]),
                             ("tinytouch setup --mode=p", ["setup", "--mode=piv"]),
                             ('tinytouch setup --mode="p', ["setup", "--mode=piv"]),
+                            ("tinytouch password --finger 2", ["password", "--finger", "2"]),
+                            ("tinytouch config submit_", ["config", "submit_enter"]),
+                            ("tinytouch config submit_enter of", ["config", "submit_enter", "off"]),
+                            ("tinytouch settings led_mode only", ["settings", "led_mode", "only-auth"]),
+                            ("tinytouch settings submit-enter of", ["settings", "submit-enter", "off"]),
+                            ("tinytouch help sta", ["help", "status"]),
+                            ("tinytouch --verbose --port /safe sta", ["--verbose", "--port", "/safe", "status"]),
                             ('tinytouch update --file="firmw"', ["update", "--file=firmware=one.bin"]),
                             ('tinytouch update --file=./"firmw', ["update", "--file=./firmware=one.bin"]),
                             ('tinytouch --port=./"firmw', ["--port=./firmware=one.bin"]),
                             ('tinytouch update --file "image w', ["update", "--file", "image with spaces.bin"]),
+                            (f'tinytouch update --file "{root}/image w"', ["update", "--file", str(root / "image with spaces.bin")]),
+                            ('tinytouch --port="image w"', ["--port=image with spaces.bin"]),
+                            (f"tinytouch update --file {root}/firmw", ["update", "--file", str(root / "firmware=one.bin")]),
+                            (f"tinytouch --port={root}/firmw", ["--port=" + str(root / "firmware=one.bin")]),
                             ("tinytouch update --file firmw\t--port /safe", ["update", "--file", "firmware=one.bin", "--port", "/safe"]),
                             ("tinytouch update --file=firmw\t--port /safe", ["update", "--file=firmware=one.bin", "--port", "/safe"]),
                             ("tinytouch --port firmw\tstatus", ["--port", "firmware=one.bin", "status"]),
                             ("tinytouch --port=firmw\tstatus", ["--port=firmware=one.bin", "status"]),
                             ("tinytouch update --file images\tfirmw", ["update", "--file", "images/firmware.bin"]),
+                            ("tinytouch --port=images\tfirmw\tstatus", ["--port=images/firmware.bin", "status"]),
                             ("tinytouch update --file $TT_COMPLETION_DIR/firmw", ["update", "--file", str(root / "firmware=one.bin")]),
                             ("tinytouch update --file=$TT_COMPLETION_DIR/firmw", ["update", "--file=" + str(root / "firmware=one.bin")]),
                             ("tinytouch --port $TT_COMPLETION_DIR/firmw", ["--port", str(root / "firmware=one.bin")]),
@@ -175,16 +205,22 @@ class ShellCompletionTests(unittest.TestCase):
                                     self.assertEqual(json.loads(arguments), ["setup", "--mode=piv"])
                     finally:
                         process.kill()
-                        process.wait(timeout=5)
                         os.close(master)
                         os.close(slave)
+                        process.wait(timeout=5)
 
     def read_until(self, fd, marker):
         output = b""
+        answered_queries = 0
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if select.select([fd], [], [], 0.1)[0]:
                 output += os.read(fd, 65536)
+                # Fish queries primary device attributes before enabling editing.
+                queries = output.count(b"\x1b[0c")
+                if queries > answered_queries:
+                    os.write(fd, b"\x1b[?1;2c" * (queries - answered_queries))
+                    answered_queries = queries
                 if marker in output:
                     return output
         self.fail(f"Shell did not produce {marker!r}: {output!r}")

@@ -14,6 +14,9 @@ help, run `tinytouch COMMAND --help`.
 commands, nested commands, options, known argument values, and setting names and
 values. File and serial-port paths use the shell's native file completion.
 Completing a command does not connect to the device or access saved credentials.
+In Bash, quote a filename when completing after a literal `=`. If Zsh cannot
+complete a quoted variable path, use an unquoted variable path or a literal path,
+quoting it when it contains spaces.
 
 For Bash, add this to `~/.bashrc` (or `~/.bash_profile` for macOS login shells):
 
