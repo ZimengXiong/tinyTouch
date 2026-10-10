@@ -288,8 +288,8 @@ class WorkerStateMachineTests(unittest.TestCase):
         workers = []
         original_worker = helper.Worker
 
-        def worker_factory(endpoint):
-            worker = original_worker(endpoint)
+        def worker_factory(endpoint, **kwargs):
+            worker = original_worker(endpoint, **kwargs)
             workers.append(worker)
             return worker
 
@@ -304,7 +304,7 @@ class WorkerStateMachineTests(unittest.TestCase):
             mock.patch.object(helper.LeaseObserver, "active", return_value=None),
             mock.patch.object(helper, "device_endpoints",
                               side_effect=[[endpoint], OSError("discovery failed")]),
-            mock.patch.object(helper.time, "sleep"),
+            mock.patch.object(helper, "manager_wakeups", return_value=(mock.Mock(), object())),
             mock.patch.object(helper, "diagnostic"),
         ):
             with self.assertRaises(OSError):

@@ -1,6 +1,8 @@
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,6 +12,7 @@ sys.path.insert(0, str(ROOT / "macos"))
 
 from tinytouch_runtime import (  # noqa: E402
     BackoffPolicy,
+    ChangeWaiter,
     ForegroundLease,
     LeaseBusyError,
     LeaseObserver,
@@ -148,6 +151,50 @@ class DiagnosticTests(unittest.TestCase):
             self.assertTrue(path.with_suffix(".log.1").is_file())
             self.assertLessEqual(path.stat().st_size, 150)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+
+class ChangeWaiterTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name) / "state"
+        self.waiter = ChangeWaiter(self.root)
+        self.addCleanup(self.waiter.close)
+
+    def elapsed(self, action=None, timeout=2.0):
+        timer = threading.Timer(0.05, action) if action is not None else None
+        started = time.monotonic()
+        if timer is not None:
+            timer.start()
+        self.waiter.wait(timeout)
+        elapsed = time.monotonic() - started
+        if timer is not None:
+            timer.join()
+            # Drain events from the rest of the action so the next wait starts clean.
+            self.waiter.wait(0)
+        return elapsed
+
+    def test_times_out_without_changes(self):
+        self.assertGreaterEqual(self.elapsed(timeout=0.1), 0.09)
+
+    def test_lease_file_changes_end_the_wait(self):
+        lease = self.root / "helper-suspend"
+        self.assertLess(self.elapsed(lambda: atomic_write_json(lease, {"pid": 1})), 1.0)
+        self.assertLess(self.elapsed(lease.unlink), 1.0)
+
+    def test_wake_ends_the_wait_and_is_consumed(self):
+        self.assertLess(self.elapsed(self.waiter.wake), 1.0)
+        self.waiter.wake()
+        self.waiter.wake()
+        self.waiter.wait(0)
+        self.assertGreaterEqual(self.elapsed(timeout=0.1), 0.09)
+
+    def test_recreated_directory_is_watched_again(self):
+        self.root.rmdir()
+        self.waiter.wait(0)
+        self.assertTrue(self.root.is_dir())
+        self.assertLess(self.elapsed(lambda: (self.root / "helper-suspend").touch()), 1.0)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "macos"))
-from tinytouch_ports import MacSerialPorts, SerialPort, _location_string  # noqa: E402
+from tinytouch_ports import (  # noqa: E402
+    MacSerialPorts, SerialPort, _location_string, watch_serial_ports,
+)
 import tinytouch_helper as helper  # noqa: E402
 
 
@@ -128,6 +130,17 @@ assert growth < 4 * 1024 * 1024, f"Serial discovery grew by {growth} bytes"
             capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class SerialPortWatcherTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires native macOS IOKit")
+    def test_watcher_arms_plug_and_unplug_notifications(self):
+        # A broken ctypes signature would otherwise drop the helper back to
+        # polling without failing anything.
+        watcher = watch_serial_ports(lambda: None)
+        self.assertIsNotNone(watcher)
+        self.assertEqual(len(watcher.iterators), 2)
+        self.assertTrue(all(watcher.iterators))
 
 
 if __name__ == "__main__":

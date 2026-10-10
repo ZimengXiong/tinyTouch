@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from collections import deque
+from contextlib import contextmanager
 from enum import Enum
 from functools import lru_cache
 import hashlib
@@ -18,7 +19,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import serial
 try:
@@ -32,13 +33,14 @@ except ModuleNotFoundError:
     )
 from tinytouch_runtime import (
     BackoffPolicy,
+    ChangeWaiter,
     LeaseObserver,
     SerialFrameDecoder,
     atomic_write_json,
     diagnostic,
     read_available,
 )
-from tinytouch_ports import comports
+from tinytouch_ports import comports, watch_serial_ports
 
 
 SERVICE = "tinyTouch"
@@ -57,6 +59,11 @@ KEYCHAIN_RETRY_SECONDS = 0.5
 MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
+SERIAL_READ_TIMEOUT_SECONDS = 1.0
+LEASE_RECHECK_SECONDS = 0.5
+# Plug and lease changes wake the manager directly; this only bounds a missed event.
+IDLE_RECHECK_SECONDS = 5.0
+POLLING_RECHECK_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
 MAX_EVENT_AUTHENTICATORS = 8
 MAX_COUNTER = (1 << 64) - 1
@@ -599,7 +606,7 @@ def open_serial(port: str) -> serial.Serial:
     ser = serial.Serial()
     ser.port = port
     ser.baudrate = 115200
-    ser.timeout = 0.2
+    ser.timeout = SERIAL_READ_TIMEOUT_SECONDS
     ser.write_timeout = 2
     try:
         ser.dtr = True
@@ -688,7 +695,7 @@ def serve_port(
         pairing_key = pairing_keychain_get(device_id)
         state = load_state(device_id)
         settings = load_settings(device_id)
-        with open_serial(port) as ser:
+        with open_serial(port) as ser, interruptible(ser, stop_event):
             pending_frames = require_startup_status(
                 ser, device_id, port, decoder=decoder, stop_event=stop_event
             )
@@ -711,7 +718,8 @@ def serve_port(
                 chunk = b"" if pending_frames else read_available(ser)
                 now = time.monotonic()
                 # Check discovery even when stale descriptors keep yielding bytes.
-                if now - last_port_check >= 1.0:
+                # A manager-owned worker is stopped by the manager's discovery instead.
+                if stop_event is None and now - last_port_check >= 1.0:
                     last_port_check = now
                     if port not in device_ports():
                         raise serial.SerialException(f"serial device disappeared: {port}")
@@ -789,6 +797,48 @@ def serve_port(
         pairing_key[:] = b"\x00" * len(pairing_key)
 
 
+class StopSignal(threading.Event):
+    """A stop request that also interrupts a blocking serial read."""
+
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._serial: serial.Serial | None = None
+
+    def attach(self, ser: serial.Serial | None) -> None:
+        with self._lock:
+            self._serial = ser
+        if ser is not None and self.is_set():
+            self._cancel(ser)
+
+    def set(self) -> None:
+        super().set()
+        with self._lock:
+            ser = self._serial
+        if ser is not None:
+            self._cancel(ser)
+
+    @staticmethod
+    def _cancel(ser: serial.Serial) -> None:
+        try:
+            ser.cancel_read()
+        except (AttributeError, OSError, serial.SerialException):
+            pass
+
+
+@contextmanager
+def interruptible(ser: serial.Serial, stop_event: threading.Event | None):
+    attach = getattr(stop_event, "attach", None)
+    if attach is None:
+        yield
+        return
+    attach(ser)
+    try:
+        yield
+    finally:
+        attach(None)
+
+
 class DeviceEndpoint(NamedTuple):
     device_id: str
     port: str
@@ -861,9 +911,10 @@ def check_credentials(*, include_saved: bool = False) -> None:
 
 
 class Worker:
-    def __init__(self, endpoint: DeviceEndpoint):
+    def __init__(self, endpoint: DeviceEndpoint, on_exit: Callable[[], None] | None = None):
         self.endpoint = endpoint
-        self.stop_event = threading.Event()
+        self.on_exit = on_exit
+        self.stop_event = StopSignal()
         self.error: BaseException | None = None
         self.planned_stop = False
         self.phase = WorkerPhase.CREATED
@@ -890,6 +941,9 @@ class Worker:
             self.phase = WorkerPhase.FAILED
         else:
             self.phase = WorkerPhase.STOPPED
+        finally:
+            if self.on_exit is not None:
+                self.on_exit()
 
     def start(self) -> None:
         self.phase = WorkerPhase.RUNNING
@@ -930,7 +984,19 @@ def run_manager() -> None:
                 worker.thread.join()
 
 
+@lru_cache(maxsize=1)
+def manager_wakeups() -> tuple[ChangeWaiter, object | None]:
+    """Create the process-wide waiter and the port watcher that keeps waking it."""
+    waiter = ChangeWaiter(STATE_DIR)
+    port_watcher = watch_serial_ports(waiter.wake)
+    if port_watcher is None:
+        diagnostic("manager.port_watch_unavailable", level="warning")
+    return waiter, port_watcher
+
+
 def _manage_workers(workers: dict[str, Worker]) -> None:
+    waiter, port_watcher = manager_wakeups()
+    idle_recheck = IDLE_RECHECK_SECONDS if port_watcher is not None else POLLING_RECHECK_SECONDS
     failures: dict[str, int] = {}
     retry_after: dict[str, float] = {}
     previous_endpoints: dict[str, DeviceEndpoint] = {}
@@ -971,7 +1037,9 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
                     diagnostic("manager.suspended", owner_pid=lease.pid)
                     active_lease_nonce = lease.nonce
                 transition(ManagerPhase.SUSPENDED, "workers_drained")
-            time.sleep(0.05)
+            # Worker exits and lease file changes wake this early; the timeout
+            # notices a lease owner that exited without releasing it.
+            waiter.wait(LEASE_RECHECK_SECONDS)
             continue
         if active_lease_nonce is not None:
             diagnostic("manager.resumed")
@@ -1051,12 +1119,16 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
                 # finishes opening the user's session. Check again promptly.
                 retry_after[device_id] = now + KEYCHAIN_RETRY_SECONDS
                 continue
-            worker = Worker(endpoint)
+            worker = Worker(endpoint, on_exit=waiter.wake)
             workers[device_id] = worker
             worker.start()
             retry_after.pop(device_id, None)
             diagnostic("worker.started", device_id=device_id, port=endpoint.port)
-        time.sleep(0.1)
+        timeout = idle_recheck
+        for device_id, due in retry_after.items():
+            if device_id in endpoints and device_id not in workers:
+                timeout = min(timeout, max(0.0, due - now))
+        waiter.wait(timeout)
 
 
 def run(port: str | None, once: bool) -> None:
