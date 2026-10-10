@@ -7,6 +7,7 @@ import json
 import os
 import random
 import secrets
+import select
 import tempfile
 import threading
 import time
@@ -233,6 +234,61 @@ class LeaseObserver:
             self.acknowledgement_path,
             {"schema": LEASE_SCHEMA, "pid": os.getpid(), "nonce": record.nonce},
         )
+
+
+class ChangeWaiter:
+    """Sleep until a directory's entries change, wake() is called, or a timeout passes."""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self._read, self._write = os.pipe()
+        os.set_blocking(self._read, False)
+        os.set_blocking(self._write, False)
+        self._queue = select.kqueue()
+        self._queue.control(
+            [select.kevent(self._read, select.KQ_FILTER_READ, select.KQ_EV_ADD)], 0
+        )
+        self._directory_fd: int | None = None
+        self._watch_directory()
+
+    def _watch_directory(self) -> None:
+        if self._directory_fd is not None:
+            os.close(self._directory_fd)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._directory_fd = os.open(self.directory, getattr(os, "O_EVTONLY", os.O_RDONLY))
+        self._queue.control([select.kevent(
+            self._directory_fd,
+            select.KQ_FILTER_VNODE,
+            select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+            select.KQ_NOTE_WRITE | select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME,
+        )], 0)
+
+    def wake(self) -> None:
+        try:
+            os.write(self._write, b"\0")
+        except BlockingIOError:
+            pass
+
+    def wait(self, timeout: float | None) -> None:
+        events = self._queue.control(None, 4, timeout)
+        try:
+            while os.read(self._read, 64):
+                pass
+        except BlockingIOError:
+            pass
+        if any(
+            event.ident == self._directory_fd
+            and event.fflags & (select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME)
+            for event in events
+        ):
+            self._watch_directory()
+
+    def close(self) -> None:
+        self._queue.close()
+        for descriptor in (self._read, self._write, self._directory_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+        self._directory_fd = None
 
 
 @dataclass(frozen=True)

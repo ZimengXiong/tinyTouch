@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 
 class SerialPort(NamedTuple):
@@ -128,8 +128,75 @@ def _location_string(value: int | None) -> str:
     return "".join(parts)
 
 
+class SerialPortWatcher:
+    """Call on_change from a private dispatch queue when a serial device appears or disappears."""
+
+    def __init__(self, on_change: Callable[[], None]):
+        self._on_change = on_change
+        self.io = _PORTS.io
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        pointer = ctypes.c_void_p
+        handle = ctypes.c_uint32
+        callback_type = ctypes.CFUNCTYPE(None, pointer, handle)
+        signatures = [
+            (self.io, "IONotificationPortCreate", [handle], pointer),
+            (self.io, "IONotificationPortSetDispatchQueue", [pointer, pointer], None),
+            (self.io, "IOServiceAddMatchingNotification",
+             [pointer, ctypes.c_char_p, pointer, callback_type, pointer, ctypes.POINTER(handle)],
+             ctypes.c_int),
+            (system, "dispatch_queue_create", [ctypes.c_char_p, pointer], pointer),
+        ]
+        for library, name, arguments, result in signatures:
+            function = getattr(library, name)
+            function.argtypes = arguments
+            function.restype = result
+        # ctypes frees the trampoline with this object, so keep it for the process lifetime.
+        self._callback = callback_type(self._notified)
+        self.iterators: list[int] = []
+        port = self.io.IONotificationPortCreate(0)
+        if not port:
+            raise OSError("Could not create an IOKit notification port.")
+        for kind in (b"IOServiceFirstMatch", b"IOServiceTerminate"):
+            matching = self.io.IOServiceMatching(b"IOSerialBSDClient")
+            if not matching:
+                raise MemoryError("Could not allocate an IOKit matching dictionary.")
+            iterator = handle()
+            status = self.io.IOServiceAddMatchingNotification(
+                port, kind, matching, self._callback, None, ctypes.byref(iterator)
+            )
+            if status:
+                raise OSError(f"Could not watch serial devices. IOKit status: {status}.")
+            self.iterators.append(iterator.value)
+            # Draining arms the notification. Attach the queue afterward so the
+            # callback never drains an iterator concurrently with this loop.
+            self._drain(iterator.value)
+        queue = system.dispatch_queue_create(b"dev.tinytouch.serial-ports", None)
+        if not queue:
+            raise OSError("Could not create a dispatch queue for serial device notifications.")
+        self.io.IONotificationPortSetDispatchQueue(port, queue)
+
+    def _drain(self, iterator: int) -> None:
+        while service := self.io.IOIteratorNext(iterator):
+            self.io.IOObjectRelease(service)
+
+    def _notified(self, _context, iterator: int) -> None:
+        try:
+            self._drain(iterator)
+            self._on_change()
+        except Exception:
+            pass
+
+
 _PORTS = MacSerialPorts()
 
 
 def comports() -> list[SerialPort]:
     return _PORTS.comports()
+
+
+def watch_serial_ports(on_change: Callable[[], None]) -> SerialPortWatcher | None:
+    """Return a live watcher, or None when the caller has to poll instead."""
+    try:
+        return SerialPortWatcher(on_change)
+    except (AttributeError, OSError, MemoryError):
+        return None
