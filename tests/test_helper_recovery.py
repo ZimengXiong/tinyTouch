@@ -15,6 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "macos"))
 import tinytouch_helper as helper  # noqa: E402
 
 
+def setUpModule():
+    # Password delivery must never switch the input source of the Mac running tests.
+    unittest.enterModuleContext(mock.patch.object(helper, "INPUT_SOURCE_GUARD"))
+
+
 DEVICE_ID = "TT-001122334455"
 PORT = "/dev/cu.test"
 KEY = bytes(range(32))

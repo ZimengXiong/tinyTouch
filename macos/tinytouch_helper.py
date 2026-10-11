@@ -56,6 +56,13 @@ STARTUP_STATUS_TIMEOUT_SECONDS = 30.0
 KEYCHAIN_RETRY_SECONDS = 0.5
 MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
+# The firmware types two HID reports per key and waits typing_delay_ms (1-100,
+# reported by STATUS) after each one, at least one 1 ms USB polling interval.
+MAX_TYPING_DELAY_MS = 100
+HID_POLL_INTERVAL_MS = 1
+INPUT_SOURCE_SETTLE_SECONDS = 0.1
+# Covers the device decrypting the reply and macOS draining its key event queue.
+INPUT_SOURCE_RESTORE_MARGIN_SECONDS = 1.0
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
 MAX_EVENT_AUTHENTICATORS = 8
@@ -203,6 +210,13 @@ def _keyboard_layout_libraries():
         "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
     )
     hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.restype = ctypes.c_void_p
+    hitoolbox.TISCopyCurrentKeyboardInputSource.restype = ctypes.c_void_p
+    hitoolbox.TISSelectInputSource.argtypes = [ctypes.c_void_p]
+    hitoolbox.TISSelectInputSource.restype = ctypes.c_int32
+    core_foundation.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+    core_foundation.CFBooleanGetValue.restype = ctypes.c_bool
+    core_foundation.CFEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    core_foundation.CFEqual.restype = ctypes.c_bool
     hitoolbox.TISGetInputSourceProperty.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     hitoolbox.TISGetInputSourceProperty.restype = ctypes.c_void_p
     core_foundation.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
@@ -239,6 +253,188 @@ def current_keyboard_output_map() -> dict[str, str]:
     # Recheck the active source on every touch. Cache by its contents so layout
     # changes (including edits with the same source ID) never use a stale map.
     return _keyboard_output_map(layout_bytes).copy()
+
+
+def _tis_property(hitoolbox, name: str) -> ctypes.c_void_p:
+    return ctypes.c_void_p.in_dll(hitoolbox, name)
+
+
+def _selected_input_source() -> int | None:
+    """Return a retained reference to the input source macOS has selected now.
+
+    TISCopyCurrentKeyboardInputSource caches the source per process and refreshes
+    it only from main run loop notifications, which this helper never runs.
+    """
+    hitoolbox, core_foundation, _ = _keyboard_layout_libraries()
+    cf = core_foundation
+    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    cf.CFPreferencesAppSynchronize.argtypes = [ctypes.c_void_p]
+    cf.CFPreferencesCopyAppValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFPreferencesCopyAppValue.restype = ctypes.c_void_p
+    cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFDictionaryCreate.restype = ctypes.c_void_p
+    cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFArrayGetCount.restype = ctypes.c_long
+    cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+    cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+    cf.CFRetain.argtypes = [ctypes.c_void_p]
+    cf.CFRetain.restype = ctypes.c_void_p
+    hitoolbox.TISCreateInputSourceList.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    hitoolbox.TISCreateInputSourceList.restype = ctypes.c_void_p
+    utf8 = 0x08000100
+    owned = []
+    try:
+        domain = cf.CFStringCreateWithCString(None, b"com.apple.HIToolbox", utf8)
+        key = cf.CFStringCreateWithCString(None, b"AppleCurrentKeyboardLayoutInputSourceID", utf8)
+        owned += [domain, key]
+        cf.CFPreferencesAppSynchronize(domain)
+        identifier = cf.CFPreferencesCopyAppValue(key, domain)
+        if not identifier:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        owned.append(identifier)
+        keys = (ctypes.c_void_p * 1)(_tis_property(hitoolbox, "kTISPropertyInputSourceID").value)
+        values = (ctypes.c_void_p * 1)(identifier)
+        query = cf.CFDictionaryCreate(
+            None, keys, values, 1,
+            ctypes.addressof(ctypes.c_void_p.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+            ctypes.addressof(ctypes.c_void_p.in_dll(cf, "kCFTypeDictionaryValueCallBacks")),
+        )
+        owned.append(query)
+        sources = hitoolbox.TISCreateInputSourceList(query, False)
+        if not sources:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        owned.append(sources)
+        if cf.CFArrayGetCount(sources) == 0:
+            return hitoolbox.TISCopyCurrentKeyboardInputSource()
+        return cf.CFRetain(cf.CFArrayGetValueAtIndex(sources, 0))
+    finally:
+        for value in owned:
+            if value:
+                cf.CFRelease(value)
+
+
+def status_typing_delay_ms(status: dict[str, str]) -> int:
+    """Return the device's typing delay, or the slowest one firmware allows."""
+    try:
+        delay = int(status.get("typing_delay_ms", ""))
+    except ValueError:
+        return MAX_TYPING_DELAY_MS
+    return delay if 1 <= delay <= MAX_TYPING_DELAY_MS else MAX_TYPING_DELAY_MS
+
+
+def typing_seconds(reply: str, typing_delay_ms: int) -> float:
+    """Estimate how long the device takes to type the password in a PW or PW2 reply."""
+    # "PW nonce iv ct mac" or "PW2 key_id nonce iv ct mac". AES-CTR keeps the
+    # length, so the ciphertext shows how many keys are typed.
+    fields = reply.split()
+    ciphertext = fields[3] if fields[0] == "PW" else fields[4]
+    keys = len(ciphertext) // 2 + 1  # plus Enter
+    return keys * 2 * max(typing_delay_ms, HID_POLL_INTERVAL_MS) / 1000
+
+
+class InputSourceGuard:
+    """Hold a Latin input source while tinyTouch types, then restore the original.
+
+    Key codes from the device are read through the focused app's input source, so a
+    source that cannot type Latin letters would turn a Latin password into another
+    script. One guard serves every device worker: a touch while a restore is pending
+    extends the hold, so the original source never returns halfway through a password.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._original: int | None = None
+        self._latin: int | None = None
+        self._timer: threading.Timer | None = None
+        self._deadline = 0.0
+        self._generation = 0
+
+    def hold(self, seconds: float) -> None:
+        """Make sure a Latin source stays selected for at least `seconds` from now."""
+        hitoolbox, core_foundation, _ = _keyboard_layout_libraries()
+        with self._lock:
+            current = _selected_input_source()
+            if not current:
+                return
+            if self._latin is not None and core_foundation.CFEqual(current, self._latin):
+                core_foundation.CFRelease(current)
+                self._schedule(seconds)
+                return
+            # The person picked another source since tinyTouch switched: keep it.
+            self._release()
+            ascii_capable = _tis_property(hitoolbox, "kTISPropertyInputSourceIsASCIICapable")
+            flag = hitoolbox.TISGetInputSourceProperty(current, ascii_capable)
+            if flag and core_foundation.CFBooleanGetValue(flag):
+                core_foundation.CFRelease(current)
+                return
+            latin = hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+            if not latin or hitoolbox.TISSelectInputSource(latin) != 0:
+                core_foundation.CFRelease(current)
+                if latin:
+                    core_foundation.CFRelease(latin)
+                raise OSError("Could not select an ASCII-capable input source.")
+            self._original, self._latin = current, latin
+            self._schedule(INPUT_SOURCE_SETTLE_SECONDS + seconds)
+        time.sleep(INPUT_SOURCE_SETTLE_SECONDS)
+
+    def wait(self) -> None:
+        """Block until a pending restore has run, before a one-shot helper exits."""
+        while True:
+            with self._lock:
+                timer = self._timer
+            if timer is None:
+                return
+            timer.join()
+            with self._lock:
+                if self._timer is timer:
+                    return
+
+    def _schedule(self, seconds: float) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+        self._generation += 1
+        now = time.monotonic()
+        self._deadline = max(self._deadline, now + seconds)
+        self._timer = threading.Timer(self._deadline - now, self._restore, (self._generation,))
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _restore(self, generation: int) -> None:
+        try:
+            hitoolbox, core_foundation, _ = _keyboard_layout_libraries()
+            with self._lock:
+                if generation != self._generation or self._latin is None:
+                    return
+                current = _selected_input_source()
+                try:
+                    # Leave a source the person picked while tinyTouch was typing.
+                    if current and core_foundation.CFEqual(current, self._latin):
+                        hitoolbox.TISSelectInputSource(self._original)
+                finally:
+                    if current:
+                        core_foundation.CFRelease(current)
+                    self._release()
+        except Exception as exc:
+            diagnostic("keyboard.input_source_restore_failed", level="warning",
+                       error=type(exc).__name__)
+
+    def _release(self) -> None:
+        if self._latin is None:
+            return
+        _, core_foundation, _ = _keyboard_layout_libraries()
+        if self._timer is not None and self._timer is not threading.current_thread():
+            self._timer.cancel()
+        self._timer = None
+        self._deadline = 0.0
+        for source in (self._original, self._latin):
+            if source:
+                core_foundation.CFRelease(source)
+        self._original = self._latin = None
+
+
+INPUT_SOURCE_GUARD = InputSourceGuard()
 
 
 @lru_cache(maxsize=8)
@@ -637,8 +833,12 @@ def require_startup_status(
     *,
     decoder: SerialFrameDecoder | None = None,
     stop_event: threading.Event | None = None,
+    status: dict[str, str] | None = None,
 ) -> list[bytes] | None:
-    """Probe HID readiness and retain events; return None when draining."""
+    """Probe HID readiness and retain events; return None when draining.
+
+    When `status` is given, it receives the key=value fields of the STATUS reply.
+    """
     decoder = decoder if decoder is not None else SerialFrameDecoder(MAX_SERIAL_LINE_BYTES)
     pending: deque[bytes] = deque(maxlen=MAX_SEEN_NONCES)
     if stop_event is not None and stop_event.is_set():
@@ -661,6 +861,10 @@ def require_startup_status(
                 continue
             if line.startswith("OK STATUS "):
                 status_received = True
+                if status is not None:
+                    status.update(
+                        field.split("=", 1) for field in line.split()[2:] if "=" in field
+                    )
             else:
                 line = resynchronize_event(line, device_id)
                 if re.match(r"EV[0-9]* ", line):
@@ -689,9 +893,13 @@ def serve_port(
         state = load_state(device_id)
         settings = load_settings(device_id)
         with open_serial(port) as ser:
+            status: dict[str, str] = {}
             pending_frames = require_startup_status(
-                ser, device_id, port, decoder=decoder, stop_event=stop_event
+                ser, device_id, port, decoder=decoder, stop_event=stop_event, status=status
             )
+            # The CLI changes device settings only while this worker is disconnected,
+            # so the delay stays current until the next STATUS.
+            typing_delay_ms = status_typing_delay_ms(status)
             if pending_frames is None or (stop_event is not None and stop_event.is_set()):
                 return
             last_heartbeat = time.monotonic()
@@ -764,6 +972,15 @@ def serve_port(
                                          device_id=device_id, keyboard_map=keyboard_map,
                                          record_nonce=False)
                     if reply:
+                        try:
+                            INPUT_SOURCE_GUARD.hold(
+                                typing_seconds(reply, typing_delay_ms)
+                                + INPUT_SOURCE_RESTORE_MARGIN_SECONDS
+                            )
+                        except Exception as exc:
+                            # Typing in the current source beats not typing at all.
+                            diagnostic("keyboard.input_source_switch_failed", level="warning",
+                                       error=type(exc).__name__)
                         ser.write(reply.encode("ascii"))
                         remember_nonce(state, line.split()[1], device_id)
                         diagnostic(
@@ -772,6 +989,7 @@ def serve_port(
                             fingerprint_slot=int(line.split()[3]),
                         )
                         if once:
+                            INPUT_SOURCE_GUARD.wait()
                             return
                 # Only a complete PONG acknowledges PING. Diagnostics, malformed
                 # frames, and fingerprint events cannot hide a stuck console.

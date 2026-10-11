@@ -15,6 +15,11 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 
 
+def setUpModule():
+    # Password delivery must never switch the input source of the Mac running tests.
+    unittest.enterModuleContext(mock.patch.object(helper, "INPUT_SOURCE_GUARD"))
+
+
 class SerialFramingTests(unittest.TestCase):
     def test_event_glued_behind_a_truncated_one_is_recovered(self):
         nonce = "c51a6405ed821b8fe1b574ee20c6d05f"
@@ -205,7 +210,121 @@ class KeyboardMapCacheTests(unittest.TestCase):
         foundation.CFRelease.assert_called_once_with(123)
 
 
+class InputSourceSwitchTests(unittest.TestCase):
+    NON_LATIN, LATIN = 1, 2
+
+    def guard(self, current, ascii_capable):
+        hitoolbox, foundation = mock.Mock(), mock.Mock()
+        self.current = current
+        self.enterContext(mock.patch.object(helper, "_selected_input_source", side_effect=lambda: self.current))
+        hitoolbox.TISCopyCurrentASCIICapableKeyboardLayoutInputSource.return_value = self.LATIN
+        hitoolbox.TISGetInputSourceProperty.return_value = 99
+        foundation.CFBooleanGetValue.side_effect = lambda _: (
+            self.current != self.NON_LATIN if ascii_capable is None else ascii_capable
+        )
+        foundation.CFEqual.side_effect = lambda a, b: a == b
+
+        def select(source):
+            self.current = source
+            return 0
+
+        hitoolbox.TISSelectInputSource.side_effect = select
+        self.enterContext(mock.patch.object(helper, "_keyboard_layout_libraries", return_value=(hitoolbox, foundation, None)))
+        self.enterContext(mock.patch.object(helper, "_tis_property", return_value=None))
+        self.enterContext(mock.patch.object(helper, "INPUT_SOURCE_SETTLE_SECONDS", 0))
+        self.hitoolbox = hitoolbox
+        guard = helper.InputSourceGuard()
+        self.addCleanup(guard._release)
+        return guard
+
+    @staticmethod
+    def fire(timer):
+        timer.cancel()
+        timer.function(*timer.args)
+
+    def test_latin_source_is_left_alone(self):
+        guard = self.guard(self.LATIN, ascii_capable=True)
+        guard.hold(10)
+        self.hitoolbox.TISSelectInputSource.assert_not_called()
+        self.assertIsNone(guard._timer)
+
+    def test_non_latin_source_is_switched_for_typing_and_restored(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=False)
+        guard.hold(10)
+        self.assertEqual(self.current, self.LATIN)
+        self.fire(guard._timer)
+        self.assertEqual(self.current, self.NON_LATIN)
+        self.assertIsNone(guard._timer)
+
+    def test_source_chosen_during_typing_is_kept(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=False)
+        guard.hold(10)
+        self.current = 3
+        self.fire(guard._timer)
+        self.assertEqual(self.current, 3)
+
+    def test_second_touch_extends_the_hold_instead_of_restoring_midway(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=None)
+        guard.hold(10)
+        first = guard._timer
+        guard.hold(20)
+        self.hitoolbox.TISSelectInputSource.assert_called_once_with(self.LATIN)
+        self.assertIsNot(guard._timer, first)
+        self.assertGreater(guard._timer.interval, 19)
+        self.fire(first)
+        self.assertEqual(self.current, self.LATIN)
+        self.fire(guard._timer)
+        self.assertEqual(self.current, self.NON_LATIN)
+
+    def test_touch_after_the_person_switched_back_starts_a_new_hold(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=None)
+        guard.hold(10)
+        first = guard._timer
+        self.current = self.NON_LATIN
+        guard.hold(10)
+        self.assertEqual(self.current, self.LATIN)
+        self.fire(first)
+        self.assertEqual(self.current, self.LATIN)
+        self.fire(guard._timer)
+        self.assertEqual(self.current, self.NON_LATIN)
+
+    def test_wait_returns_after_the_restore(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=False)
+        guard.hold(0.01)
+        guard.wait()
+        self.assertEqual(self.current, self.NON_LATIN)
+
+    def test_failed_switch_raises_and_keeps_nothing_pending(self):
+        guard = self.guard(self.NON_LATIN, ascii_capable=False)
+        self.hitoolbox.TISSelectInputSource.side_effect = None
+        self.hitoolbox.TISSelectInputSource.return_value = -50
+        with self.assertRaises(OSError):
+            guard.hold(10)
+        self.assertIsNone(guard._timer)
+        self.assertIsNone(guard._latin)
+
+
+class TypingTimeTests(unittest.TestCase):
+    def test_typing_time_follows_password_length_and_device_delay(self):
+        nonce, iv, ciphertext, mac = "12" * 16, "00" * 16, "ab" * 20, "cd" * 32
+        reply = f"PW {nonce} {iv} {ciphertext} {mac}"
+        # 20 characters plus Enter, two reports each.
+        self.assertAlmostEqual(helper.typing_seconds(reply, 1), 0.042)
+        self.assertAlmostEqual(helper.typing_seconds(reply, 7), 0.294)
+        reply_v2 = f"PW2 {'ef' * 8} {nonce} {iv} {ciphertext} {mac}"
+        self.assertAlmostEqual(helper.typing_seconds(reply_v2, 1), 0.042)
+
+    def test_unknown_typing_delay_assumes_the_slowest(self):
+        self.assertEqual(helper.status_typing_delay_ms({"typing_delay_ms": "7"}), 7)
+        for status in ({}, {"typing_delay_ms": "0"}, {"typing_delay_ms": "101"}, {"typing_delay_ms": "x"}):
+            with self.subTest(status=status):
+                self.assertEqual(helper.status_typing_delay_ms(status), helper.MAX_TYPING_DELAY_MS)
+
+
 class SerialDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.guard = self.enterContext(mock.patch.object(helper, "INPUT_SOURCE_GUARD"))
+
     def test_fragmented_authenticated_requests_reach_the_wire_and_secrets_are_wiped(self):
         for version in (1, 2):
             with self.subTest(version=version):
@@ -279,6 +398,13 @@ class SerialDeliveryTests(unittest.TestCase):
                 remember.assert_called_once_with({"seen_nonces": []}, nonce, device_id)
                 self.assertFalse(any(secret))
                 self.assertFalse(any(key))
+                # "abAa1" plus Enter at the slowest delay, since this STATUS omits it.
+                (seconds,), _ = self.guard.hold.call_args
+                self.assertAlmostEqual(
+                    seconds, 6 * 2 * 0.1 + helper.INPUT_SOURCE_RESTORE_MARGIN_SECONDS
+                )
+                self.guard.wait.assert_called_once_with()
+                self.guard.reset_mock()
 
 
 class WorkerStateMachineTests(unittest.TestCase):
