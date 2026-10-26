@@ -1324,15 +1324,100 @@ def hid_settings_change():
         ) from exc
 
 
+def resolve_app(value: str) -> tuple[str, str]:
+    """Resolve an app name, .app path, or bundle ID to (bundle ID, display name)."""
+    from tinytouch_helper import BUNDLE_ID_PATTERN
+
+    if value.endswith(".app"):
+        candidates = [Path(value).expanduser()]
+    else:
+        candidates = [
+            root / f"{value}.app"
+            for root in (
+                Path("/Applications"), Path.home() / "Applications",
+                Path("/System/Applications"), Path("/Applications/Utilities"),
+            )
+        ]
+    for candidate in candidates:
+        try:
+            bundle_id = plistlib.loads(
+                (candidate / "Contents" / "Info.plist").read_bytes()
+            ).get("CFBundleIdentifier")
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+        if isinstance(bundle_id, str) and BUNDLE_ID_PATTERN.fullmatch(bundle_id):
+            return bundle_id, candidate.stem
+    if "." in value and BUNDLE_ID_PATTERN.fullmatch(value):
+        return value, value
+    raise ToolError(
+        f"Could not find the app {value!r}. Use its name in /Applications, "
+        "its .app path, or its bundle ID."
+    )
+
+
+def update_app_password_settings(account: str, bundle_id: str, finger: int, present: bool) -> None:
+    """Record which app passwords exist so the helper can load them at startup."""
+    from tinytouch_helper import settings_path
+
+    path = settings_path(account)
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
+        settings = {}
+    if not isinstance(settings, dict):
+        settings = {}
+    app_passwords = settings.get("app_passwords")
+    if not isinstance(app_passwords, dict):
+        app_passwords = {}
+    fingers = {item for item in app_passwords.get(bundle_id, []) if isinstance(item, int)}
+    if present:
+        fingers.add(finger)
+    else:
+        fingers.discard(finger)
+    if fingers:
+        app_passwords[bundle_id] = sorted(fingers)
+    else:
+        app_passwords.pop(bundle_id, None)
+    settings["app_passwords"] = app_passwords
+    atomic_write_json(path, settings)
+
+
+def list_passwords(account: str) -> None:
+    from tinytouch_helper import finger_password_account, load_app_password_settings
+
+    keychain = _keychain()
+    say("HID passwords on this Mac:")
+    say("  default")
+    for finger in range(1, 11):
+        if keychain.has_password(PASSWORD_SERVICE, finger_password_account(account, finger)):
+            say(f"  finger {finger}")
+    for bundle_id, fingers in sorted(load_app_password_settings(account).items()):
+        for finger in fingers:
+            say(f"  {bundle_id}" + (f", finger {finger}" if finger else ""))
+
+
 def command_password(args: argparse.Namespace) -> None:
     """Change a host password without repeating enrollment or HID pairing."""
     require_macos()
     from tinytouch_helper import (
-        current_keyboard_output_map, finger_password_account, load_settings,
-        translate_password,
+        app_password_account, current_keyboard_output_map, finger_password_account,
+        load_settings, translate_password,
     )
 
+    if args.remove and not args.app:
+        raise ToolError("Use --remove with --app to delete an app password.")
     account = device_account(choose_port(args.port))
+    if args.list:
+        list_passwords(account)
+        return
+    app = resolve_app(args.app) if args.app else None
+    if app is not None and args.remove:
+        bundle_id, name = app
+        with hid_settings_change():
+            keychain_delete(PASSWORD_SERVICE, app_password_account(account, bundle_id, args.finger or 0))
+            update_app_password_settings(account, bundle_id, args.finger or 0, present=False)
+        say(f"Removed the {name} password" + (f" for finger {args.finger}." if args.finger else "."))
+        return
     keychain = _keychain()
     try:
         configured = all(keychain.has_password(service, account)
@@ -1351,6 +1436,15 @@ def command_password(args: argparse.Namespace) -> None:
             "This password cannot be typed with the selected keyboard layout. "
             "Select a compatible macOS layout and use at most 160 typed keys."
         ) from exc
+    if app is not None:
+        bundle_id, name = app
+        with hid_settings_change():
+            keychain_set(PASSWORD_SERVICE,
+                         app_password_account(account, bundle_id, args.finger or 0), value)
+            update_app_password_settings(account, bundle_id, args.finger or 0, present=True)
+        say(f"HID password saved for {name}" + (f", finger {args.finger}." if args.finger else "."))
+        say("It is typed only while that app is frontmost and the screen is unlocked.")
+        return
     target = finger_password_account(account, args.finger) if args.finger else account
     with hid_settings_change():
         keychain_set(PASSWORD_SERVICE, target, value)
@@ -3058,6 +3152,12 @@ def parser() -> argparse.ArgumentParser:
     password = sub.add_parser("password", help="Change the password typed on this Mac.")
     password.add_argument("--finger", type=int, choices=range(1, 11),
                           help="Set one password for all four views of this finger.")
+    password.add_argument("--app", metavar="APP",
+                          help="Type this password only while APP is frontmost (name, .app path, or bundle ID).")
+    password.add_argument("--remove", action="store_true",
+                          help="Delete the --app password instead of setting it.")
+    password.add_argument("--list", action="store_true",
+                          help="List saved passwords by finger and app, without showing them.")
     password.add_argument("--port", default=argparse.SUPPRESS,
                           help="Use this USB serial path instead of the global --port value.")
     password.set_defaults(func=command_password)

@@ -1,6 +1,7 @@
 import importlib.util
 import ctypes
 import hashlib
+import json
 import tempfile
 import threading
 import unittest
@@ -675,3 +676,99 @@ class HelperProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AppPasswordTests(unittest.TestCase):
+    key = bytes(range(32))
+    passwords = {0: b"mac login", 5: b"finger two"}
+    app_passwords = {
+        ("com.1password.1password", 2): b"personal vault",
+        ("com.1password.1password", 3): b"work vault",
+        ("com.example.any", 0): b"any finger",
+    }
+
+    def reply_for(self, slot, frontmost):
+        nonce = f"{slot:02x}" * 16
+        event_mac = helper.mac_hex(self.key, f"EV|{nonce}|1|{slot}|42")
+        lookups = []
+        response = helper.handle_event(
+            f"EV {nonce} 1 {slot} 42 {event_mac}", self.passwords, self.key,
+            {"seen_nonces": []}, persist_state=False,
+            app_passwords=self.app_passwords,
+            frontmost_app_lookup=lambda: lookups.append(1) or frontmost,
+        )
+        return HelperProtocolTests.decrypt_response(self.key, nonce, response), lookups
+
+    def test_finger_selects_account_inside_the_app(self):
+        # Slots 5-8 are finger 2 and slots 9-12 are finger 3.
+        self.assertEqual(self.reply_for(5, "com.1password.1password")[0], b"personal vault")
+        self.assertEqual(self.reply_for(12, "com.1password.1password")[0], b"work vault")
+
+    def test_app_without_finger_password_falls_back_to_finger_then_default(self):
+        self.assertEqual(self.reply_for(1, "com.1password.1password")[0], b"mac login")
+
+    def test_any_finger_app_password(self):
+        self.assertEqual(self.reply_for(1, "com.example.any")[0], b"any finger")
+
+    def test_other_app_or_locked_screen_gets_mac_passwords(self):
+        self.assertEqual(self.reply_for(5, "com.apple.Terminal")[0], b"finger two")
+        self.assertEqual(self.reply_for(9, None)[0], b"mac login")
+
+    def test_frontmost_app_is_not_queried_without_app_passwords(self):
+        nonce = "0c" * 16
+        event_mac = helper.mac_hex(self.key, f"EV|{nonce}|1|1|42")
+        lookup = mock.Mock(return_value="com.1password.1password")
+        helper.handle_event(
+            f"EV {nonce} 1 1 42 {event_mac}", self.passwords, self.key,
+            {"seen_nonces": []}, persist_state=False, frontmost_app_lookup=lookup,
+        )
+        lookup.assert_not_called()
+
+    def test_forged_event_does_not_query_frontmost_app(self):
+        lookup = mock.Mock(return_value="com.1password.1password")
+        reply = helper.handle_event(
+            f"EV {'0d' * 16} 1 5 42 {'00' * 32}", self.passwords, self.key,
+            {"seen_nonces": []}, persist_state=False,
+            app_passwords=self.app_passwords, frontmost_app_lookup=lookup,
+        )
+        self.assertIsNone(reply)
+        lookup.assert_not_called()
+
+    def test_locked_screen_hides_frontmost_app(self):
+        with (
+            mock.patch.object(helper, "screen_locked", return_value=True),
+            mock.patch.object(helper, "frontmost_bundle_id") as bundle,
+        ):
+            self.assertIsNone(helper.frontmost_app())
+        bundle.assert_not_called()
+
+    def test_frontmost_bundle_id_parses_lsappinfo(self):
+        outputs = [
+            mock.Mock(stdout="ASN:0x0-0x81e01d8:\n"),
+            mock.Mock(stdout='[ NULL ] ASN:0x0-0x81e01d8: (in front)\n'
+                             '    bundleID="com.1password.1password"\n'),
+        ]
+        with mock.patch.object(helper.subprocess, "run", side_effect=outputs):
+            self.assertEqual(helper.frontmost_bundle_id(), "com.1password.1password")
+        with mock.patch.object(helper.subprocess, "run", return_value=mock.Mock(stdout="")):
+            self.assertIsNone(helper.frontmost_bundle_id())
+
+    def test_app_password_settings_ignore_invalid_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(helper, "STATE_DIR", Path(directory)):
+                helper.settings_path("TT-123456ABCDEF").write_text(json.dumps({
+                    "keyboard_layout": "us",
+                    "app_passwords": {
+                        "com.1password.1password": [3, 2, 2, 11, "x", True],
+                        "bad id/../x": [1],
+                        "com.example.empty": [],
+                    },
+                }))
+                self.assertEqual(
+                    helper.load_app_password_settings("TT-123456ABCDEF"),
+                    {"com.1password.1password": [2, 3]},
+                )
+                self.assertIn(
+                    "TT-123456ABCDEF:app:com.1password.1password:finger:3",
+                    helper.password_accounts("TT-123456ABCDEF"),
+                )
