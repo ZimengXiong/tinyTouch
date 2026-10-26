@@ -108,7 +108,7 @@ Changes mode after fingerprint approval. Reconnect the device when prompted.
 ## `password`
 
 ```text
-tinytouch password [--finger {1..10}] [--port PATH]
+tinytouch password [--finger {1..10}] [--app APP [--remove]] [--list] [--port PATH]
 ```
 
 Changes the password typed by HID on this Mac. Enter the new password twice in
@@ -125,6 +125,22 @@ The password must fit the selected layout, use at most 160 UTF-8 bytes, and
 require at most 160 typed keys. A dead-key sequence counts as two typed keys.
 Control characters are unsupported. A failed Keychain update keeps the previous
 password; unlock the login Keychain or run `tinytouch repair` before retrying.
+
+With `--app`, the password is typed only while that app is frontmost. `APP` is
+the app's name in `/Applications`, its `.app` path, or its bundle ID. Add
+`--finger` to use a different password per finger in the same app, for example
+two 1Password accounts:
+
+```sh
+tinytouch password --app 1Password --finger 2
+tinytouch password --app 1Password --finger 3
+```
+
+For each touch, the helper uses the first saved match: the app password for that
+finger, the app password for any finger, the finger password, then the default
+password. While the screen is locked, app passwords are never used, so the lock
+screen always receives your Mac password. `--app APP --remove` deletes an app
+password, and `--list` shows which passwords are saved without revealing them.
 
 ## `keyboard-layout`
 
