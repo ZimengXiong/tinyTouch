@@ -29,3 +29,5 @@ __MACOSX/
 .python-x86_64/
 .vercel
 .env*
+
+.venv-linux/

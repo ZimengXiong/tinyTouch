@@ -65,6 +65,10 @@ from tinytouch_runtime import (  # type: ignore  # noqa: E402
 )
 from tinytouch_menu import select_menu, supports_arrows  # type: ignore  # noqa: E402
 
+if sys.platform.startswith("linux"):
+    sys.path.insert(0, str(PROJECT_ROOT / "linux"))
+    from tinytouch_linux.paths import STATE_DIR as SUPPORT_DIR
+
 HELPER_SUSPEND = SUPPORT_DIR / "helper-suspend"
 HELPER_SUSPEND_ACK = SUPPORT_DIR / "helper-suspend-ack"
 _sudo_session_ready = False
@@ -455,6 +459,17 @@ def authorize_macos() -> None:
 def prepare_hid_password() -> None:
     """Capture the HID password and unlock Keychain without requiring sudo."""
     global _setup_password
+    if sys.platform.startswith("linux"):
+        if _setup_password is None:
+            _setup_password = bytearray(prompt_hid_password().encode("utf-8"))
+        from tinytouch_helper import translate_password
+        try:
+            translate_password(bytes(_setup_password), None)
+        except ValueError:
+            _setup_password[:] = bytes(len(_setup_password))
+            _setup_password = None
+            raise ToolError("Use printable US ASCII, at most 160 typed keys.") from None
+        return
     entered = bytearray(getpass.getpass("Mac password: ").encode("utf-8"))
     if not entered:
         raise ToolError("HID mode requires the password for this Mac.")
@@ -483,6 +498,9 @@ def require_macos() -> None:
 
 
 def _keychain():
+    if sys.platform.startswith("linux"):
+        from tinytouch_linux import secrets
+        return secrets
     try:
         import tinytouch_keychain  # type: ignore
     except ImportError as exc:
@@ -500,6 +518,8 @@ def keychain_set(service: str, account: str, value: str) -> None:
         keychain.set_password(service, account, value)
     except keychain.KeychainError as exc:
         raise ToolError(
+            "Could not save the HID credential. Unlock your desktop secret store "
+            "and retry." if sys.platform.startswith("linux") else
             "Could not save the HID credential. Unlock the login Keychain or "
             "run 'tinytouch repair', then retry."
         ) from exc
@@ -546,6 +566,9 @@ def choose_mode(value: str | None) -> str:
 
 
 def detect_ports() -> list[str]:
+    if sys.platform.startswith("linux"):
+        from tinytouch_helper import device_ports
+        return device_ports()
     return sorted(str(path) for path in Path("/dev").glob("cu.*") if "usb" in path.name.lower() or "TT-" in path.name)
 
 
@@ -1010,6 +1033,17 @@ def helper_supports_foreground_lease() -> bool:
 @contextmanager
 def foreground_helper():
     """Pause a current helper without removing its launchd registration."""
+    if sys.platform.startswith("linux"):
+        from tinytouch_linux.service import helper_active
+        with ForegroundLease(HELPER_SUSPEND, HELPER_SUSPEND_ACK) as lease:
+            try:
+                lease.acquire(wait_for_ack=helper_active())
+            except (LeaseBusyError, LeaseProtocolError) as exc:
+                raise ToolError(str(exc)) from exc
+            except OSError as exc:
+                raise ToolError("Could not reserve the tinyTouch USB connection.") from exc
+            yield
+        return
     use_lease = not _helper_suppressed and helper_supports_foreground_lease()
     if use_lease:
         load_helper()
@@ -1205,7 +1239,10 @@ def device_account(port: str) -> str:
     if override:
         return override
     try:
-        from tinytouch_ports import comports
+        if sys.platform.startswith("linux"):
+            from serial.tools.list_ports import comports
+        else:
+            from tinytouch_ports import comports
     except ImportError as exc:
         raise ToolError(
             "The pyserial package is required to identify this tinyTouch device."
@@ -1238,16 +1275,24 @@ def host_id(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
 
 
+def hid_setup_command() -> str:
+    return "tinytouch setup --us-keyboard" if sys.platform.startswith("linux") else "tinytouch setup --mode hid"
+
+
+def host_computer_name() -> str:
+    return "computer" if sys.platform.startswith("linux") else "Mac"
+
+
 def hid_pairing_key(value: str | None) -> bytes:
     """Validate a saved pairing key before using its host identifier."""
     if value is None:
-        raise HidSetupIncompleteError("This Mac has no saved HID pairing key. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError(f"This {host_computer_name()} has no saved HID pairing key. Run '{hid_setup_command()}'.")
     try:
         key = bytes.fromhex(value.strip())
     except ValueError as exc:
-        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.") from exc
+        raise HidSetupIncompleteError(f"The saved HID pairing key is invalid. Run '{hid_setup_command()}'.") from exc
     if len(key) != 32:
-        raise HidSetupIncompleteError("The saved HID pairing key is invalid. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError(f"The saved HID pairing key is invalid. Run '{hid_setup_command()}'.")
     return key
 
 
@@ -1257,14 +1302,14 @@ def verify_hid_host(port: str, device: dict[str, str], account: str | None = Non
     key = hid_pairing_key(keychain_get(PAIRING_SERVICE, account))
     password = keychain_get(PASSWORD_SERVICE, account)
     if not password or len(password.encode("utf-8")) > 160:
-        raise HidSetupIncompleteError("This Mac has no usable HID password. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError(f"This {host_computer_name()} has no usable HID password. Run '{hid_setup_command()}'.")
     registered, _capacity = host_list(port)
     try:
         count = int(device["hosts"])
     except (KeyError, ValueError) as exc:
         raise ToolError("HID setup is incomplete. The device did not report a valid computer count.") from exc
     if count < 1 or count != len(registered) or host_id(key) not in registered:
-        raise HidSetupIncompleteError("HID setup is incomplete. This Mac is not registered. Run 'tinytouch setup --mode hid'.")
+        raise HidSetupIncompleteError(f"HID setup is incomplete. This {host_computer_name()} is not registered. Run '{hid_setup_command()}'.")
 
 
 def prompt_hid_password() -> str:
@@ -1386,7 +1431,7 @@ def list_passwords(account: str) -> None:
     from tinytouch_helper import finger_password_account, load_app_password_settings
 
     keychain = _keychain()
-    say("HID passwords on this Mac:")
+    say("HID passwords on this computer:")
     say("  default")
     for finger in range(1, 11):
         if keychain.has_password(PASSWORD_SERVICE, finger_password_account(account, finger)):
@@ -1532,12 +1577,12 @@ def configure_hid(port: str, device: dict[str, str]) -> None:
             except Exception:
                 cleanup_failed = True
         if cleanup_failed:
-            say("Some HID setup changes could not be restored. Reconnect tinyTouch and run 'tinytouch setup --mode hid' again.")
+            say(f"Some HID setup changes could not be restored. Reconnect tinyTouch and run '{hid_setup_command()}' again.")
         if isinstance(exc, KeyboardInterrupt):
             raise
         suffix = " Some setup changes could not be restored." if cleanup_failed else ""
         raise ToolError(
-            f"HID setup did not finish. {exc}{suffix} Run 'tinytouch setup --mode hid' again."
+            f"HID setup did not finish. {exc}{suffix} Run '{hid_setup_command()}' again."
         ) from exc
     finally:
         if _setup_password is not None:

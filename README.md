@@ -138,6 +138,10 @@ cards, like login and `sudo` with pam.
 
 ## install
 
+For the experimental **Bazzite / KDE Plasma / Wayland HID port**, see
+[Linux setup and app passwords](linux/README.md). It supports existing desktop
+sessions with a US keyboard layout.
+
 HID and PIV use the same firmware. Choose the mode during setup.
 
 1. Build and wire the device using the [hardware guide](https://docs.tinytouch.dev/customer/build).

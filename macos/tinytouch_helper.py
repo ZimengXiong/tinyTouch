@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 import serial
-try:
-    from tinytouch_keychain import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+if sys.platform.startswith("linux"):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "linux"))
+    from tinytouch_linux.secrets import (
         KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
-except ModuleNotFoundError:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+else:
     from tinytouch_keychain import (
         KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
@@ -38,13 +39,17 @@ from tinytouch_runtime import (
     diagnostic,
     read_available,
 )
-from tinytouch_ports import comports
+if sys.platform.startswith("linux"):
+    from serial.tools.list_ports import comports
+    from tinytouch_linux.paths import STATE_DIR
+else:
+    from tinytouch_ports import comports
+    STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 
 
 SERVICE = "tinyTouch"
 ACCOUNT = "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
-STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 SUSPEND_PATH = STATE_DIR / "helper-suspend"
 SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
@@ -60,7 +65,10 @@ PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
 # The firmware waits 1.5 s for an EV2 reply when several computers are registered.
 APP_LOOKUP_TIMEOUT_SECONDS = 0.5
-BUNDLE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}")
+BUNDLE_ID_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}" if sys.platform.startswith("linux")
+    else r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}"
+)
 MAX_EVENT_AUTHENTICATORS = 8
 MAX_COUNTER = (1 << 64) - 1
 MAX_SCORE = (1 << 31) - 1
@@ -340,6 +348,13 @@ def frontmost_app() -> str | None:
     except OSError:
         return None
     return frontmost_bundle_id()
+
+
+def host_frontmost_app() -> str | None:
+    if sys.platform.startswith("linux"):
+        from tinytouch_linux.desktop import frontmost_app as linux_frontmost_app
+        return linux_frontmost_app()
+    return frontmost_app()
 
 
 @lru_cache(maxsize=1)
@@ -929,7 +944,7 @@ def serve_port(
                     reply = handle_event(line, password, pairing_key, state,
                                          device_id=device_id, keyboard_map=keyboard_map,
                                          record_nonce=False, app_passwords=app_passwords,
-                                         frontmost_app_lookup=frontmost_app)
+                                         frontmost_app_lookup=host_frontmost_app)
                     if reply:
                         ser.write(reply.encode("ascii"))
                         remember_nonce(state, line.split()[1], device_id)
