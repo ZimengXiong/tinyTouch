@@ -36,7 +36,7 @@ static bool have_manual_stage, stage_manual, fail_manual_save;
 static uint8_t disk_manual_stage, pending_manual_stage;
 static bool sensor_manual_saved, sensor_manual_active;
 static uint8_t reject_manual, physical_led;
-static unsigned manual_commands, automatic_lights, capture_commands;
+static unsigned manual_commands, automatic_lights, capture_commands, search_commands;
 static unsigned visible_green, visible_red;
 static int drop_led, drop_manual;
 
@@ -173,6 +173,7 @@ int uart_write_bytes(uart_port_t port, const void *data, size_t size) {
     else automatic_light(FP_LED_BLUE);
   }
   else if (instruction == 0x04) {
+    search_commands++;
     automatic_light(no_match ? FP_LED_RED : FP_LED_GREEN);
     extra = 4; payload[1] = search_slot; payload[3] = no_match ? 0 : 90;
   } else if (instruction == 0x0f) {

@@ -48,5 +48,18 @@ int main(void) {
   green = visible_green;
   assert(poll_match_with_led().slot == 1);
   assert(visible_green == green && physical_led == 0);
+
+  // A wrong finger held during a prompted authorization is scanned once, not
+  // every 120 ms: repeated scans restarted the red result as a flicker.
+  assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH));
+  sensor_power_cycle(); fingerprint_init(); service_result_led();
+  unsigned searches = search_commands, captures = capture_commands;
+  red = led_colors[FP_LED_RED];
+  no_match = true;
+  assert(!fingerprint_authorize_prompted(NULL));
+  no_match = false;
+  assert(search_commands == searches + 1 && capture_commands > captures + 1);
+  assert(led_colors[FP_LED_RED] == red);
+  (void)service_result_led(); assert(led_colors[FP_LED_RED] == red + 1);
   return 0;
 }

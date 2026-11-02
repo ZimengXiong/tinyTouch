@@ -561,13 +561,23 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   return no_match;
 }
 
+static void hide_capture_light_locked(void) {
+  // Only a sensor still running its own animation can light the ring during
+  // an empty capture. Once manual lighting is active the ring is already dark,
+  // and an off command per poll would only cut a result short: at the 120 ms
+  // prompted-authorization cadence the red result became a brief flicker.
+  if (device_config_led_mode() == DEVICE_LED_ON || result_led_pending || result_led_visible ||
+      strcmp(led_control, "manual") == 0) return;
+  set_aura(0);
+}
+
 bool fingerprint_try_poll_match(fingerprint_match_t *match) {
   *match = (fingerprint_match_t){0};
   if (!fp_take(0)) return false;
   uint8_t confirm = 0xff;
   bool replied = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350);
   if (!replied || confirm != 0x00) {
-    if (device_config_led_mode() != DEVICE_LED_ON) set_aura(0);
+    hide_capture_light_locked();
     fp_give();
     // TOUCH_OUT can assert before image acquisition is ready. Only the
     // acknowledged "no finger" result permits another capture attempt.
@@ -690,11 +700,26 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   prompted_authorization_active = true;
   if (prompt) prompt();
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
-  bool ok = false;
+  bool ok = false, armed = true;
   while (xTaskGetTickCount() < deadline) {
-    if (fingerprint_authorize_poll_match().slot != 0) {
-      ok = true;
-      break;
+    // Like the HID task, a completed mismatch needs an observed lift before
+    // the next scan. Rescanning a held wrong finger every 120 ms restarted
+    // the red result (and, before manual lighting, the sensor's own capture
+    // and failure animations) several times a second.
+    fingerprint_match_t match;
+    if (armed) {
+      if (fingerprint_try_poll_match(&match)) {
+        if (match.slot != 0) {
+          ok = true;
+          break;
+        }
+        armed = false;
+      }
+    } else if (fp_take(0)) {
+      uint8_t confirm = 0xff;
+      armed = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x02;
+      hide_capture_light_locked();
+      fp_give();
     }
     vTaskDelay(pdMS_TO_TICKS(120));
   }

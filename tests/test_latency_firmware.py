@@ -60,5 +60,5 @@ class FirmwareLatencyTests(unittest.TestCase):
             "uart": section(source, "static uint16_t fp_checksum(", "static bool fp_take("),
             "led": section(source, "static bool set_aura(", "void fingerprint_led_service(") + section(source, "static bool apply_aura(void) {", "static void result_led_worker("),
             "schedule": section(source, "static void schedule_result_led(", "static void show_result("),
-            "matcher": section(source, "bool fingerprint_try_poll_match(", "void fingerprint_init("),
+            "matcher": section(source, "static void hide_capture_light_locked(", "void fingerprint_init("),
         })

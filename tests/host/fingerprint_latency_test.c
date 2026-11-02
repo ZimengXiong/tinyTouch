@@ -60,6 +60,7 @@ static device_options_t options = {3, 1, 1, 0, 2, 4, 350};
 static device_options_t device_config_options(void) { return options; }
 static device_led_mode_t device_config_led_mode(void) { return lighting_off ? DEVICE_LED_OFF : idle_led ? DEVICE_LED_ON : DEVICE_LED_ONLY_AUTH; }
 static uint8_t led_requested_color;
+static const char *led_control = "pending";
 static bool apply_aura(void);
 static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles) {
   uint8_t params[] = {effect, start, end, cycles}; uint8_t confirm = 0xff;
@@ -126,6 +127,20 @@ int main(void) {
   reset(); ack(); idle_led = false; schedule_result_led(false);
   assert(service_result_led() == 35 && last_aura == FP_LED_RED);
   ticks = 35; assert(service_result_led() == portMAX_DELAY && last_aura == 0);
+
+  // An empty capture after a mismatch must not cut the red result short. At
+  // the prompted-authorization cadence that turned the result into a flicker.
+  const uint8_t no_finger[] = {2};
+  reset(); idle_led = false; schedule_result_led(false); ack();
+  assert(service_result_led() == 35 && aura_count == 1 && last_aura == FP_LED_RED);
+  incoming_len = 0; packet(7, no_finger, sizeof(no_finger));
+  match = fingerprint_authorize_poll_match(); assert(match.slot == 0 && aura_count == 1);
+  // Without a result, only a sensor that may still animate itself is re-darkened.
+  reset(); idle_led = false; packet(7, no_finger, sizeof(no_finger));
+  match = fingerprint_authorize_poll_match(); assert(aura_count == 1 && last_aura == 0);
+  reset(); idle_led = false; led_control = "manual"; packet(7, no_finger, sizeof(no_finger));
+  match = fingerprint_authorize_poll_match(); assert(aura_count == 0);
+  led_control = "pending";
 
   // Foreground LED changes cancel queued and already-visible result feedback.
   reset(); ack(); schedule_result_led(true); set_aura(FP_LED_BLUE);
