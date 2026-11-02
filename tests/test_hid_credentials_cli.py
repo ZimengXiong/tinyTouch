@@ -251,3 +251,53 @@ class KeyboardLayoutCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AppPasswordCommandTests(unittest.TestCase):
+    run_command = HidPasswordCommandTests.run_command
+
+    def setUp(self):
+        HidPasswordCommandTests.setUp(self)
+        self.enterContext(mock.patch.object(helper, "STATE_DIR", self.root))
+        app = self.root / "1Password.app" / "Contents"
+        app.mkdir(parents=True)
+        (app / "Info.plist").write_bytes(
+            cli.plistlib.dumps({"CFBundleIdentifier": "com.1password.1password"})
+        )
+        self.app_path = str(self.root / "1Password.app")
+
+    def settings(self):
+        return json.loads(helper.settings_path(self.account).read_text())
+
+    def test_app_finger_password_is_saved_and_registered(self):
+        helper.settings_path(self.account).write_text(json.dumps({"keyboard_layout": "us"}))
+        self.run_command("--app", self.app_path, "--finger", "2")
+        self.keychain.set_password.assert_called_once_with(
+            cli.PASSWORD_SERVICE,
+            f"{self.account}:app:com.1password.1password:finger:2",
+            "password",
+        )
+        self.assertEqual(self.settings(), {
+            "keyboard_layout": "us",
+            "app_passwords": {"com.1password.1password": [2]},
+        })
+
+    def test_remove_deletes_item_and_registration(self):
+        helper.settings_path(self.account).write_text(json.dumps({
+            "app_passwords": {"com.1password.1password": [0, 2]},
+        }))
+        self.run_command("--app", "com.1password.1password", "--remove")
+        self.keychain.delete_password.assert_called_once_with(
+            cli.PASSWORD_SERVICE, f"{self.account}:app:com.1password.1password"
+        )
+        self.assertEqual(self.settings()["app_passwords"], {"com.1password.1password": [2]})
+        self.keychain.set_password.assert_not_called()
+
+    def test_remove_requires_app(self):
+        with self.assertRaises(cli.ToolError):
+            self.run_command("--remove")
+
+    def test_unknown_app_name_is_rejected(self):
+        with self.assertRaises(cli.ToolError):
+            self.run_command("--app", "No Such App")
+        self.keychain.set_password.assert_not_called()

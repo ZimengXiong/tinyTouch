@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 import serial
-try:
-    from tinytouch_keychain import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+if sys.platform.startswith("linux"):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "linux"))
+    from tinytouch_linux.secrets import (
         KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
-except ModuleNotFoundError:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+else:
     from tinytouch_keychain import (
         KeychainError, get_password_bytes, has_password, set_background_mode, set_password,
     )
@@ -38,13 +39,17 @@ from tinytouch_runtime import (
     diagnostic,
     read_available,
 )
-from tinytouch_ports import comports
+if sys.platform.startswith("linux"):
+    from serial.tools.list_ports import comports
+    from tinytouch_linux.paths import STATE_DIR
+else:
+    from tinytouch_ports import comports
+    STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 
 
 SERVICE = "tinyTouch"
 ACCOUNT = "tinyTouch"
 PAIRING_SERVICE = "tinyTouch-pairing"
-STATE_DIR = Path.home() / "Library" / "Application Support" / "tinyTouch"
 SUSPEND_PATH = STATE_DIR / "helper-suspend"
 SUSPEND_ACK_PATH = STATE_DIR / "helper-suspend-ack"
 MAX_SEEN_NONCES = 256
@@ -58,6 +63,12 @@ MAX_WORKER_RETRY_SECONDS = 2.0
 MAX_SERIAL_LINE_BYTES = 2048
 PARTIAL_FRAME_TIMEOUT_SECONDS = 1.0
 MAX_PASSWORD_BYTES = 160
+# The firmware waits 1.5 s for an EV2 reply when several computers are registered.
+APP_LOOKUP_TIMEOUT_SECONDS = 0.5
+BUNDLE_ID_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}" if sys.platform.startswith("linux")
+    else r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}"
+)
 MAX_EVENT_AUTHENTICATORS = 8
 MAX_COUNTER = (1 << 64) - 1
 MAX_SCORE = (1 << 31) - 1
@@ -143,10 +154,20 @@ def finger_password_account(device_id: str, finger: int) -> str:
     return f"{device_id}:fingerprint:group:{finger}"
 
 
+def app_password_account(device_id: str, bundle_id: str, finger: int = 0) -> str:
+    """Name a password typed only while this app is frontmost (finger 0: any finger)."""
+    suffix = f":finger:{finger}" if finger else ""
+    return f"{device_id}:app:{bundle_id}{suffix}"
+
+
 def password_accounts(device_id: str) -> list[str]:
     """List override accounts that may need Keychain access repair."""
     return [fingerprint_account(device_id, slot) for slot in range(1, 41)] + [
         finger_password_account(device_id, finger) for finger in range(1, 11)
+    ] + [
+        app_password_account(device_id, bundle_id, finger)
+        for bundle_id, fingers in load_app_password_settings(device_id).items()
+        for finger in fingers
     ]
 
 
@@ -178,6 +199,27 @@ def load_passwords(device_id: str) -> dict[int, bytearray]:
         raise
 
 
+def load_app_passwords(
+    device_id: str, app_passwords: dict[str, list[int]]
+) -> dict[tuple[str, int], bytearray]:
+    """Load app passwords keyed by (bundle ID, finger), finger 0 meaning any finger."""
+    loaded: dict[tuple[str, int], bytearray] = {}
+    try:
+        for bundle_id, fingers in app_passwords.items():
+            for finger in fingers:
+                account = app_password_account(device_id, bundle_id, finger)
+                if has_password(SERVICE, account):
+                    try:
+                        loaded[(bundle_id, finger)] = keychain_get(account)
+                    except KeyError:
+                        pass
+        return loaded
+    except BaseException:
+        for value in loaded.values():
+            value[:] = b"\x00" * len(value)
+        raise
+
+
 def settings_path(device_id: str) -> Path:
     return STATE_DIR / f"settings-{normalize_serial(device_id)}.json"
 
@@ -191,6 +233,128 @@ def load_settings(device_id: str) -> dict[str, str]:
         return {"keyboard_layout": "auto"}
     layout = value.get("keyboard_layout", "auto")
     return {"keyboard_layout": layout if layout in ("auto", "us") else "auto"}
+
+
+def load_app_password_settings(device_id: str) -> dict[str, list[int]]:
+    """Read which (app, finger) passwords exist; finger 0 means any finger."""
+    try:
+        value = json.loads(settings_path(device_id).read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict) or not isinstance(value.get("app_passwords"), dict):
+        return {}
+    value = value["app_passwords"]
+    app_passwords: dict[str, list[int]] = {}
+    for bundle_id, fingers in value.items():
+        if not isinstance(bundle_id, str) or not BUNDLE_ID_PATTERN.fullmatch(bundle_id):
+            continue
+        if not isinstance(fingers, list):
+            continue
+        valid = sorted({finger for finger in fingers
+                        if type(finger) is int and 0 <= finger <= 10})
+        if valid:
+            app_passwords[bundle_id] = valid
+    return app_passwords
+
+
+def finger_for_slot(slot: int) -> int:
+    """Map a sensor template slot to its fingerprint block (four views per finger)."""
+    return (slot - 1) // 4 + 1
+
+
+def select_password(
+    passwords: dict[int, bytes],
+    app_passwords: dict[tuple[str, int], bytes],
+    slot: int,
+    frontmost_app: str | None,
+) -> tuple[bytes | None, str]:
+    """Prefer an app password for the frontmost app, then the slot override, then the default.
+
+    Returns the password and its source: "app", "finger", or "default".
+    """
+    if frontmost_app is not None:
+        finger = finger_for_slot(slot)
+        for key in ((frontmost_app, finger), (frontmost_app, 0)):
+            if app_passwords.get(key):
+                return app_passwords[key], "app"
+    if passwords.get(slot):
+        return passwords[slot], "finger"
+    return passwords.get(0), "default"
+
+
+@lru_cache(maxsize=1)
+def _session_libraries():
+    core_graphics = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+    )
+    core_foundation = ctypes.CDLL(
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
+    core_graphics.CGSessionCopyCurrentDictionary.restype = ctypes.c_void_p
+    core_foundation.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    core_foundation.CFDictionaryGetValue.restype = ctypes.c_void_p
+    core_foundation.CFStringCreateWithCString.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32,
+    ]
+    core_foundation.CFStringCreateWithCString.restype = ctypes.c_void_p
+    core_foundation.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+    core_foundation.CFBooleanGetValue.restype = ctypes.c_bool
+    core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+    return core_graphics, core_foundation
+
+
+def screen_locked() -> bool:
+    core_graphics, core_foundation = _session_libraries()
+    session = core_graphics.CGSessionCopyCurrentDictionary()
+    if not session:
+        # No GUI session dictionary: treat as locked so app passwords stay unused.
+        return True
+    key = core_foundation.CFStringCreateWithCString(
+        None, b"CGSSessionScreenIsLocked", 0x08000100
+    )
+    try:
+        value = core_foundation.CFDictionaryGetValue(session, key)
+        return bool(value) and core_foundation.CFBooleanGetValue(value)
+    finally:
+        core_foundation.CFRelease(key)
+        core_foundation.CFRelease(session)
+
+
+def frontmost_bundle_id() -> str | None:
+    deadline = time.monotonic() + APP_LOOKUP_TIMEOUT_SECONDS
+    try:
+        front = subprocess.run(
+            ["/usr/bin/lsappinfo", "front"],
+            check=False, capture_output=True, text=True, timeout=APP_LOOKUP_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        if not re.fullmatch(r"ASN:0x[0-9a-fA-F]+-0x[0-9a-fA-F]+:", front):
+            return None
+        info = subprocess.run(
+            ["/usr/bin/lsappinfo", "info", "-only", "bundleid", front],
+            check=False, capture_output=True, text=True,
+            timeout=max(deadline - time.monotonic(), 0.05),
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r'"?(?:CFBundleIdentifier|bundleID)"?="([^"]+)"', info)
+    return match.group(1) if match else None
+
+
+def frontmost_app() -> str | None:
+    """Return the frontmost app's bundle ID, or None while the screen is locked."""
+    try:
+        if screen_locked():
+            return None
+    except OSError:
+        return None
+    return frontmost_bundle_id()
+
+
+def host_frontmost_app() -> str | None:
+    if sys.platform.startswith("linux"):
+        from tinytouch_linux.desktop import frontmost_app as linux_frontmost_app
+        return linux_frontmost_app()
+    return frontmost_app()
 
 
 @lru_cache(maxsize=1)
@@ -525,6 +689,8 @@ def handle_event(
     record_nonce: bool = True,
     device_id: str | None = None,
     keyboard_map: dict[str, str] | None = None,
+    app_passwords: dict[tuple[str, int], bytes] | None = None,
+    frontmost_app_lookup=None,
 ) -> str | None:
     event = parse_event(line, pairing_key)
     if event is None:
@@ -537,8 +703,21 @@ def handle_event(
         if nonce.lower() in seen_nonces:
             diagnostic("protocol.event_rejected", level="warning", reason="replayed_nonce")
             return None
-    selected_password = (password.get(fingerprint_slot) or password.get(0)) \
-        if isinstance(password, dict) else password
+    if isinstance(password, dict):
+        current_app = (frontmost_app_lookup()
+                       if app_passwords and frontmost_app_lookup is not None else None)
+        selected_password, source = select_password(
+            password, app_passwords or {}, fingerprint_slot, current_app
+        )
+        if app_passwords:
+            diagnostic(
+                "protocol.password_selected",
+                fingerprint_slot=fingerprint_slot,
+                frontmost_app=current_app,
+                source=source,
+            )
+    else:
+        selected_password = password
     if not selected_password:
         diagnostic(
             "protocol.event_rejected",
@@ -679,6 +858,7 @@ def serve_port(
 ) -> None:
     device_id = normalize_serial(device_id or "") or port_identity(port)
     password: dict[int, bytearray] = {}
+    app_passwords: dict[tuple[str, int], bytearray] = {}
     pairing_key = bytearray()
     last_port_check = 0.0
     heartbeat_sent_at: float | None = None
@@ -688,6 +868,7 @@ def serve_port(
         pairing_key = pairing_keychain_get(device_id)
         state = load_state(device_id)
         settings = load_settings(device_id)
+        app_passwords = load_app_passwords(device_id, load_app_password_settings(device_id))
         with open_serial(port) as ser:
             pending_frames = require_startup_status(
                 ser, device_id, port, decoder=decoder, stop_event=stop_event
@@ -762,7 +943,8 @@ def serve_port(
                                     if settings["keyboard_layout"] == "auto" else None)
                     reply = handle_event(line, password, pairing_key, state,
                                          device_id=device_id, keyboard_map=keyboard_map,
-                                         record_nonce=False)
+                                         record_nonce=False, app_passwords=app_passwords,
+                                         frontmost_app_lookup=host_frontmost_app)
                     if reply:
                         ser.write(reply.encode("ascii"))
                         remember_nonce(state, line.split()[1], device_id)
@@ -785,6 +967,8 @@ def serve_port(
                     heartbeat_sent_at = time.monotonic()
     finally:
         for value in password.values():
+            value[:] = b"\x00" * len(value)
+        for value in app_passwords.values():
             value[:] = b"\x00" * len(value)
         pairing_key[:] = b"\x00" * len(pairing_key)
 

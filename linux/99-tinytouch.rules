@@ -1,0 +1,8 @@
+# tinyTouch is a fingerprint keyboard, not a modem. Do not probe its CDC port.
+# Its current firmware reconnects USB on resume; keep this device awake so
+# Linux autosuspend cannot interrupt fingerprint authorization or HID replies.
+# Run AFTER 92_pcscd_ccid.rules, which otherwise re-enables autosuspend for CCID.
+# A negative autosuspend delay also keeps this device awake.
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", ATTR{serial}=="TT-*", ENV{ID_MM_DEVICE_IGNORE}="1", TEST=="power/control", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+# Grant serial access to the active local desktop user only.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", ATTRS{serial}=="TT-*", ENV{ID_MM_PORT_IGNORE}="1", TAG+="uaccess"

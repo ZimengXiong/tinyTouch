@@ -1,0 +1,5 @@
+pyserial>=3.5,<4
+certifi>=2026.2.25
+cryptography>=43
+SecretStorage>=3.3,<4
+dbus-next>=0.2.3,<0.3

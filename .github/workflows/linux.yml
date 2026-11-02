@@ -1,0 +1,25 @@
+name: Linux HID host
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r linux/requirements.txt
+      - run: python -m unittest discover -s tests/linux -v
+      - name: Shared protocol and runtime regression tests
+        env:
+          PYTHONPATH: tests
+        run: >-
+          python -m unittest test_helper_protocol test_helper_runtime
+          test_helper_recovery test_password_mapping test_serial_latency
+          test_lease_cleanup test_cli_transport
+      - run: python -m compileall -q linux macos
+      - run: bash -n linux/install.sh
