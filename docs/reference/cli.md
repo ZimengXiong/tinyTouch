@@ -143,6 +143,11 @@ character mapping. To replace a manually mapped password with your actual
 password, select the intended macOS layout, run `tinytouch keyboard-layout auto`,
 then run `tinytouch password`.
 
+With either setting, if the active input source cannot type Latin letters, such
+as a Cyrillic, Greek, Arabic or Hebrew layout, the helper selects the
+ASCII-capable layout while typing, then restores the original source unless you
+changed it in the meantime.
+
 Changes apply to this device on this Mac. The command restarts the existing
 helper to reload its settings.
 
