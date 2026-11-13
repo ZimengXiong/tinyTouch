@@ -3,6 +3,15 @@
 
 from __future__ import annotations
 
+import sys
+
+if __name__ == "__main__" and sys.argv[1:2] == ["_helper"]:
+    # The login-session helper needs none of the CLI's network, update or menu modules.
+    from tinytouch_helper import main as helper_main  # type: ignore
+    sys.argv = [sys.argv[0], *sys.argv[2:]]
+    helper_main()
+    raise SystemExit(0)
+
 import argparse
 import base64
 from contextlib import contextmanager
@@ -20,7 +29,6 @@ import secrets
 import shutil
 import ssl
 import subprocess
-import sys
 import threading
 import textwrap
 import tty
@@ -3249,11 +3257,6 @@ def main() -> int:
         except ToolError as exc:
             say(f"network error: {exc}")
             return 1
-        return 0
-    if len(sys.argv) > 1 and sys.argv[1] == "_helper":
-        from tinytouch_helper import main as helper_main  # type: ignore
-        sys.argv = [str(HELPER), *sys.argv[2:]]
-        helper_main()
         return 0
     args = parser().parse_args()
     VERBOSE = args.verbose

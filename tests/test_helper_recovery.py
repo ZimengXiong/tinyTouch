@@ -5,6 +5,7 @@ import os
 import select
 import sys
 import threading
+import time
 import unittest
 from collections import deque
 from contextlib import ExitStack, contextmanager
@@ -36,6 +37,22 @@ class Clock:
 
     def monotonic(self):
         return self.now
+
+
+class Waiter:
+    """Stand in for the manager's kqueue waiter by advancing a test clock."""
+
+    def __init__(self, clock=None):
+        self.clock = clock
+        self.timeouts = []
+
+    def wait(self, timeout):
+        self.timeouts.append(timeout)
+        if self.clock is not None:
+            self.clock.now += timeout
+
+    def wake(self):
+        pass
 
 
 class Connection:
@@ -411,13 +428,10 @@ class ManagerRecoveryTests(unittest.TestCase):
         clock = Clock()
         workers = []
 
-        def create(endpoint):
+        def create(endpoint, **_):
             worker = ManagedWorker(endpoint)
             workers.append(worker)
             return worker
-
-        def sleep(delay):
-            clock.now += delay
 
         with (
             mock.patch.object(helper, "Worker", side_effect=create),
@@ -425,7 +439,7 @@ class ManagerRecoveryTests(unittest.TestCase):
             mock.patch.object(helper.LeaseObserver, "active", return_value=None),
             mock.patch.object(helper, "credentials_exist", return_value=True),
             mock.patch.object(helper.time, "monotonic", clock.monotonic),
-            mock.patch.object(helper.time, "sleep", side_effect=sleep),
+            mock.patch.object(helper, "manager_wakeups", return_value=(Waiter(clock), object())),
             mock.patch.object(helper, "diagnostic"),
         ):
             yield workers
@@ -478,7 +492,7 @@ class ManagerRecoveryTests(unittest.TestCase):
             mock.patch.object(helper.LeaseObserver, "active", side_effect=active),
             mock.patch.object(helper.LeaseObserver, "acknowledge", side_effect=acknowledge) as ack,
             mock.patch.object(helper, "device_endpoints") as discovery,
-            mock.patch.object(helper.time, "sleep"),
+            mock.patch.object(helper, "manager_wakeups", return_value=(Waiter(), object())),
             mock.patch.object(helper, "diagnostic") as log,
         ):
             with self.assertRaises(EndManager):
@@ -534,6 +548,94 @@ class ManagerRecoveryTests(unittest.TestCase):
                     helper._manage_workers({DEVICE_ID: worker})
         worker.thread.join.assert_called_once()
         self.assertEqual([item.endpoint for item in replacements], [new])
+
+
+    def test_idle_manager_sleeps_until_the_next_retry_or_recheck(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        clock = Clock()
+        waiter = Waiter(clock)
+        with self.manager([[endpoint], [endpoint], [endpoint], EndManager()]):
+            with (
+                mock.patch.object(helper, "manager_wakeups", return_value=(waiter, object())),
+                mock.patch.object(helper.time, "monotonic", clock.monotonic),
+                mock.patch.object(helper, "credentials_exist", side_effect=[False, True]),
+            ):
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+        self.assertEqual(
+            waiter.timeouts,
+            [helper.KEYCHAIN_RETRY_SECONDS, helper.IDLE_RECHECK_SECONDS, helper.IDLE_RECHECK_SECONDS],
+        )
+
+    def test_manager_polls_when_port_notifications_are_unavailable(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        waiter = Waiter()
+        with self.manager([[endpoint], EndManager()]):
+            with mock.patch.object(helper, "manager_wakeups", return_value=(waiter, None)):
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+        self.assertEqual(waiter.timeouts, [helper.POLLING_RECHECK_SECONDS])
+
+    def test_worker_exit_wakes_the_manager(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        waiter = Waiter()
+        with (
+            self.manager([[endpoint], EndManager()]),
+            mock.patch.object(helper, "manager_wakeups", return_value=(waiter, object())),
+            mock.patch.object(helper, "Worker") as worker,
+        ):
+            with self.assertRaises(EndManager):
+                helper._manage_workers({})
+        worker.assert_called_once_with(endpoint, on_exit=waiter.wake)
+
+
+class StopSignalTests(unittest.TestCase):
+    def test_stop_interrupts_a_blocking_serial_read(self):
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        signal = helper.StopSignal()
+        with helper.serial.Serial(os.ttyname(slave), timeout=5) as connection:
+            with helper.interruptible(connection, signal):
+                threading.Timer(0.05, signal.set).start()
+                started = time.monotonic()
+                self.assertEqual(connection.read(1), b"")
+                self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_stop_before_attach_still_cancels_the_read(self):
+        connection = mock.Mock()
+        signal = helper.StopSignal()
+        signal.set()
+        with helper.interruptible(connection, signal):
+            pass
+        connection.cancel_read.assert_called_once_with()
+        signal.set()
+        connection.cancel_read.assert_called_once_with()
+
+    def test_worker_reports_exit_after_stopping(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        exited = mock.Mock()
+        with mock.patch.object(helper, "serve_port", side_effect=OSError("unplugged")):
+            worker = helper.Worker(endpoint, on_exit=exited)
+            worker.start()
+            worker.thread.join()
+        exited.assert_called_once_with()
+        self.assertEqual(worker.phase, helper.WorkerPhase.FAILED)
+
+    def test_managed_worker_leaves_discovery_to_the_manager(self):
+        connection = Connection(Clock(), [b"OK STATUS protocol=6\n"])
+        stopped = threading.Event()
+        original_read = connection.read
+
+        def read(size):
+            if connection.reads >= 20:
+                stopped.set()
+            return original_read(size)
+
+        connection.read = read
+        with serving(connection), mock.patch.object(helper, "device_ports", return_value=[]) as ports:
+            helper.serve_port(PORT, stop_event=stopped, device_id=DEVICE_ID)
+        ports.assert_not_called()
 
 
 if __name__ == "__main__":
