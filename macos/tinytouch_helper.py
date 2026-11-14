@@ -1095,6 +1095,8 @@ class Worker:
         self.endpoint = endpoint
         self.on_exit = on_exit
         self.stop_event = StopSignal()
+        # Set before on_exit runs, while the thread is still technically alive.
+        self.exited = threading.Event()
         self.error: BaseException | None = None
         self.planned_stop = False
         self.phase = WorkerPhase.CREATED
@@ -1122,6 +1124,7 @@ class Worker:
         else:
             self.phase = WorkerPhase.STOPPED
         finally:
+            self.exited.set()
             if self.on_exit is not None:
                 self.on_exit()
 
@@ -1134,6 +1137,16 @@ class Worker:
         self.planned_stop = True
         self.phase = WorkerPhase.DRAINING
         self.stop_event.set()
+
+
+def worker_finished(worker: Worker) -> bool:
+    """Return whether a worker has left serve_port, even if its thread is still unwinding.
+
+    on_exit wakes the manager from inside the worker thread, so is_alive() can
+    still be true when the manager looks. Treating that as running would leave
+    the exit unnoticed until the next recheck, up to IDLE_RECHECK_SECONDS later.
+    """
+    return worker.exited.is_set() or not worker.thread.is_alive()
 
 
 class WorkerPhase(Enum):
@@ -1208,7 +1221,7 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
             for worker in workers.values():
                 worker.stop()
             for device_id, worker in list(workers.items()):
-                if not worker.thread.is_alive():
+                if worker_finished(worker):
                     worker.thread.join()
                     del workers[device_id]
             if not workers:
@@ -1244,7 +1257,7 @@ def _manage_workers(workers: dict[str, Worker]) -> None:
             current = endpoints.get(device_id)
             if current != worker.endpoint:
                 worker.stop()
-            if worker.thread.is_alive():
+            if not worker_finished(worker):
                 continue
             worker.thread.join()
             del workers[device_id]

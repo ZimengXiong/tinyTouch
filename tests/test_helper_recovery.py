@@ -410,6 +410,7 @@ class ManagedWorker:
         self.planned_stop = False
         self.alive = True
         self.finish_on_stop = finish_on_stop
+        self.exited = threading.Event()
         self.thread = mock.Mock()
         self.thread.is_alive.side_effect = lambda: self.alive
 
@@ -588,6 +589,26 @@ class ManagerRecoveryTests(unittest.TestCase):
                 helper._manage_workers({})
         worker.assert_called_once_with(endpoint, on_exit=waiter.wake)
 
+    def test_manager_reaps_a_worker_whose_thread_is_still_unwinding(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        waiter = Waiter()
+        with self.manager([[endpoint], [endpoint], EndManager()]) as workers:
+            def wait(timeout):
+                waiter.timeouts.append(timeout)
+                if len(waiter.timeouts) == 1:
+                    workers[0].error = OSError("unplugged")
+                    workers[0].exited.set()
+
+            waiter.wait = wait
+            with mock.patch.object(helper, "manager_wakeups", return_value=(waiter, object())):
+                with self.assertRaises(EndManager):
+                    helper._manage_workers({})
+        # The thread still reports alive, but the exit was handled on the
+        # wake-up rather than an idle recheck later.
+        self.assertTrue(workers[0].alive)
+        workers[0].thread.join.assert_called_once_with()
+        self.assertLess(waiter.timeouts[1], helper.IDLE_RECHECK_SECONDS)
+
 
 class StopSignalTests(unittest.TestCase):
     def test_stop_interrupts_a_blocking_serial_read(self):
@@ -621,6 +642,20 @@ class StopSignalTests(unittest.TestCase):
             worker.thread.join()
         exited.assert_called_once_with()
         self.assertEqual(worker.phase, helper.WorkerPhase.FAILED)
+
+    def test_worker_counts_as_finished_when_it_wakes_the_manager(self):
+        endpoint = helper.DeviceEndpoint(DEVICE_ID, PORT, "1-1")
+        seen = []
+
+        def exited():
+            # The manager can run here, before the worker thread has unwound.
+            seen.append((worker.thread.is_alive(), helper.worker_finished(worker)))
+
+        with mock.patch.object(helper, "serve_port", side_effect=OSError("unplugged")):
+            worker = helper.Worker(endpoint, on_exit=exited)
+            worker.start()
+            worker.thread.join()
+        self.assertEqual(seen, [(True, True)])
 
     def test_managed_worker_leaves_discovery_to_the_manager(self):
         connection = Connection(Clock(), [b"OK STATUS protocol=6\n"])
