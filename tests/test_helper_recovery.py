@@ -657,6 +657,31 @@ class StopSignalTests(unittest.TestCase):
             worker.thread.join()
         self.assertEqual(seen, [(True, True)])
 
+    def test_stop_cannot_cancel_a_port_after_it_is_detached(self):
+        connection = mock.Mock()
+        signal = helper.StopSignal()
+        cancelling = threading.Event()
+        release = threading.Event()
+
+        def cancel_read():
+            cancelling.set()
+            release.wait(2)
+
+        connection.cancel_read.side_effect = cancel_read
+        signal.attach(connection)
+        stopper = threading.Thread(target=signal.set)
+        stopper.start()
+        self.assertTrue(cancelling.wait(2))
+        detached = threading.Event()
+        detacher = threading.Thread(target=lambda: (signal.attach(None), detached.set()))
+        detacher.start()
+        # attach(None) has to wait for the in-flight cancel before the port closes.
+        self.assertFalse(detached.wait(0.1))
+        release.set()
+        stopper.join(2)
+        detacher.join(2)
+        self.assertTrue(detached.is_set())
+
     def test_managed_worker_leaves_discovery_to_the_manager(self):
         connection = Connection(Clock(), [b"OK STATUS protocol=6\n"])
         stopped = threading.Event()

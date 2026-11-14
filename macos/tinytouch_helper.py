@@ -988,15 +988,17 @@ class StopSignal(threading.Event):
     def attach(self, ser: serial.Serial | None) -> None:
         with self._lock:
             self._serial = ser
-        if ser is not None and self.is_set():
-            self._cancel(ser)
+            if ser is not None and self.is_set():
+                self._cancel(ser)
 
     def set(self) -> None:
         super().set()
+        # Cancel under the lock so attach(None), and the close that follows it,
+        # cannot run between reading the port and writing its abort pipe. A
+        # closed pipe's descriptor number can be reused by another file.
         with self._lock:
-            ser = self._serial
-        if ser is not None:
-            self._cancel(ser)
+            if self._serial is not None:
+                self._cancel(self._serial)
 
     @staticmethod
     def _cancel(ser: serial.Serial) -> None:
