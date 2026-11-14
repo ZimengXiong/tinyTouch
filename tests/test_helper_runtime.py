@@ -1,4 +1,5 @@
 import json
+import select
 import sys
 import tempfile
 import threading
@@ -154,6 +155,7 @@ class DiagnosticTests(unittest.TestCase):
 
 
 
+@unittest.skipUnless(hasattr(select, "kqueue"), "requires kqueue (macOS/BSD)")
 class ChangeWaiterTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
