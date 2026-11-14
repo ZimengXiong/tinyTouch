@@ -55,6 +55,35 @@ sc_auth identities
 
 For an unpaired identity, run `tinytouch pair`. If no identity appears, run `tinytouch keys`, reconnect, and retry. For a PIN prompt, enter `111111`.
 
+## Keychain password requested after PIV login
+
+macOS unlocks your login Keychain at smart card login by decrypting a saved
+Keychain wrapper with the PIV key management key (slot 9d). It creates that
+wrapper the first time you enter your Mac password after pairing, so one
+Keychain prompt right after pairing is expected.
+
+If the prompt appears after every login, run `tinytouch logs` immediately after
+a login that asked for the password:
+
+- `piv_crypto_ok value=154` followed by `piv_crypto_ok value=157` and then
+  `piv_crypto_rejected value=157` means macOS needed a second Keychain
+  operation that older firmware refused. Run `tinytouch update`.
+- `piv_crypto_ok value=154` with no `value=157` line means macOS never tried to
+  unlock the Keychain with tinyTouch. Check that this Mac user is paired:
+
+```sh
+sc_auth list -u "$USER"
+sc_auth identities
+```
+
+If the tinyTouch identity is missing or listed as unpaired, run `tinytouch pair`.
+Pairing again after `tinytouch keys` or a factory reset leaves the old identity
+paired; remove it with `sudo sc_auth unpair -u "$USER" -h HASH`.
+
+Keep only tinyTouch connected during `tinytouch setup`. Older CLI versions could
+open a different USB serial device while tinyTouch reconnected, which stopped
+setup before pairing.
+
 ## HID doesn't type
 
 Check that the helper is loaded and inspect both logs:

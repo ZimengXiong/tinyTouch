@@ -570,9 +570,40 @@ def choose_port(explicit: str | None) -> str:
         raise ToolError("Select one of the connected USB serial devices.") from exc
 
 
+def tinytouch_serial_ports() -> list[str] | None:
+    """Return CDC nodes that identify as tinyTouch, or None without USB metadata."""
+    try:
+        from tinytouch_ports import comports
+        candidates = comports()
+    except (ImportError, OSError):
+        return None
+    return sorted(
+        item.device
+        for item in candidates
+        if item.vid == 0x303A
+        and item.pid == 0x4001
+        and item.serial_number
+        and re.fullmatch(r"TT-[0-9A-Fa-f]{12}", item.serial_number)
+    )
+
+
 def current_port(port: str) -> str:
-    """Use the current macOS CDC node after the device re-enumerates."""
-    return port if Path(port).exists() else choose_port(None)
+    """Use the current macOS CDC node after the device re-enumerates.
+
+    While tinyTouch re-enumerates, an unrelated USB serial adapter can be the
+    only node present. Never switch to it silently; keep the original path so
+    the caller retries until tinyTouch returns.
+    """
+    if Path(port).exists():
+        return port
+    ports = tinytouch_serial_ports()
+    if ports is None:
+        return choose_port(None)
+    if len(ports) == 1:
+        return ports[0]
+    if not ports:
+        return port
+    return choose_port(None)
 
 
 def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
@@ -587,8 +618,14 @@ def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
                 say("The device disconnected. Waiting for it to reconnect.")
         elif port in ports:
             return port
-        elif len(ports) == 1:
-            return ports[0]
+        else:
+            # Another USB serial adapter can remain connected while tinyTouch
+            # is unplugged. Accept a new node only if it identifies as tinyTouch.
+            candidates = tinytouch_serial_ports()
+            if candidates is None:
+                candidates = ports
+            if len(candidates) == 1 and candidates[0] in ports:
+                return candidates[0]
         time.sleep(0.1)
     raise ToolError("Timed out waiting for tinyTouch to disconnect and reconnect.")
 
