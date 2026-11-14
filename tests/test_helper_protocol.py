@@ -742,6 +742,38 @@ class AppPasswordTests(unittest.TestCase):
             self.assertIsNone(helper.frontmost_app())
         bundle.assert_not_called()
 
+    def session_with(self, flags):
+        keys = {}
+        core_graphics = mock.Mock()
+        core_graphics.CGSessionCopyCurrentDictionary.return_value = 1
+        core_foundation = mock.Mock()
+
+        def create(_allocator, name, _encoding):
+            keys[len(keys) + 100] = name
+            return len(keys) + 99
+
+        core_foundation.CFStringCreateWithCString.side_effect = create
+        core_foundation.CFDictionaryGetValue.side_effect = (
+            lambda _session, key: 7 if keys[key] in flags else None
+        )
+        core_foundation.CFBooleanGetValue.side_effect = (
+            lambda _value: flags[next(reversed(keys.values()))]
+        )
+        return mock.patch.object(
+            helper, "_session_libraries", return_value=(core_graphics, core_foundation)
+        )
+
+    def test_off_console_session_counts_as_locked(self):
+        cases = [
+            ({}, False),
+            ({b"kCGSSessionOnConsoleKey": True}, False),
+            ({b"kCGSSessionOnConsoleKey": False}, True),
+            ({b"CGSSessionScreenIsLocked": True, b"kCGSSessionOnConsoleKey": True}, True),
+        ]
+        for flags, expected in cases:
+            with self.subTest(flags=flags), self.session_with(flags):
+                self.assertIs(helper.screen_locked(), expected)
+
     def test_frontmost_bundle_id_parses_lsappinfo(self):
         outputs = [
             mock.Mock(stdout="ASN:0x0-0x81e01d8:\n"),

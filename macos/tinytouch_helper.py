@@ -295,20 +295,31 @@ def _session_libraries():
     return core_graphics, core_foundation
 
 
+def _session_flag(core_foundation, session, name: bytes) -> bool | None:
+    key = core_foundation.CFStringCreateWithCString(None, name, 0x08000100)
+    try:
+        value = core_foundation.CFDictionaryGetValue(session, key)
+        return None if not value else bool(core_foundation.CFBooleanGetValue(value))
+    finally:
+        core_foundation.CFRelease(key)
+
+
 def screen_locked() -> bool:
+    """Report whether this user's session cannot be the one receiving typed keys.
+
+    A locked screen and a fast-user-switched (off-console) session both count as
+    locked, so app passwords are never chosen for another user's login window.
+    """
     core_graphics, core_foundation = _session_libraries()
     session = core_graphics.CGSessionCopyCurrentDictionary()
     if not session:
         # No GUI session dictionary: treat as locked so app passwords stay unused.
         return True
-    key = core_foundation.CFStringCreateWithCString(
-        None, b"CGSSessionScreenIsLocked", 0x08000100
-    )
     try:
-        value = core_foundation.CFDictionaryGetValue(session, key)
-        return bool(value) and core_foundation.CFBooleanGetValue(value)
+        if _session_flag(core_foundation, session, b"CGSSessionScreenIsLocked"):
+            return True
+        return _session_flag(core_foundation, session, b"kCGSSessionOnConsoleKey") is False
     finally:
-        core_foundation.CFRelease(key)
         core_foundation.CFRelease(session)
 
 
