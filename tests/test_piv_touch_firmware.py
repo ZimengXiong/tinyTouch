@@ -15,6 +15,18 @@ class PivTouchFirmwareTests(unittest.TestCase):
     def test_packet_framing_reset_and_response_termination(self):
         self.run_harness("usb_transport_test.c")
 
+    def test_login_presence_budget_allows_keychain_unlock(self):
+        # Issue #33: macOS needs a second 9d operation to unlock the Keychain.
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "piv_presence_test"
+            result = subprocess.run([
+                os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                str(ROOT / "tests/host/piv_presence_test.c"), "-o", str(executable),
+            ], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def run_harness(self, filename):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)

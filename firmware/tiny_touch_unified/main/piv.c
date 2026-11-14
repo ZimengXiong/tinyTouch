@@ -1,4 +1,5 @@
 #include "piv.h"
+#include "piv_presence.h"
 
 #include <string.h>
 
@@ -79,10 +80,7 @@ static uint8_t chained_p1;
 static uint8_t chained_p2;
 static TickType_t pin_verified_until;
 static TickType_t user_presence_until;
-static uint8_t user_presence_slots_used;
-static uint8_t user_presence_slots_succeeded;
-static uint8_t user_presence_operations_left;
-static bool user_presence_allows_repeated_slots;
+static piv_presence_budget_t user_presence_budget;
 static TickType_t user_presence_window_ticks;
 
 #define PIV_IDENTITY_SCHEMA 3
@@ -589,8 +587,8 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     user_presence_until = 0;
     return append_sw(response, response_len, response_cap, 0x6985);
   }
-  // The fingerprint-confirmed setup command grants the short user-presence
-  // window for one operation in each PIV slot. A separate PIV PIN is not
+  // A fingerprint match grants the short user-presence window for one 9a
+  // operation and a bounded number of 9d operations. A separate PIV PIN is not
   // required for this fingerprint-authenticated device.
   pin_verified_until = 0;
   const uint8_t *data = NULL;
@@ -622,27 +620,22 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
 
   bool user_presence_valid = deadline_active(user_presence_until,
                                              user_presence_window_ticks);
-  uint8_t slot_bit = apdu[3] == 0x9d ? 0x02 : 0x01;
-  bool slot_already_used = (user_presence_slots_used & slot_bit) != 0;
-  bool operation_limit_reached = user_presence_operations_left == 0;
-  if (!user_presence_valid || operation_limit_reached ||
-      (!user_presence_allows_repeated_slots && slot_already_used)) {
+  uint8_t slot_bit = apdu[3] == 0x9d ? PIV_PRESENCE_SLOT_KEY_MANAGEMENT
+                                     : PIV_PRESENCE_SLOT_AUTHENTICATION;
+  // A normal login permits one operation in 9a and a small bounded number in
+  // 9d for Login Keychain unlock (see piv_presence.h). macOS pairing can use
+  // 9d more than once while it creates the Login Keychain wrapper, so the
+  // separately granted configuration window permits a larger bounded sequence.
+  if (!user_presence_valid || !piv_presence_consume(&user_presence_budget, slot_bit)) {
     pin_verified_until = 0;
     if (!user_presence_valid) {
       user_presence_until = 0;
-      user_presence_slots_used = 0;
+      piv_presence_clear(&user_presence_budget);
     }
     touch_pin_hid_log_event("piv_crypto_rejected", apdu[3]);
     return append_sw(response, response_len, response_cap, 0x6982);
   }
-  // A normal login permits one operation in 9a and one in 9d. macOS pairing
-  // can use 9d more than once while it creates the Login Keychain wrapper, so
-  // the separately granted configuration window permits a small bounded
-  // sequence of operations.
-  user_presence_slots_used |= slot_bit;
-  user_presence_operations_left--;
-  if (user_presence_operations_left == 0 ||
-      (!user_presence_allows_repeated_slots && user_presence_slots_used == 0x03)) {
+  if (piv_presence_spent(&user_presence_budget)) {
     user_presence_until = 0;
   }
 
@@ -671,10 +664,10 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   *response_len = off;
   touch_pin_hid_log_event("piv_crypto_ok", apdu[3]);
   bool ok = append_sw(response, response_len, response_cap, 0x9000);
-  if (ok) user_presence_slots_succeeded |= slot_bit;
-  // Normal login uses both slots. Configuration permits repeated operations
-  // and must retain its separate discovery window for macOS pairing.
-  if (ok && !user_presence_allows_repeated_slots && user_presence_slots_succeeded == 0x03) {
+  // Hide a touch-activated card only after the whole login budget is spent; a
+  // second Keychain 9d operation must still reach it. Otherwise the touch
+  // window expiry hides it. Configuration keeps its separate discovery window.
+  if (ok && piv_presence_record_success(&user_presence_budget, slot_bit)) {
     usb_ccid_login_complete();
   }
   return ok;
@@ -778,10 +771,7 @@ void piv_reset_transport_state(void) {
   chained_apdu_data_len = 0;
   pin_verified_until = 0;
   user_presence_until = 0;
-  user_presence_slots_used = 0;
-  user_presence_slots_succeeded = 0;
-  user_presence_operations_left = 0;
-  user_presence_allows_repeated_slots = false;
+  piv_presence_clear(&user_presence_budget);
   user_presence_window_ticks = 0;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
@@ -789,10 +779,7 @@ void piv_reset_transport_state(void) {
 void piv_note_user_presence(void) {
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   user_presence_until = xTaskGetTickCount() + USER_PRESENCE_WINDOW_TICKS;
-  user_presence_slots_used = 0;
-  user_presence_slots_succeeded = 0;
-  user_presence_operations_left = 2;
-  user_presence_allows_repeated_slots = false;
+  piv_presence_grant_login(&user_presence_budget);
   user_presence_window_ticks = USER_PRESENCE_WINDOW_TICKS;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
@@ -801,10 +788,8 @@ void piv_note_configuration_presence(void) {
   if (piv_mutex) xSemaphoreTake(piv_mutex, portMAX_DELAY);
   user_presence_until =
       xTaskGetTickCount() + CONFIGURATION_PRESENCE_WINDOW_TICKS;
-  user_presence_slots_used = 0;
-  user_presence_slots_succeeded = 0;
-  user_presence_operations_left = CONFIGURATION_PIV_OPERATION_LIMIT;
-  user_presence_allows_repeated_slots = true;
+  piv_presence_grant_configuration(&user_presence_budget,
+                                   CONFIGURATION_PIV_OPERATION_LIMIT);
   user_presence_window_ticks = CONFIGURATION_PRESENCE_WINDOW_TICKS;
   if (piv_mutex) xSemaphoreGive(piv_mutex);
 }
