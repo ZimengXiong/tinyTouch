@@ -301,3 +301,15 @@ class AppPasswordCommandTests(unittest.TestCase):
         with self.assertRaises(cli.ToolError):
             self.run_command("--app", "No Such App")
         self.keychain.set_password.assert_not_called()
+
+    def test_list_rejects_other_options(self):
+        for extra in (["--app", "com.1password.1password"], ["--finger", "2"], ["--remove"]):
+            with self.subTest(extra=extra), self.assertRaises(cli.ToolError):
+                self.run_command("--list", *extra)
+        self.keychain.has_password.assert_not_called()
+
+    def test_remove_reports_a_missing_item(self):
+        self.keychain.delete_password.return_value = False
+        with mock.patch.object(cli, "say") as say:
+            self.run_command("--app", "com.1password.1password", "--remove")
+        say.assert_called_with("No com.1password.1password password was saved.")

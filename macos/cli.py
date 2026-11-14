@@ -506,8 +506,8 @@ def keychain_set(service: str, account: str, value: str) -> None:
         ) from exc
 
 
-def keychain_delete(service: str, account: str) -> None:
-    _keychain().delete_password(service, account)
+def keychain_delete(service: str, account: str) -> bool:
+    return bool(_keychain().delete_password(service, account))
 
 
 def keychain_exists(service: str, account: str) -> bool:
@@ -1442,19 +1442,31 @@ def command_password(args: argparse.Namespace) -> None:
         load_settings, translate_password,
     )
 
+    if args.list and (args.app or args.finger or args.remove):
+        raise ToolError("Use --list by itself.")
     if args.remove and not args.app:
         raise ToolError("Use --remove with --app to delete an app password.")
     account = device_account(choose_port(args.port))
     if args.list:
-        list_passwords(account)
+        try:
+            list_passwords(account)
+        except _keychain().KeychainError as exc:
+            raise ToolError("Unlock the login Keychain, then retry.") from exc
         return
     app = resolve_app(args.app) if args.app else None
     if app is not None and args.remove:
         bundle_id, name = app
         with hid_settings_change():
-            keychain_delete(PASSWORD_SERVICE, app_password_account(account, bundle_id, args.finger or 0))
+            try:
+                removed = keychain_delete(
+                    PASSWORD_SERVICE, app_password_account(account, bundle_id, args.finger or 0)
+                )
+            except _keychain().KeychainError as exc:
+                raise ToolError("Could not delete the app password. Unlock the login Keychain, then retry.") from exc
             update_app_password_settings(account, bundle_id, args.finger or 0, present=False)
-        say(f"Removed the {name} password" + (f" for finger {args.finger}." if args.finger else "."))
+        scope = f" for finger {args.finger}" if args.finger else ""
+        say(f"Removed the {name} password{scope}." if removed
+            else f"No {name} password{scope} was saved.")
         return
     keychain = _keychain()
     try:
