@@ -49,8 +49,10 @@ int main(void) {
   assert(poll_match_with_led().slot == 1);
   assert(visible_green == green && physical_led == 0);
 
-  // A wrong finger held during a prompted authorization is scanned once, not
-  // every 120 ms: repeated scans restarted the red result as a flicker.
+  // A wrong finger held during a prompted authorization is rescanned at most
+  // every PROMPT_RESCAN_MS (1.5 s), not every 120 ms: repeated scans
+  // restarted the red result as a flicker. (A finger swapped in during a
+  // mismatch scan is covered by the emulator's prompt_auth_swap scenarios.)
   assert(fingerprint_set_led_mode(DEVICE_LED_ONLY_AUTH));
   sensor_power_cycle(); fingerprint_init(); service_result_led();
   unsigned searches = search_commands, captures = capture_commands;
@@ -58,7 +60,8 @@ int main(void) {
   no_match = true;
   assert(!fingerprint_authorize_prompted(NULL));
   no_match = false;
-  assert(search_commands == searches + 1 && capture_commands > captures + 1);
+  unsigned scans = search_commands - searches;
+  assert(scans >= 1 && scans <= 1 + 7000 / 1500 && capture_commands > captures + 1);
   assert(led_colors[FP_LED_RED] == red);
   (void)service_result_led(); assert(led_colors[FP_LED_RED] == red + 1);
   return 0;

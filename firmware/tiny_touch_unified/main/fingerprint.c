@@ -21,6 +21,9 @@ static const int FP_INT_PIN = 2;
 static const int INT_ACTIVE_VALUE = 1;
 static const uint16_t END_SLOT = FINGER_TEMPLATE_LIMIT - 1;
 static const uint32_t FINGER_WAIT_MS = 7000;
+// Minimum spacing between rescans of a finger that never left the sensor
+// during a prompted authorization.
+static const uint32_t PROMPT_RESCAN_MS = 1500;
 static const uint8_t FP_LED_BLUE = 0x01;
 static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
@@ -477,8 +480,13 @@ bool fingerprint_present_hint(void) {
   return finger_present();
 }
 
+// TOUCH_OUT edges seen by the ISR; lets a prompt notice a finger swap that
+// happened while a (long) mismatch scan owned the UART.
+static volatile uint32_t touch_edges;
+
 static void touch_changed(void *arg) {
   (void)arg;
+  touch_edges++;
   BaseType_t wake = pdFALSE;
   xSemaphoreGiveFromISR(touch_signal, &wake);
   if (wake) portYIELD_FROM_ISR();
@@ -701,6 +709,7 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   if (prompt) prompt();
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
   bool ok = false, armed = true;
+  TickType_t disarmed_at = 0;
   while (xTaskGetTickCount() < deadline) {
     // Like the HID task, a completed mismatch needs an observed lift before
     // the next scan. Rescanning a held wrong finger every 120 ms restarted
@@ -708,12 +717,16 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
     // and failure animations) several times a second.
     fingerprint_match_t match;
     if (armed) {
+      uint32_t edges_before = touch_edges;
       if (fingerprint_try_poll_match(&match)) {
         if (match.slot != 0) {
           ok = true;
           break;
         }
-        armed = false;
+        // Stay armed if TOUCH_OUT changed during the scan: the finger that
+        // was rejected has already been replaced or lifted.
+        armed = touch_edges != edges_before;
+        disarmed_at = xTaskGetTickCount();
       }
     } else if (fp_take(0)) {
       uint8_t confirm = 0xff;
@@ -721,7 +734,21 @@ bool fingerprint_authorize_prompted(void (*prompt)(void)) {
       hide_capture_light_locked();
       fp_give();
     }
-    vTaskDelay(pdMS_TO_TICKS(120));
+    if (armed) {
+      vTaskDelay(pdMS_TO_TICKS(120));
+      continue;
+    }
+    // A mismatch scan can take over a second. A finger swapped in while it
+    // ran never produces an empty GetImage frame, so the lift requirement
+    // alone left the right finger unscanned until the prompt timed out. Also
+    // accept a TOUCH_OUT release seen between polls, and rescan a finger that
+    // stays present at a bounded rate (still far below the old 120 ms).
+    for (int i = 0; i < 12 && !armed; i++) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      if (!finger_present()) armed = true;
+    }
+    if (!armed && (TickType_t)(xTaskGetTickCount() - disarmed_at) >= pdMS_TO_TICKS(PROMPT_RESCAN_MS))
+      armed = true;
   }
   prompted_authorization_active = false;
   return ok;
