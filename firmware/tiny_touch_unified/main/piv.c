@@ -16,6 +16,7 @@
 #include "mbedtls/oid.h"
 #include "mbedtls/x509_crt.h"
 #include "nvs.h"
+#include "piv_pin.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
 
@@ -240,10 +241,13 @@ bool piv_create_identity(void) {
   // RSA creation needs a worker task. Keep PEM output in static storage so
   // the task does not overflow its stack with four multi-kilobyte buffers.
   wipe_stored_identity();
+  // Creation only runs without a usable identity, so any stored PIN belongs
+  // to keys that are gone. Remove it so it never guards the new keys.
   bool ok = create_key_and_certificate(stored_key_9a, sizeof(stored_key_9a),
                                        stored_cert_9a, sizeof(stored_cert_9a), false) &&
             create_key_and_certificate(stored_key_9d, sizeof(stored_key_9d),
-                                       stored_cert_9d, sizeof(stored_cert_9d), true);
+                                       stored_cert_9d, sizeof(stored_cert_9d), true) &&
+            piv_pin_reset();
   nvs_handle_t handle;
   if (ok && nvs_open("piv_keys", NVS_READWRITE, &handle) == ESP_OK) {
     ok = write_identity_part(handle, "cert9a", stored_cert_9a) &&
@@ -556,24 +560,56 @@ static bool handle_verify(const uint8_t *apdu, size_t apdu_len,
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6a86);
   }
+  piv_pin_state_t pin_state = piv_pin_state();
   if (apdu_len == 4) {
-    return append_sw(response, response_len, response_cap,
-                     deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS)
-                         ? 0x9000 : 0x63c3);
+    if (deadline_active(pin_verified_until, PIN_VERIFIED_WINDOW_TICKS))
+      return append_sw(response, response_len, response_cap, 0x9000);
+    if (pin_state == PIV_PIN_STATE_BLOCKED)
+      return append_sw(response, response_len, response_cap, 0x6983);
+    uint8_t retries = pin_state == PIV_PIN_STATE_OFF ? 3 : piv_pin_retries_left();
+    return append_sw(response, response_len, response_cap, 0x63c0 | retries);
   }
   const uint8_t *data = NULL;
   size_t data_len = 0;
-  static const uint8_t expected_pin[8] = {
-    '1', '1', '1', '1', '1', '1', 0xff, 0xff,
-  };
   if (!read_lc_data(apdu, apdu_len, &data, &data_len) ||
-      data_len != sizeof(expected_pin) ||
-      memcmp(data, expected_pin, sizeof(expected_pin)) != 0) {
+      data_len != sizeof(PIV_PIN_DUMMY)) {
     pin_verified_until = 0;
     return append_sw(response, response_len, response_cap, 0x6a80);
   }
-  pin_verified_until = xTaskGetTickCount() + PIN_VERIFIED_WINDOW_TICKS;
-  return append_sw(response, response_len, response_cap, 0x9000);
+  bool dummy = memcmp(data, PIV_PIN_DUMMY, sizeof(PIV_PIN_DUMMY)) == 0;
+  // The dummy PIN completes the macOS prompt after a fingerprint match. A
+  // custom PIN is checked only while the fingerprint fallback is pending, so
+  // software on the host cannot spend its retries without physical access.
+  if (pin_state == PIV_PIN_STATE_OFF || pin_state == PIV_PIN_STATE_ON) {
+    if (!dummy) {
+      pin_verified_until = 0;
+      return append_sw(response, response_len, response_cap, 0x6a80);
+    }
+    pin_verified_until = xTaskGetTickCount() + PIN_VERIFIED_WINDOW_TICKS;
+    return append_sw(response, response_len, response_cap, 0x9000);
+  }
+  pin_verified_until = 0;
+  switch (piv_pin_verify_piv(data)) {
+    case PIV_PIN_OK:
+      // The fallback stays until an enrolled finger matches within the
+      // window. That match clears it and completes the login.
+      pin_verified_until = xTaskGetTickCount() + PIN_VERIFIED_WINDOW_TICKS;
+      touch_pin_hid_log_event("piv_pin_verified", 0);
+      return append_sw(response, response_len, response_cap, 0x9000);
+    case PIV_PIN_WRONG:
+      touch_pin_hid_log_event("piv_pin_wrong", piv_pin_retries_left());
+      return append_sw(response, response_len, response_cap, 0x63c0 | piv_pin_retries_left());
+    case PIV_PIN_LOCKED:
+      touch_pin_hid_log_event("piv_pin_locked", (int)piv_pin_lockout_seconds_left());
+      return append_sw(response, response_len, response_cap, 0x63c0);
+    case PIV_PIN_BLOCKED:
+      touch_pin_hid_log_event("piv_pin_blocked", 0);
+      return append_sw(response, response_len, response_cap, 0x6983);
+    case PIV_PIN_STORAGE_ERROR:
+      return append_sw(response, response_len, response_cap, 0x6581);
+    default:
+      return append_sw(response, response_len, response_cap, 0x6a80);
+  }
 }
 
 static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
@@ -587,9 +623,16 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
     user_presence_until = 0;
     return append_sw(response, response_len, response_cap, 0x6985);
   }
+  // A pending PIN fallback outranks every fingerprint-granted window,
+  // including the configuration window used for pairing.
+  if (piv_pin_required()) {
+    pin_verified_until = 0;
+    touch_pin_hid_log_event("piv_pin_required", apdu[3]);
+    return append_sw(response, response_len, response_cap, 0x6982);
+  }
   // A fingerprint match grants the short user-presence window for one 9a
-  // operation and a bounded number of 9d operations. A separate PIV PIN is not
-  // required for this fingerprint-authenticated device.
+  // operation and a bounded number of 9d operations. Without a pending PIN
+  // fallback, a separate PIV PIN is not required.
   pin_verified_until = 0;
   const uint8_t *data = NULL;
   size_t data_len = 0;
@@ -687,9 +730,21 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   return ok;
 }
 
+static fingerprint_alert_t pin_alert(void) {
+  if (piv_pin_awaiting_finger()) return FINGERPRINT_ALERT_PIN_ACCEPTED;
+  return piv_pin_required() ? FINGERPRINT_ALERT_PIN_REQUIRED : FINGERPRINT_ALERT_NONE;
+}
+
+static bool held_rescan_allowed(void) { return piv_pin_state() == PIV_PIN_STATE_OFF; }
+
 void piv_init(void) {
   if (!piv_mutex) piv_mutex = xSemaphoreCreateMutex();
   configASSERT(piv_mutex);
+  // Reload with the keys, so a factory reset's NVS erase also clears the PIN.
+  piv_pin_init();
+  fingerprint_set_search_hook(piv_pin_note_attempt);
+  fingerprint_set_alert_source(pin_alert);
+  fingerprint_set_held_rescan_check(held_rescan_allowed);
   uint8_t mac[6];
   if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
     // Give an unconfigured board a stable temporary token identifier. Once an
