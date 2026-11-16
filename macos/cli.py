@@ -546,7 +546,10 @@ def choose_mode(value: str | None) -> str:
 
 
 def detect_ports() -> list[str]:
-    return sorted(str(path) for path in Path("/dev").glob("cu.*") if "usb" in path.name.lower() or "TT-" in path.name)
+    # Match the helper: other USB serial devices (monitors, adapters) are never candidates.
+    from tinytouch_helper import device_endpoints
+
+    return sorted(endpoint.port for endpoint in device_endpoints())
 
 
 def choose_port(explicit: str | None) -> str:

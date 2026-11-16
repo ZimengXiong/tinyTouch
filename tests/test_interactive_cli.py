@@ -361,6 +361,20 @@ class InteractiveCliTests(unittest.TestCase):
             ):
                 cli.choose_port(None)
 
+    def test_port_choice_ignores_other_usb_serial_devices(self):
+        import tinytouch_helper as helper
+        from tinytouch_ports import SerialPort
+
+        ports = [
+            SerialPort("/dev/cu.usbmodemMONITOR", 0x043E, 0x9A39, "MONITOR1", "0-1.4"),
+            SerialPort("/dev/cu.usbmodem2403", 0x303A, 0x4001, "TT-001122AABBCC", "2-4"),
+        ]
+        with (
+            mock.patch.object(helper, "comports", return_value=ports),
+            mock.patch("builtins.input", side_effect=AssertionError("prompted")),
+        ):
+            self.assertEqual(cli.choose_port(None), "/dev/cu.usbmodem2403")
+
     def test_config_acknowledgement_succeeds_without_unsupported_readback(self):
         with (
             mock.patch.object(cli, "choose_port", return_value="selected"),
