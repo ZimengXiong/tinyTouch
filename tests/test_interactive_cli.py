@@ -361,6 +361,20 @@ class InteractiveCliTests(unittest.TestCase):
             ):
                 cli.choose_port(None)
 
+    def test_reconnect_skips_serial_devices_that_stay_connected(self):
+        # A monitor's USB serial port stays while tinyTouch is unplugged.
+        scans = [
+            ["/dev/cu.monitor", "/dev/cu.tt"],
+            ["/dev/cu.monitor"],
+            ["/dev/cu.monitor"],
+            ["/dev/cu.monitor", "/dev/cu.tt-new"],
+        ]
+        with (
+            mock.patch.object(cli, "detect_ports", side_effect=scans),
+            mock.patch.object(cli.time, "sleep"),
+        ):
+            self.assertEqual(cli.wait_for_reconnect("/dev/cu.tt"), "/dev/cu.tt-new")
+
     def test_config_acknowledgement_succeeds_without_unsupported_readback(self):
         with (
             mock.patch.object(cli, "choose_port", return_value="selected"),
