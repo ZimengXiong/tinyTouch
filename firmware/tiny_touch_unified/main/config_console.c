@@ -17,6 +17,7 @@
 #include "fingerprint.h"
 #include "firmware_update.h"
 #include "piv.h"
+#include "piv_pin.h"
 #include "touch_pin_hid.h"
 #include "usb_ccid.h"
 
@@ -111,8 +112,6 @@ static bool require_authorized(void) {
   return false;
 }
 
-static void touch_prompt(void) { reply("EVENT TOUCH"); }
-
 static void enroll_prompt(const char *state) {
   char line[48];
   snprintf(line, sizeof(line), "EVENT %s", state);
@@ -128,8 +127,9 @@ static void authorize(void) {
 #endif
   int count = fingerprint_count();
   if (count < 0) { reply("ERR AUTH sensor=offline"); return; }
-  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(touch_prompt));
+  bool ok = count == 0 || (count > 0 && fingerprint_authorize_prompted(enroll_prompt));
   if (!ok) { reply("ERR AUTH no_match"); return; }
+  if (count > 0) piv_pin_note_match();
   authorized_until = esp_timer_get_time() + AUTH_WINDOW_US;
   piv_note_configuration_presence();
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
@@ -158,7 +158,8 @@ static void status(void) {
            "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
            "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
            "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u "
-           "led_control=%s led_sync=%s piv_touch=%s piv_touch_active=%s piv_visible=%s piv_delay_ms=%u",
+           "led_control=%s led_sync=%s piv_touch=%s piv_touch_active=%s piv_visible=%s piv_delay_ms=%u "
+           "piv_pin=%s piv_pin_retries=%u piv_pin_wait_s=%lu",
            TINYTOUCH_FIRMWARE_VERSION, TINYTOUCH_BUILD_ID, device_config_mode_name(),
            piv_uses_provisioned_keys() ? "ready" : "unconfigured",
            sensor_is_ready ? "ready" : "offline", count,
@@ -172,7 +173,9 @@ static void status(void) {
            fingerprint_led_control_status(), fingerprint_led_update_pending() ? "pending" : "synced",
            device_config_piv_touch_enabled() ? "on" : "off",
            usb_ccid_touch_enabled() ? "on" : "off",
-           usb_ccid_piv_visible() ? "yes" : "no", (unsigned)device_config_piv_delay_ms());
+           usb_ccid_piv_visible() ? "yes" : "no", (unsigned)device_config_piv_delay_ms(),
+           piv_pin_state_name(), (unsigned)piv_pin_retries_left(),
+           (unsigned long)piv_pin_lockout_seconds_left());
 
   reply(line);
 }
@@ -409,6 +412,52 @@ static void piv_open(void) {
   usb_ccid_open_setup();
 }
 
+// PIV PIN SET <new> | PIV PIN CHANGE <current> <new> | PIV PIN CLEAR <current>
+// | PIV PIN UNLOCK <current>
+// Fingerprint authorization alone cannot replace or remove an existing PIN,
+// so a spoofed finger cannot disable the fallback.
+static void piv_pin_command(char *arguments) {
+  if (!require_authorized()) return;
+  char *first = strchr(arguments, ' ');
+  char *second = first ? strchr(first + 1, ' ') : NULL;
+  if (first) *first++ = '\0';
+  if (second) *second++ = '\0';
+  bool ready = piv_uses_provisioned_keys();
+  piv_pin_result_t result = PIV_PIN_INVALID;
+  if (!ready) {
+    // Leave the result invalid. A PIN only protects an existing identity.
+  } else if (strcmp(arguments, "SET") == 0 && first && !second) {
+    result = piv_pin_set(NULL, first);
+  } else if (strcmp(arguments, "CHANGE") == 0 && first && second) {
+    result = piv_pin_set(first, second);
+  } else if (strcmp(arguments, "CLEAR") == 0 && first && !second) {
+    result = piv_pin_clear(first);
+  } else if (strcmp(arguments, "UNLOCK") == 0 && first && !second) {
+    result = piv_pin_unlock(first);
+  }
+  if (first) wipe(first, strlen(first));
+  if (second) wipe(second, strlen(second));
+  if (!ready) {
+    reply("ERR PIV PIN not_ready");
+    return;
+  }
+  char line[48];
+  switch (result) {
+    case PIV_PIN_OK: snprintf(line, sizeof(line), "OK PIV PIN state=%s", piv_pin_state_name()); break;
+    case PIV_PIN_WRONG:
+      snprintf(line, sizeof(line), "ERR PIV PIN wrong retries=%u", (unsigned)piv_pin_retries_left());
+      break;
+    case PIV_PIN_LOCKED:
+      snprintf(line, sizeof(line), "ERR PIV PIN locked wait=%lu",
+               (unsigned long)piv_pin_lockout_seconds_left());
+      break;
+    case PIV_PIN_BLOCKED: snprintf(line, sizeof(line), "ERR PIV PIN blocked"); break;
+    case PIV_PIN_STORAGE_ERROR: snprintf(line, sizeof(line), "ERR PIV PIN storage"); break;
+    default: snprintf(line, sizeof(line), "ERR PIV PIN invalid"); break;
+  }
+  reply(line);
+}
+
 static void usb_reconnect_task(void *argument) {
   (void)argument;
   vTaskDelay(pdMS_TO_TICKS(100));
@@ -430,6 +479,9 @@ static void usb_reconnect(void) {
 
 static void ota_begin(char *arguments) {
   if (!require_authorized() || ota_token[0]) { if (ota_token[0]) reply("ERR OTA BUSY"); return; }
+  // Older signed firmware ignores the PIN policy. A fingerprint alone must not
+  // install it while the policy is demanding the PIN.
+  if (piv_pin_required()) { reply("ERR OTA pin_required"); return; }
   char *size = strchr(arguments, ' ');
   if (!size || size - arguments != 32) { reply("ERR OTA BEGIN"); return; }
   *size++ = '\0'; char *digest = strchr(size, ' ');
@@ -482,6 +534,7 @@ static void handle_command(void) {
   else if (strncmp(command, "FINGER ", 7) == 0) fingerprint_command(command + 7);
   else if (strcmp(command, "PIV CREATE") == 0) piv_create();
   else if (strcmp(command, "PIV OPEN") == 0) piv_open();
+  else if (strncmp(command, "PIV PIN ", 8) == 0) piv_pin_command(command + 8);
   else if (strcmp(command, "RESET FACTORY") == 0) factory_reset();
   else if (strncmp(command, "OTA BEGIN ", 10) == 0) ota_begin(command + 10);
   else if (strncmp(command, "OTA WRITE ", 10) == 0) ota_write(command + 10);
