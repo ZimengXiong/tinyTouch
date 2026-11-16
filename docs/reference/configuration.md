@@ -151,6 +151,60 @@ The device cannot confirm when macOS finishes switching the login field. Test
 early, increase the delay. Use the previous one-second delay with
 `tinytouch config piv_delay_ms 1000`.
 
+## PIV PIN fallback
+
+PIV mode normally signs after a fingerprint match alone. `tinytouch piv-pin set`
+adds an optional PIN of 6 to 8 digits, other than the dummy `111111`. The
+device stores a salted hash of the PIN with the PIV keys.
+
+While the PIN is set, fingerprint login is unchanged. After 5 failed fingerprint
+matches in a row, the device stops typing its dummy PIN or HID password, refuses
+to sign, and refuses firmware updates. Failed matches during CLI authorization
+count towards this limit. Each search is saved as failed before it runs, so
+removing power cannot skip the count. The sensor ring flashes red and white
+while the PIN is required.
+
+To log in, type the PIN at the macOS smart-card prompt. The first attempt fails
+and the ring flashes white and blue. Touch an enrolled finger within 30 seconds:
+the device clears the fallback, types its dummy PIN, and the login completes. A
+finger touched before the PIN does nothing, except with touch-activated PIV,
+where it shows the smart-card prompt. Reconnecting does not clear the
+fallback. HID mode has no smart-card prompt, so run `tinytouch piv-pin unlock`
+there, which asks for the PIN and an enrolled finger. With the LED mode `off`,
+the ring stays dark. With dummy PIN typing turned off, type `111111` at the
+second prompt; the custom PIN is not accepted once the fallback is clear.
+
+The device only checks the custom PIN while the fallback is pending. At other
+times only the dummy PIN is accepted, so software on the Mac cannot use up the
+5 attempts without physical access.
+
+The PIN has 5 attempts. A wrong PIN uses one, saved before the PIN is checked.
+A correct PIN uses none. After a correct PIN, each finger touched in the 30
+second window uses one, saved before the search runs. A matching finger restores
+all 5. If no finger can be read, the PIN alone cannot log in; use the macOS
+password.
+
+Once all 5 are used, the PIN locks. Nothing is checked until the lockout ends,
+including CLI changes. The first lockout lasts 10 seconds, then 30 seconds, 1
+minute, 10 minutes, and 1 hour for every lockout after that. After each
+lockout one attempt is available, and a failure starts the next lockout. The PIN
+followed by a matching finger resets the schedule. Unplugging tinyTouch restarts
+the current lockout from the beginning.
+
+Changing or removing the PIN requires the current PIN as well as fingerprint
+approval. Factory reset removes it. `tinytouch status` reports `piv_pin`
+(`off`, `on`, `required`, `locked`, or `blocked`), `piv_pin_retries` and
+`piv_pin_wait_s`. `blocked` means the stored PIN cannot be read, for example
+after flash corruption. Recovery is `tinytouch factory-reset`, then `tinytouch
+setup --mode piv` to enroll, create, and pair a new identity.
+
+The PIN limits fake fingers on the sensor and PIN guessing over USB. It does not
+protect against someone who opens the case or uses ROM download mode. Without
+flash encryption, download mode reads the PIV keys directly. With flash
+encryption in development mode, restoring an earlier copy of flash resets both
+counters. An older signed firmware image flashed in download mode also ignores
+the PIN unless anti-rollback is enabled.
+
 ## Fingers and existing enrollment
 
 Each finger owns a fixed block of four templates. You enroll the whole finger

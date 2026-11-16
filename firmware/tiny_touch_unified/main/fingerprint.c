@@ -297,14 +297,21 @@ static bool configure_manual_lighting(void) {
   return true;
 }
 
-static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles) {
+static bool send_aura(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles,
+                      uint8_t *confirm) {
   // Hi-Link PS_ControlBLN (0x3c), ordinary RGB format. Extended brightness,
   // speed and marquee formats are sensor-specific and are not sent here.
   uint8_t params[] = {effect, start, end, cycles};
-  uint8_t confirm = 0xff;
+  *confirm = 0xff;
   bool was_ready = sensor_ready_snapshot();
-  bool ok = fp_command(0x3c, params, sizeof(params), &confirm, NULL, NULL, 200) && confirm == 0x00;
+  bool ok = fp_command(0x3c, params, sizeof(params), confirm, NULL, NULL, 200) && *confirm == 0x00;
   set_sensor_ready(was_ready);
+  return ok;
+}
+
+static bool aura_command(uint8_t effect, uint8_t start, uint8_t end, uint8_t cycles) {
+  uint8_t confirm;
+  bool ok = send_aura(effect, start, end, cycles, &confirm);
   led_attempt_at = xTaskGetTickCount();
   led_update_pending = !ok;
   if (ok) led_failures = 0;
@@ -355,6 +362,47 @@ bool fingerprint_led_update_pending(void) {
   return value;
 }
 
+static const uint8_t FP_LED_WHITE = 0x07;
+static const TickType_t ALERT_FLASH_TICKS = pdMS_TO_TICKS(400);
+static const TickType_t ALERT_RETRY_TICKS = pdMS_TO_TICKS(2000);
+static fingerprint_alert_t (*alert_source)(void);
+static bool alert_shown;
+static bool alert_white;
+static TickType_t alert_retry_at;
+
+void fingerprint_set_alert_source(fingerprint_alert_t (*source)(void)) {
+  alert_source = source;
+  if (result_led_task) xTaskNotifyGive(result_led_task);
+}
+
+// The sensor's own flash effect has one colour, so the worker alternates
+// steady colours. Skips a step rather than wait while a capture owns the UART.
+// Alert steps bypass the idle retry state, so led_sync keeps reporting the
+// configured colour. A failed step backs off so it cannot crowd out captures.
+static void service_alert_led(void) {
+  fingerprint_alert_t alert = alert_source ? alert_source() : FINGERPRINT_ALERT_NONE;
+  if (device_config_led_mode() == DEVICE_LED_OFF) alert = FINGERPRINT_ALERT_NONE;
+  if (alert == FINGERPRINT_ALERT_NONE && !alert_shown) return;
+  TickType_t now = xTaskGetTickCount();
+  if ((int32_t)(now - alert_retry_at) < 0) return;
+  if (!fp_take(0)) return;
+  if (sensor_ready_snapshot() && !result_led_pending && !result_led_visible) {
+    if (alert == FINGERPRINT_ALERT_NONE) {
+      set_aura(FP_LED_BLUE);
+      alert_shown = false;
+    } else {
+      alert_white = !alert_white;
+      uint8_t colour = alert_white ? FP_LED_WHITE :
+                       alert == FINGERPRINT_ALERT_PIN_REQUIRED ? FP_LED_RED : FP_LED_BLUE;
+      uint8_t confirm;
+      if (!send_aura(FP_LED_FUNC_STEADY, colour, colour, 0, &confirm))
+        alert_retry_at = now + ALERT_RETRY_TICKS;
+      alert_shown = true;
+    }
+  }
+  fp_give();
+}
+
 static bool apply_aura(void) {
   uint8_t color = led_requested_color;
   device_led_mode_t mode = device_config_led_mode();
@@ -398,8 +446,9 @@ static void result_led_worker(void *arg) {
   (void)arg;
   TickType_t wait = portMAX_DELAY;
   while (true) {
-    ulTaskNotifyTake(pdTRUE, wait);
+    ulTaskNotifyTake(pdTRUE, alert_source && wait > ALERT_FLASH_TICKS ? ALERT_FLASH_TICKS : wait);
     wait = service_result_led();
+    service_alert_led();
   }
 }
 
@@ -490,6 +539,12 @@ void fingerprint_wait_for_touch(void) {
   xSemaphoreTake(touch_signal, pdMS_TO_TICKS(100));
 }
 
+static void (*search_hook)(void);
+// Whether the last poll reached a search, as opposed to a capture error.
+static bool last_poll_searched;
+
+void fingerprint_set_search_hook(void (*hook)(void)) { search_hook = hook; }
+
 static fingerprint_match_t fingerprint_match_captured(bool quiet) {
   fingerprint_match_t no_match = {0};
   uint8_t confirm = 0xff;
@@ -501,6 +556,8 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
     }
     return no_match;
   }
+  last_poll_searched = true;
+  if (search_hook) search_hook();
 
   uint16_t count = FINGER_TEMPLATE_LIMIT;
   uint8_t search_params[] = {
@@ -683,18 +740,41 @@ bool fingerprint_recover(void) {
   return ok;
 }
 
-bool fingerprint_authorize_prompted(void (*prompt)(void)) {
+// Captures without searching, so checking for a lift is not a match attempt.
+static bool finger_lifted(void) {
+  if (!fp_take(0)) return false;
+  uint8_t confirm = 0xff;
+  bool replied = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350);
+  fp_give();
+  return replied && confirm == 0x02;
+}
+
+bool fingerprint_authorize_prompted(void (*prompt)(const char *event)) {
   // TOUCH_OUT is not reliable enough to gate a foreground capture on every
   // supported module. Reuse HID's quiet matcher and keep polling until the
   // user presents a valid enrolled finger or the authorization window ends.
   prompted_authorization_active = true;
-  if (prompt) prompt();
+  if (prompt) prompt("TOUCH");
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
   bool ok = false;
+  // Each search is a match attempt. A held wrong finger must not be searched
+  // again until it lifts, matching the background touch task.
+  bool awaiting_lift = false;
   while (xTaskGetTickCount() < deadline) {
-    if (fingerprint_authorize_poll_match().slot != 0) {
-      ok = true;
-      break;
+    if (awaiting_lift) {
+      awaiting_lift = !finger_lifted();
+      if (!awaiting_lift && prompt) prompt("TOUCH");
+    } else {
+      fingerprint_match_t match;
+      last_poll_searched = false;
+      (void)fingerprint_try_poll_match(&match);
+      if (match.slot != 0) {
+        ok = true;
+        break;
+      }
+      // Capture errors ran no search, so retry them with the finger in place.
+      awaiting_lift = last_poll_searched;
+      if (awaiting_lift && prompt) prompt("LIFT");
     }
     vTaskDelay(pdMS_TO_TICKS(120));
   }

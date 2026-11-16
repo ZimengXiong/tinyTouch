@@ -109,6 +109,7 @@ COMMAND_TITLES = {
     "setup": "Setup",
     "mode": "Mode",
     "piv-touch": "Touch-activated PIV",
+    "piv-pin": "PIV PIN",
     "led": "Lighting",
     "config": "Settings",
     "settings": "Settings",
@@ -638,6 +639,22 @@ def human_error(line: str, *, touch_prompted: bool = False) -> str:
         return "The firmware does not support this command. Run 'tinytouch update'. Then reconnect the device."
     if line.startswith("ERR LED"):
         return "Could not apply sensor lighting. Please reconnect tinyTouch."
+    if line.startswith("ERR PIV PIN wrong"):
+        retries = line.rpartition("retries=")[2]
+        return f"Wrong PIV PIN. {retries} attempts remain before a lockout."
+    if line.startswith("ERR PIV PIN locked"):
+        return piv_pin_locked_help(line.rpartition("wait=")[2])
+    if line == "ERR PIV PIN blocked":
+        return PIV_PIN_BLOCKED_HELP
+    if line == "ERR PIV PIN not_ready":
+        return "Create the PIV identity first. Run 'tinytouch setup --mode piv'."
+    if line == "ERR OTA pin_required":
+        return ("Firmware updates are paused while tinyTouch needs its PIV PIN. "
+                "Log in with the PIN and an enrolled finger, then try again.")
+    if line == "ERR PIV PIN storage":
+        return "Could not save the PIV PIN. Please try again."
+    if line == "ERR PIV PIN invalid":
+        return f"Use a PIN of 6 to 8 digits other than {PIV_DUMMY_PIN}. Use 'change' to replace an existing PIN."
     if line.startswith("ERR "):
         return "tinyTouch rejected the request: " + line[4:]
     return line
@@ -1932,6 +1949,86 @@ def command_piv_touch(args: argparse.Namespace) -> None:
     say("Unplug and reconnect tinyTouch to apply this setting.")
 
 
+# Mirrors firmware piv_pin.h. The dummy PIN is what tinyTouch types after a match.
+PIV_DUMMY_PIN = "111111"
+PIV_PIN_RETRY_LIMIT = 5
+PIV_PIN_MATCH_FAILURE_LIMIT = 5
+PIV_PIN_BLOCKED_HELP = (
+    "tinyTouch cannot read its stored PIV PIN, so the PIV identity cannot sign. "
+    "Run 'tinytouch factory-reset', then 'tinytouch setup --mode piv' to enroll, create, and pair a new identity."
+)
+
+
+def piv_pin_locked_help(wait: str) -> str:
+    return (f"The PIV PIN is locked after too many failed attempts. Try again in {wait} seconds. "
+            "Unplugging tinyTouch restarts the wait.")
+
+
+def prompt_piv_pin(label: str, *, new: bool) -> str:
+    """Read a PIN without including it in command arguments or shell history."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            first = getpass.getpass(f"{label}: ")
+            second = getpass.getpass(f"{label} again: ") if new else first
+        except (getpass.GetPassWarning, EOFError) as exc:
+            raise ToolError("Run this command in an interactive terminal.") from exc
+    if first != second:
+        raise ToolError("The PINs did not match.")
+    if not re.fullmatch(r"[0-9]{6,8}", first):
+        raise ToolError("Use a PIN of 6 to 8 digits.")
+    if new and first == PIV_DUMMY_PIN:
+        raise ToolError(f"Choose a PIN other than {PIV_DUMMY_PIN}. tinyTouch types it after every match.")
+    return first
+
+
+def command_piv_pin(args: argparse.Namespace) -> None:
+    port = choose_port(args.port)
+    with foreground_session(port):
+        device = status(port)
+        protocol6(device)
+        state = device.get("piv_pin")
+        if state is None:
+            raise ToolError(
+                "This firmware does not support a PIV PIN. Run 'tinytouch update', "
+                "then unplug and reconnect tinyTouch before trying again."
+            )
+        if device.get("piv") != "ready":
+            raise ToolError("Create the PIV identity first. Run 'tinytouch setup --mode piv'.")
+        if state == "blocked":
+            raise ToolError(PIV_PIN_BLOCKED_HELP)
+        if state == "locked":
+            raise ToolError(piv_pin_locked_help(device.get("piv_pin_wait_s", "?")))
+        if args.action == "set":
+            if state != "off":
+                raise ToolError("A PIV PIN is already set. Run 'tinytouch piv-pin change'.")
+            say("Choose 6 to 8 digits. Nothing appears as you type.")
+            say(f"{PIV_PIN_RETRY_LIMIT} failed attempts lock it, for longer each time.")
+            command = f"PIV PIN SET {prompt_piv_pin('New PIN', new=True)}"
+        elif state == "off":
+            raise ToolError("No PIV PIN is set. Run 'tinytouch piv-pin set'.")
+        elif args.action == "change":
+            current = prompt_piv_pin("Current PIN", new=False)
+            command = f"PIV PIN CHANGE {current} {prompt_piv_pin('New PIN', new=True)}"
+        elif args.action == "unlock":
+            if state != "required":
+                raise ToolError("The PIV PIN is not required. Fingerprint login works without it.")
+            command = f"PIV PIN UNLOCK {prompt_piv_pin('Current PIN', new=False)}"
+        else:
+            command = f"PIV PIN CLEAR {prompt_piv_pin('Current PIN', new=False)}"
+        unlock(port, reason=f"{args.action} the PIV PIN")
+        serial_command(port, command, timeout=10)
+        fresh_status(port, {"piv_pin": "off" if args.action == "off" else "on"})
+    if args.action == "off":
+        say("The PIV PIN is removed. A fingerprint match alone authorizes PIV login again.")
+    elif args.action == "unlock":
+        say("Fingerprint login works again.")
+    else:
+        say("The PIV PIN is saved. Fingerprint login is unchanged.")
+        say(f"After {PIV_PIN_MATCH_FAILURE_LIMIT} failed fingerprint matches in a row, "
+            "login also needs this PIN.")
+
+
 def command_config(args: argparse.Namespace) -> None:
     if getattr(args, "json", False) and args.value is not None:
         raise ToolError("Use --json when reading settings or running 'config list'. Omit --json when changing a setting.")
@@ -2395,6 +2492,9 @@ def command_status(args: argparse.Namespace) -> None:
                 "piv_touch": "Touch-activated PIV",
                 "piv_touch_active": "PIV touch active",
                 "piv_visible": "Smart card visible",
+                "piv_pin": "PIV PIN",
+                "piv_pin_retries": "PIV PIN attempts left",
+                "piv_pin_wait_s": "PIV PIN lockout seconds left",
             }
             show_fields(
                 [
@@ -2774,6 +2874,13 @@ def interactive_command(args: argparse.Namespace, command: list[str]) -> bool:
         if state is None:
             return False
         command.append(state)
+    elif command == ["piv-pin"]:
+        action = select_option(
+            "PIV PIN", [("set", "Set a PIN"), ("change", "Change the PIN"), ("unlock", "Re-enable fingerprint login"), ("off", "Remove the PIN")]
+        )
+        if action is None:
+            return False
+        command.append(action)
     elif command == ["led", "preset"]:
         preset = select_option("LED preset", [(key, key.capitalize()) for key in LED_PRESETS])
         if preset is None:
@@ -2850,6 +2957,7 @@ INTERACTIVE_MENUS = {
             ("show", "Current settings", ["config", "show"]),
             ("mode", "Mode", ["mode"]),
             ("piv-touch", "Touch-activated PIV", ["piv-touch"]),
+            ("piv-pin", "PIV PIN", ["piv-pin"]),
             ("led", "Lighting", "lighting"),
             ("config", "Edit a setting", ["config"]),
             ("list", "All settings", ["config", "list"]),
@@ -3085,6 +3193,10 @@ def parser() -> argparse.ArgumentParser:
     piv_touch.add_argument("state", choices=("on", "off"))
     piv_touch.add_argument("--port")
     piv_touch.set_defaults(func=command_piv_touch)
+    piv_pin = sub.add_parser("piv-pin", help="require a PIV PIN after repeated failed fingerprint matches")
+    piv_pin.add_argument("action", choices=("set", "change", "unlock", "off"))
+    piv_pin.add_argument("--port")
+    piv_pin.set_defaults(func=command_piv_pin)
     led_actions = led.add_subparsers(dest="state", metavar="ACTION")
     for action, description in (("on", "Enable all sensor lighting."), ("off", "Disable all sensor lighting."),
                                 ("only-auth", "Show only success and failure feedback on the sensor ring."),

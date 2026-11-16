@@ -17,6 +17,7 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/md.h"
 #include "piv.h"
+#include "piv_pin.h"
 #include "usb_descriptors.h"
 #include "usb_ccid.h"
 
@@ -490,7 +491,16 @@ typedef struct {
 } auth_runtime_t;
 
 static void handle_fingerprint_match(fingerprint_match_t match) {
+  // Inside the window after a correct smart-card PIN, this match supplies the
+  // second factor and clears the fallback; the login then completes below.
+  if (piv_pin_note_match()) touch_pin_hid_log_event("piv_pin_completed", match.slot);
   if (device_config_mode() == DEVICE_MODE_HID) {
+    // A pending PIV PIN also stops HID typing, so switching modes with a
+    // fingerprint cannot sidestep it.
+    if (piv_pin_required()) {
+      touch_pin_hid_log_event("piv_pin_required", match.slot);
+      return;
+    }
     ESP_LOGI(TAG, "finger matched; requesting HID password");
     bool success = request_and_type_password(match);
     touch_pin_hid_log_event(success ? "hid_typed" : "hid_failed", match.slot);
@@ -502,6 +512,11 @@ static void handle_fingerprint_match(fingerprint_match_t match) {
     if (!usb_ccid_wait_for_piv()) {
       usb_ccid_touch_cancel();
       touch_pin_hid_log_event("piv_discovery_timeout", match.slot);
+      return;
+    }
+    if (piv_pin_required()) {
+      // The fallback needs the PIN first. A match before it grants nothing.
+      touch_pin_hid_log_event("piv_pin_required", match.slot);
       return;
     }
     ESP_LOGI(TAG, "finger matched; authorizing and completing PIV login");
