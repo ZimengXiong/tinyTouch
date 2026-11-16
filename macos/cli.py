@@ -579,16 +579,21 @@ def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
     """Wait for a physical disconnect followed by a USB serial reconnect."""
     deadline = time.monotonic() + timeout
     disconnected = False
+    stayed: set[str] = set()
     while time.monotonic() < deadline:
         ports = detect_ports()
         if not disconnected:
             if port not in ports:
                 disconnected = True
+                # Ports that stay connected (a monitor, a second reader) are not this device.
+                stayed = set(ports)
                 say("The device disconnected. Waiting for it to reconnect.")
         elif port in ports:
             return port
-        elif len(ports) == 1:
-            return ports[0]
+        else:
+            new = [candidate for candidate in ports if candidate not in stayed]
+            if len(new) == 1:
+                return new[0]
         time.sleep(0.1)
     raise ToolError("Timed out waiting for tinyTouch to disconnect and reconnect.")
 
