@@ -555,6 +555,9 @@ def choose_mode(value: str | None) -> str:
 
 
 def detect_ports() -> list[str]:
+    ports = tinytouch_serial_ports()
+    if ports is not None:
+        return ports
     return sorted(str(path) for path in Path("/dev").glob("cu.*") if "usb" in path.name.lower() or "TT-" in path.name)
 
 
@@ -619,22 +622,26 @@ def wait_for_reconnect(port: str, timeout: float = 120.0) -> str:
     """Wait for a physical disconnect followed by a USB serial reconnect."""
     deadline = time.monotonic() + timeout
     disconnected = False
+    stayed: set[str] = set()
     while time.monotonic() < deadline:
         ports = detect_ports()
         if not disconnected:
             if port not in ports:
                 disconnected = True
+                # Ports that stay connected (a monitor, a second reader) are not this device.
+                stayed = set(ports)
                 say("The device disconnected. Waiting for it to reconnect.")
         elif port in ports:
             return port
         else:
-            # Another USB serial adapter can remain connected while tinyTouch
-            # is unplugged. Accept a new node only if it identifies as tinyTouch.
+            # Accept a newly appearing node only if it was not present during disconnect
+            # and (when USB metadata is available) identifies as tinyTouch.
+            new_ports = [candidate for candidate in ports if candidate not in stayed]
             candidates = tinytouch_serial_ports()
-            if candidates is None:
-                candidates = ports
-            if len(candidates) == 1 and candidates[0] in ports:
-                return candidates[0]
+            if candidates is not None:
+                new_ports = [candidate for candidate in new_ports if candidate in candidates]
+            if len(new_ports) == 1:
+                return new_ports[0]
         time.sleep(0.1)
     raise ToolError("Timed out waiting for tinyTouch to disconnect and reconnect.")
 
