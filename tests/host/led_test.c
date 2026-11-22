@@ -10,6 +10,13 @@ static fingerprint_match_t poll_match_with_led(void) {
   return match;
 }
 
+static int searches;
+static void count_search(void) { searches++; }
+static bool rescan_denied(void) { return false; }
+
+static fingerprint_alert_t alert;
+static fingerprint_alert_t current_alert(void) { return alert; }
+
 static TickType_t clock_ticks;
 static int mutexes[128], mutex_count;
 static stored_config_t disk_config;
@@ -308,7 +315,16 @@ int main(void) {
   // Foreground AUTH also clears its result without relying on the HID task.
   assert(fingerprint_authorize_prompted(NULL)); expect_led(0);
   no_match = true;
-  assert(!fingerprint_authorize_prompted(NULL)); expect_led(0); no_match = false;
+  assert(!fingerprint_authorize_prompted(NULL)); expect_led(0);
+  // A held wrong finger is rescanned at a bounded rate, unless searches count
+  // as attempts. Then only a lift re-arms it.
+  fingerprint_set_search_hook(count_search);
+  assert(!fingerprint_authorize_prompted(NULL)); assert(searches > 1);
+  searches = 0;
+  fingerprint_set_held_rescan_check(rescan_denied);
+  assert(!fingerprint_authorize_prompted(NULL)); assert(searches == 1);
+  fingerprint_set_held_rescan_check(NULL); fingerprint_set_search_hook(NULL);
+  expect_led(0); no_match = false;
   assert(led_colors[FP_LED_BLUE] == blue);
   assert(memcmp(&before, &disk_config, sizeof(before)) == 0);
   fail_save = true;
@@ -328,5 +344,43 @@ int main(void) {
   device_config_init(); assert(!device_config_piv_touch_enabled());
   disk_piv_touch = 99; device_config_init(); assert(!device_config_piv_touch_enabled());
   assert(device_config_mode() == DEVICE_MODE_PIV && device_config_hid_host_count() == 0);
+
+  // The PIV PIN alert alternates steady colours over the idle colour.
+  // Without an alert the worker sends nothing.
+  fingerprint_set_alert_source(current_alert);
+  int commands = led_commands;
+  service_alert_led(); assert(led_commands == commands);
+  alert = FINGERPRINT_ALERT_PIN_REQUIRED;
+  service_alert_led(); expect_led(FP_LED_WHITE);
+  service_alert_led(); expect_led(FP_LED_RED);
+  alert = FINGERPRINT_ALERT_PIN_ACCEPTED;
+  service_alert_led(); expect_led(FP_LED_WHITE);
+  service_alert_led(); expect_led(FP_LED_BLUE);
+  // A match result keeps its colour for its feedback period.
+  commands = led_commands;
+  result_led_visible = true; service_alert_led(); result_led_visible = false;
+  assert(led_commands == commands);
+  // An offline sensor gets no alert traffic.
+  set_sensor_ready(false); service_alert_led(); set_sensor_ready(true);
+  assert(led_commands == commands);
+  // A rejected step leaves the idle retry state alone and backs off.
+  bool pending = led_update_pending;
+  reject_led = 1; service_alert_led();
+  assert(led_commands == commands + 1 && led_update_pending == pending);
+  service_alert_led(); assert(led_commands == commands + 1);
+  clock_ticks += ALERT_RETRY_TICKS; service_alert_led();
+  assert(led_commands == commands + 2);
+  // Ending the alert restores the idle colour once.
+  alert = FINGERPRINT_ALERT_NONE;
+  service_alert_led(); expect_led(FP_LED_BLUE);
+  commands = led_commands;
+  service_alert_led(); assert(led_commands == commands);
+  // LED mode off keeps the ring dark.
+  assert(fingerprint_set_led_mode(DEVICE_LED_OFF)); expect_led(0);
+  alert = FINGERPRINT_ALERT_PIN_REQUIRED;
+  commands = led_commands;
+  service_alert_led(); assert(led_commands == commands);
+  fingerprint_set_alert_source(NULL);
+  assert(fingerprint_set_led_mode(DEVICE_LED_ON));
   return 0;
 }

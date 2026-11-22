@@ -280,6 +280,24 @@ and Login Keychain responses reach macOS, after a failed match, or after a
 See [Device configuration](/reference/configuration#password-entry-in-piv-mode)
 for setup behavior and visibility windows.
 
+## `piv-pin`
+
+```text
+tinytouch piv-pin {set,change,unlock,off} [--port PATH]
+```
+
+Sets, changes, or removes an optional PIV PIN. Requires a ready PIV identity
+and fingerprint approval. `change` and `off` also require the current PIN. PINs
+are read from the terminal prompt, never from command arguments. `unlock` clears
+a pending fallback with the PIN and an enrolled finger.
+
+After 5 failed fingerprint matches in a row, login needs this PIN, then an
+enrolled finger. 5 failed attempts (wrong PINs, or wrong fingers after the PIN)
+lock the PIN for 10 seconds, rising to 1 hour with repeated lockouts. The default is no PIN.
+
+See [Device configuration](/reference/configuration#piv-pin-fallback) for the
+retry and recovery rules.
+
 ## `status`
 
 ```text
