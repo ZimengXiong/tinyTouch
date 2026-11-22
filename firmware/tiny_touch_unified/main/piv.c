@@ -664,11 +664,25 @@ static bool handle_general_authenticate(const uint8_t *apdu, size_t apdu_len,
   *response_len = off;
   touch_pin_hid_log_event("piv_crypto_ok", apdu[3]);
   bool ok = append_sw(response, response_len, response_cap, 0x9000);
-  // Hide a touch-activated card only after the whole login budget is spent; a
-  // second Keychain 9d operation must still reach it. Otherwise the touch
-  // window expiry hides it. Configuration keeps its separate discovery window.
-  if (ok && piv_presence_record_success(&user_presence_budget, slot_bit)) {
-    usb_ccid_login_complete();
+  // Hide a touch-activated card immediately once the login budget is spent.
+  // After 9a and the first 9d succeed, cap the remaining presence and touch
+  // windows to a short grace period (1.5 s) so macOS's follow-up Keychain 9d
+  // succeeds without leaving an extra decrypt or card exposure open for 10-20 s.
+  if (ok) {
+    if (piv_presence_record_success(&user_presence_budget, slot_bit)) {
+      usb_ccid_login_complete();
+    } else if (piv_presence_in_key_management_grace(&user_presence_budget)) {
+      const TickType_t grace_ticks = pdMS_TO_TICKS(1500);
+      TickType_t now = xTaskGetTickCount();
+      if (user_presence_until != 0 &&
+          (TickType_t)(user_presence_until - now) > grace_ticks) {
+        user_presence_until = now + grace_ticks;
+        if (user_presence_window_ticks > grace_ticks) {
+          user_presence_window_ticks = grace_ticks;
+        }
+      }
+      usb_ccid_login_grace(1500);
+    }
   }
   return ok;
 }

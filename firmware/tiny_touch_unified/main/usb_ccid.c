@@ -76,7 +76,7 @@ static void update_usb_policy(void) {
   int64_t now = esp_timer_get_time();
   bool piv_mode = device_config_mode() == DEVICE_MODE_PIV;
   taskENTER_CRITICAL(&policy_lock);
-  bool expose = !touch_enabled || (piv_mode && (now < touch_until || now < setup_until));
+  bool expose = piv_mode && (!touch_enabled || now < touch_until || now < setup_until);
   bool reconnect = reconnect_requested || expose != piv_exposed;
   reconnect_requested = false;
   taskEXIT_CRITICAL(&policy_lock);
@@ -342,7 +342,7 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   // Apply the persisted preference at boot. SET can therefore acknowledge and
   // verify over CDC without disconnecting the command that saved the setting.
   touch_enabled = device_config_piv_touch_enabled();
-  piv_exposed = !touch_enabled;
+  piv_exposed = device_config_mode() == DEVICE_MODE_PIV && !touch_enabled;
   tiny_touch_set_piv_descriptor(piv_exposed);
   reconnect_done = xSemaphoreCreateBinary();
   configASSERT(reconnect_done);
@@ -411,6 +411,14 @@ void usb_ccid_login_complete(void) {
   if (!touch_enabled || device_config_mode() != DEVICE_MODE_PIV) return;
   taskENTER_CRITICAL(&policy_lock);
   login_response_pending = true;
+  taskEXIT_CRITICAL(&policy_lock);
+}
+
+void usb_ccid_login_grace(uint32_t grace_ms) {
+  if (!touch_enabled || device_config_mode() != DEVICE_MODE_PIV) return;
+  int64_t grace_until = esp_timer_get_time() + (int64_t)grace_ms * 1000;
+  taskENTER_CRITICAL(&policy_lock);
+  if (touch_until > grace_until) touch_until = grace_until;
   taskEXIT_CRITICAL(&policy_lock);
 }
 

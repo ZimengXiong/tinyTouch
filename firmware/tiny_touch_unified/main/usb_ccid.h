@@ -17,6 +17,8 @@ void usb_ccid_touch_begin(void);
 void usb_ccid_touch_cancel(void);
 // Hide after the completed login response reaches the host.
 void usb_ccid_login_complete(void);
+// Cap the remaining touch-activated card visibility window to a short grace period.
+void usb_ccid_login_grace(uint32_t grace_ms);
 bool usb_ccid_wait_for_piv(void);
 // Keep automatic reconnects from interrupting a console command's reply.
 void usb_ccid_begin_console_command(void);

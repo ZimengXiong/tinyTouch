@@ -82,3 +82,14 @@ static inline bool piv_presence_record_success(piv_presence_budget_t *budget,
              (PIV_PRESENCE_SLOT_AUTHENTICATION | PIV_PRESENCE_SLOT_KEY_MANAGEMENT) &&
          budget->key_management_left == 0;
 }
+
+// Returns true after 9a and the first 9d have both succeeded, while a follow-up
+// Keychain 9d operation is still permitted. Callers cap the remaining presence
+// and touch-visibility windows to a short grace period.
+static inline bool piv_presence_in_key_management_grace(
+    const piv_presence_budget_t *budget) {
+  return !budget->repeated_slots &&
+         budget->slots_succeeded ==
+             (PIV_PRESENCE_SLOT_AUTHENTICATION | PIV_PRESENCE_SLOT_KEY_MANAGEMENT) &&
+         budget->key_management_left > 0;
+}
